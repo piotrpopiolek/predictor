@@ -1,0 +1,16 @@
+.git
+.github
+.ai
+.cursor
+.venv
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+__pycache__
+*.egg-info
+.env
+main.py
+*.md
+agent-transcripts

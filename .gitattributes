@@ -1,0 +1,4 @@
+* text=auto
+docker/postgres/*.sh text eol=lf
+Makefile text eol=lf
+*.py text eol=lf

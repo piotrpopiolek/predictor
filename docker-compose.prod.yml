@@ -1,0 +1,91 @@
+name: predictor-prod
+
+services:
+  postgres:
+    build:
+      context: ./docker/postgres
+      dockerfile: Dockerfile
+    image: predictor-postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?}
+      POSTGRES_DB: postgres
+      PREDICTOR_APP_PASSWORD: ${PREDICTOR_APP_PASSWORD:?}
+      PREDICTOR_DEV_PASSWORD: ${PREDICTOR_DEV_PASSWORD:?}
+    volumes:
+      - predictor_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &app-env
+      API_SPORTS_KEY: ${API_SPORTS_KEY:?}
+      API_SPORTS_BASE_URL: ${API_SPORTS_BASE_URL:?}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: predictor_app
+      POSTGRES_PASSWORD: ${PREDICTOR_APP_PASSWORD:?}
+      POSTGRES_DB: predictor_prod
+      QUOTA_DAILY_LIMIT: ${QUOTA_DAILY_LIMIT:-7500}
+      QUOTA_SAFETY_BUFFER_PERCENT: ${QUOTA_SAFETY_BUFFER_PERCENT:-3}
+      INSTANCE_ID: ${INSTANCE_ID:?}
+      HOST_ENVIRONMENT: ${HOST_ENVIRONMENT:?}
+      PROMETHEUS_METRICS_TOKEN: ${PROMETHEUS_METRICS_TOKEN:?}
+      LIVE_POLL_TARGET_SECONDS: ${LIVE_POLL_TARGET_SECONDS:-60}
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 20s
+    command: ["python", "-m", "predictor.worker"]
+
+  status:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *app-env
+    ports:
+      - "127.0.0.1:18080:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    command:
+      [
+        "uvicorn",
+        "predictor.api.main:create_app",
+        "--factory",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+      ]
+
+volumes:
+  predictor_pgdata:

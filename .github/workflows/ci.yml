@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-ci:
+    runs-on: ubuntu-latest
+    env:
+      API_SPORTS_KEY: ci-test-key-not-used
+      API_SPORTS_BASE_URL: https://api.example.test
+      POSTGRES_SUPERUSER_PASSWORD: ci-super-password
+      PREDICTOR_APP_PASSWORD: ci-app-password
+      PREDICTOR_DEV_PASSWORD: ci-dev-password
+      PROMETHEUS_METRICS_TOKEN: ci-metrics-token
+      INSTANCE_ID: ci-1
+      HOST_ENVIRONMENT: local
+      QUOTA_DAILY_LIMIT: "7500"
+      QUOTA_SAFETY_BUFFER_PERCENT: "3"
+      LIVE_POLL_TARGET_SECONDS: "60"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run test-ci
+        run: make test-ci
+
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install production dependencies
+        run: pip install --upgrade pip && pip install .
+      - name: pip-audit
+        run: pip install pip-audit && pip-audit
