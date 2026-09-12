@@ -8,6 +8,7 @@ from alembic import context
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
 
+from predictor.postgres import sqlalchemy_url
 from predictor.schemas.settings import load_settings
 
 config = context.config
@@ -18,15 +19,7 @@ target_metadata = None
 
 
 def _database_url() -> URL:
-    settings = load_settings()
-    return URL.create(
-        drivername="postgresql+psycopg",
-        username=settings.postgres_user,
-        password=settings.postgres_password.get_secret_value(),
-        host=settings.postgres_host,
-        port=settings.postgres_port,
-        database=settings.postgres_db,
-    )
+    return sqlalchemy_url(load_settings())
 
 
 def run_migrations_offline() -> None:
