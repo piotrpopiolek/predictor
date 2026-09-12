@@ -57,7 +57,9 @@ def create_app() -> FastAPI:
         try:
             return await operator_status(settings, engine)
         except Exception:
-            raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
 
     @app.get("/metrics")
     async def metrics(
@@ -73,12 +75,16 @@ def create_app() -> FastAPI:
                 await conn.execute(text("SELECT 1"))
             counts = await task_counts(engine)
         except Exception:
-            raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
         body = render_metrics(
             environment=settings.host_environment.value,
             lock_held=holder is not None,
             task_counts=counts,
         )
-        return PlainTextResponse(body, media_type="text/plain; version=0.0.4; charset=utf-8")
+        return PlainTextResponse(
+            body, media_type="text/plain; version=0.0.4; charset=utf-8"
+        )
 
     return app

@@ -1,4 +1,7 @@
-"""Worker process: lock first, then queue/cursors, then scheduler. No domain ingest in W2."""
+"""Worker process: lock first, then queue/cursors, then scheduler.
+
+No domain ingest in W2.
+"""
 
 from __future__ import annotations
 
