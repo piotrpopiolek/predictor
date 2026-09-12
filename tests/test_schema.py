@@ -135,7 +135,7 @@ def test_fixture_statuses_seeded() -> None:
     with app_connect() as conn:
         count = conn.execute("SELECT count(*) FROM fixture_statuses").fetchone()
     assert count is not None
-    assert count[0] == 18
+    assert count[0] == 19
 
 
 def test_team_season_statistics_pk_includes_as_of_date() -> None:
