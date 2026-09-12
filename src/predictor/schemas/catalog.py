@@ -1,4 +1,7 @@
-"""Pydantic models for W3 dictionary endpoints. Extra fields are kept for drift alerts."""
+"""Pydantic models for W3 dictionary endpoints.
+
+Extra fields are kept so FR-006 can log contract drift.
+"""
 
 from __future__ import annotations
 

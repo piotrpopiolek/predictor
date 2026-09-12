@@ -81,7 +81,7 @@ async def requeue_orphans(session: AsyncSession) -> int:
         )
         .returning(EtlTask.id)
     )
-    return len(list(result.scalars().all())            )
+    return len(list(result.scalars().all()))
 
 
 async def ensure_dictionary_tasks(session: AsyncSession) -> None:
@@ -96,9 +96,7 @@ async def ensure_dictionary_tasks(session: AsyncSession) -> None:
             session.add(EtlTask(endpoint=endpoint, params={}, status="pending"))
 
 
-async def get_or_create_endpoint_task(
-    session: AsyncSession, endpoint: str
-) -> EtlTask:
+async def get_or_create_endpoint_task(session: AsyncSession, endpoint: str) -> EtlTask:
     _require_transaction(session, "get or create task")
     task = await session.scalar(
         select(EtlTask)

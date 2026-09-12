@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, TypeVar
+from typing import Any
 
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,11 +23,10 @@ from predictor.schemas.catalog import (
     NamedIdItem,
 )
 
-T = TypeVar("T")
 _CHUNK = 500
 
 
-def _chunks(rows: Sequence[T], size: int = _CHUNK) -> list[Sequence[T]]:
+def _chunks[T](rows: Sequence[T], size: int = _CHUNK) -> list[Sequence[T]]:
     return [rows[i : i + size] for i in range(0, len(rows), size)]
 
 
@@ -130,7 +129,9 @@ async def upsert_leagues(
     await upsert_countries(session, nested_countries)
     await upsert_seasons(session, nested_years)
 
-    unique_leagues: dict[int, LeagueResponseItem] = {item.league.id: item for item in items}
+    unique_leagues: dict[int, LeagueResponseItem] = {
+        item.league.id: item for item in items
+    }
     league_count = 0
     if unique_leagues:
         for chunk in _chunks(list(unique_leagues.values())):
@@ -179,8 +180,8 @@ async def upsert_leagues(
             season_rows[(item.league.id, season.year)] = row
     season_count = 0
     if season_rows:
-        for chunk in _chunks(list(season_rows.values())):
-            stmt = insert(LeagueSeason).values(list(chunk))
+        for season_chunk in _chunks(list(season_rows.values())):
+            stmt = insert(LeagueSeason).values(list(season_chunk))
             stmt = stmt.on_conflict_do_update(
                 index_elements=[LeagueSeason.league_id, LeagueSeason.season_year],
                 set_={
@@ -202,5 +203,5 @@ async def upsert_leagues(
                 },
             )
             await session.execute(stmt)
-            season_count += len(chunk)
+            season_count += len(season_chunk)
     return league_count, season_count

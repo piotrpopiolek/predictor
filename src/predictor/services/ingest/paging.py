@@ -19,6 +19,15 @@ def parse_http_envelope(payload: Any, *, path: str, status_code: int) -> ApiEnve
         raise FootballHttpError(status_code, path) from exc
 
 
+def page_param_unsupported(errors: Any) -> bool:
+    if not isinstance(errors, dict):
+        return False
+    message = errors.get("page")
+    if not isinstance(message, str):
+        return False
+    return "do not exist" in message.casefold()
+
+
 async def fetch_all_pages(
     client: FootballClient,
     path: str,
@@ -30,13 +39,15 @@ async def fetch_all_pages(
     last_current = 0
     total = 1
     current = 1
+    send_page = False
     while True:
         quota = client.quota
         if quota is not None and quota.remaining <= 0 and page > 1:
             raise QuotaExhaustedError(path)
         query: dict[str, str | int] = dict(params or {})
-        query["page"] = page
-        response = await client.get(path, domain=True, params=query)
+        if send_page:
+            query["page"] = page
+        response = await client.get(path, domain=True, params=query if query else None)
         try:
             payload: Any = response.json()
         except ValueError as exc:
@@ -45,6 +56,8 @@ async def fetch_all_pages(
             payload, path=path, status_code=response.status_code
         )
         if envelope_has_errors(envelope.errors):
+            if send_page and page_param_unsupported(envelope.errors):
+                break
             raise FootballHttpError(response.status_code, path)
         chunk = envelope.response
         if isinstance(chunk, list):
@@ -60,4 +73,5 @@ async def fetch_all_pages(
         page = current + 1
         if page > total:
             break
+        send_page = True
     return collected, current, total

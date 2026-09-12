@@ -50,12 +50,8 @@ class LeagueSeason(Base):
     is_current: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     cov_events: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     cov_lineups: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    cov_statistics_fixtures: Mapped[bool | None] = mapped_column(
-        Boolean, nullable=True
-    )
-    cov_statistics_players: Mapped[bool | None] = mapped_column(
-        Boolean, nullable=True
-    )
+    cov_statistics_fixtures: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    cov_statistics_players: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     cov_standings: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     cov_players: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     cov_top_scorers: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
