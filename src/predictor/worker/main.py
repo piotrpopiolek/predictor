@@ -16,10 +16,20 @@ from predictor.logutil import configure_logging, log_json, log_startup
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, SettingsError, load_settings
 from predictor.services.lock import LockBusyError, WriterLock, lock_busy_message
-from predictor.services.queue import ensure_cursors, record_run_end, record_run_start, requeue_orphans
+from predictor.services.queue import (
+    ensure_cursors,
+    record_run_end,
+    record_run_start,
+    requeue_orphans,
+)
 from predictor.services.scheduler import Scheduler
 
 LockedLoop = Callable[[Settings, WriterLock, asyncio.Event], Awaitable[None]]
+
+
+def configure_event_loop() -> None:
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 def _install_stop_signals(stop: asyncio.Event) -> None:
@@ -112,6 +122,7 @@ async def run_worker(
 
 
 def main() -> None:
+    configure_event_loop()
     try:
         asyncio.run(run_worker())
     except SettingsError as exc:

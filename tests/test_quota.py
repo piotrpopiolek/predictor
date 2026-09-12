@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime
 
+import pytest
+
 from predictor.client.quota import QuotaSnapshot
 from predictor.services.quota import quota_allows, seconds_until_utc_midnight
 
@@ -37,3 +39,8 @@ def test_remaining_zero_blocks_all() -> None:
 def test_seconds_until_utc_midnight() -> None:
     now = datetime(2026, 9, 12, 23, 0, 0, tzinfo=UTC)
     assert seconds_until_utc_midnight(now) == 3600.0
+
+
+def test_seconds_until_utc_midnight_rejects_naive() -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        seconds_until_utc_midnight(datetime(2026, 9, 12, 23, 0, 0))

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import sys
 from collections.abc import Iterator
 
 import pytest
@@ -21,6 +23,13 @@ VALID_ENV: dict[str, str] = {
 }
 
 SETTING_ENV_NAMES = tuple(VALID_ENV.keys())
+
+
+@pytest.fixture(scope="session")
+def event_loop_policy() -> asyncio.AbstractEventLoopPolicy:
+    if sys.platform == "win32":
+        return asyncio.WindowsSelectorEventLoopPolicy()
+    return asyncio.DefaultEventLoopPolicy()
 
 
 @pytest.fixture

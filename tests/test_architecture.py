@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from predictor.constants import WRITER_LOCK_KEY
+from predictor.services.health import current_alembic_head
+from predictor.services.lock import advisory_lock_parts, lock_busy_message
+from predictor.services.metrics import metrics_token_ok, render_metrics
 
 
 def test_writer_lock_key_is_documented_constant() -> None:
@@ -34,3 +37,34 @@ def test_no_vendor_api_host_in_application() -> None:
         text = path.read_text(encoding="utf-8").lower()
         assert "api-sports.io" not in text
         assert "api-football.com" not in text
+
+
+def test_alembic_head_helper_matches_w1() -> None:
+    assert current_alembic_head() == "0017_etl_state"
+
+
+def test_advisory_lock_parts_split_bigint() -> None:
+    assert advisory_lock_parts(WRITER_LOCK_KEY) == (0, WRITER_LOCK_KEY)
+
+
+def test_lock_busy_message_without_holder() -> None:
+    message = lock_busy_message(None)
+    assert str(WRITER_LOCK_KEY) in message
+    assert "another backend" in message
+
+
+def test_metrics_token_and_labels() -> None:
+    assert metrics_token_ok(None, "secret") is False
+    assert metrics_token_ok("Bearer secret", "secret") is True
+    assert metrics_token_ok("Bearer other", "secret") is False
+    body = render_metrics(
+        environment="local",
+        lock_held=True,
+        task_counts={"pending": 2},
+    )
+    assert 'service="status"' in body
+    assert 'environment="local"' in body
+    assert "predictor_writer_lock" in body
+    assert "fixture_id" not in body
+    assert "task_id" not in body
+    assert "run_id" not in body

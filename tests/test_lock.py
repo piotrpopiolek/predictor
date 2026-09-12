@@ -11,6 +11,7 @@ from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import load_settings
 from predictor.services.lock import WriterLock, advisory_lock_parts
 from predictor.services.queue import record_run_end, record_run_start
+from predictor.worker.main import configure_event_loop
 
 
 @pytest.mark.asyncio
@@ -55,10 +56,12 @@ def test_ready_does_not_hold_writer_lock() -> None:
             await lock.release()
             await lock.close()
 
+    configure_event_loop()
     asyncio.run(acquire())
 
 
 def test_ready_ok_when_lock_and_open_run() -> None:
+    configure_event_loop()
     settings = load_settings()
 
     async def prepare() -> tuple[WriterLock, int]:

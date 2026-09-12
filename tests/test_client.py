@@ -10,6 +10,7 @@ from tenacity.wait import wait_base
 
 from predictor.client.errors import (
     AuthBlockedError,
+    FootballHttpError,
     RetryableHttpError,
     WriterLockRequiredError,
 )
@@ -161,7 +162,52 @@ def test_client_redacts_key(valid_env: None) -> None:
     redacted = client._redact("header x-apisports-key=test-api-key-not-real trailing")
     assert "test-api-key-not-real" not in redacted
     assert "***" in redacted
+    assert client._redact("plain") == "plain"
     assert "test-api-key-not-real" not in repr(client)
+
+
+@pytest.mark.asyncio
+async def test_400_is_not_retried(valid_env: None) -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(400)
+
+    client = _client(True, httpx.MockTransport(handler))
+    try:
+        with pytest.raises(FootballHttpError) as exc_info:
+            await client.get("/status", domain=False)
+    finally:
+        await client.aclose()
+    assert exc_info.value.status_code == 400
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_invalid_status_json(valid_env: None) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not-json")
+
+    client = _client(True, httpx.MockTransport(handler))
+    try:
+        with pytest.raises(FootballHttpError):
+            await client.get_status()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_transport_error_is_retryable(valid_env: None) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom", request=request)
+
+    client = _client(True, httpx.MockTransport(handler))
+    try:
+        with pytest.raises(RetryableHttpError):
+            await client.get("/status", domain=False)
+    finally:
+        await client.aclose()
 
 
 def test_parse_retry_after_seconds() -> None:

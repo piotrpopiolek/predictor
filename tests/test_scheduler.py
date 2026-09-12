@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import httpx
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tenacity import RetryCallState
 from tenacity.wait import wait_base
 
 from predictor.client.errors import FootballHttpError
 from predictor.client.football import FootballClient
 from predictor.client.quota import QuotaSnapshot
-from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import load_settings
 from predictor.services.scheduler import PRIORITY_ORDER, Scheduler
 
@@ -29,8 +30,12 @@ STATUS_BODY = {
 }
 
 
+def _unused_factory() -> async_sessionmaker[AsyncSession]:
+    return cast(async_sessionmaker[AsyncSession], object())
+
+
 @pytest.mark.asyncio
-async def test_scheduler_quota_exhausted_does_not_spin_http() -> None:
+async def test_scheduler_quota_exhausted_does_not_spin_http(valid_env: None) -> None:
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -45,8 +50,6 @@ async def test_scheduler_quota_exhausted_does_not_spin_http() -> None:
         )
 
     settings = load_settings()
-    engine = make_async_engine(settings)
-    factory = make_session_factory(engine)
     client = FootballClient(
         settings,
         locked=True,
@@ -57,11 +60,17 @@ async def test_scheduler_quota_exhausted_does_not_spin_http() -> None:
     scheduler = Scheduler(
         settings,
         client,
-        factory,
+        _unused_factory(),
         idle_cap_seconds=0.05,
         status_refresh_seconds=3600,
         now_fn=lambda: datetime(2026, 9, 12, 12, 0, tzinfo=UTC),
     )
+    persisted = {"n": 0}
+
+    async def fake_persist() -> None:
+        persisted["n"] += 1
+
+    scheduler._persist_cursors = fake_persist  # type: ignore[method-assign]
     try:
 
         async def halt() -> None:
@@ -70,11 +79,11 @@ async def test_scheduler_quota_exhausted_does_not_spin_http() -> None:
 
         await asyncio.gather(scheduler.run(stop), halt())
         assert calls["n"] == 1
+        assert persisted["n"] >= 1
         assert scheduler.quota is not None
         assert scheduler.quota.remaining == 0
     finally:
         await client.aclose()
-        await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -86,7 +95,7 @@ async def test_priority_order_matches_fr023() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unknown_quota_does_not_call_domain_handlers() -> None:
+async def test_unknown_quota_does_not_call_domain_handlers(valid_env: None) -> None:
     called = {"n": 0}
 
     async def domain() -> None:
@@ -97,12 +106,10 @@ async def test_unknown_quota_does_not_call_domain_handlers() -> None:
             raise FootballHttpError(500, "/status")
 
     settings = load_settings()
-    engine = make_async_engine(settings)
-    factory = make_session_factory(engine)
     scheduler = Scheduler(
         settings,
-        _Client(),  # type: ignore[arg-type]
-        factory,
+        cast(Any, _Client()),
+        _unused_factory(),
         handlers={5: domain},
         idle_cap_seconds=0.01,
     )
@@ -113,8 +120,5 @@ async def test_unknown_quota_does_not_call_domain_handlers() -> None:
         fetched_at=datetime(2026, 9, 12, 12, 0, tzinfo=UTC),
         source="unknown",
     )
-    try:
-        await scheduler._tick(asyncio.Event())
-        assert called["n"] == 0
-    finally:
-        await engine.dispose()
+    await scheduler._tick(asyncio.Event())
+    assert called["n"] == 0
