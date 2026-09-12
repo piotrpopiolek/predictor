@@ -26,3 +26,7 @@ class RetryableHttpError(RuntimeError):
         self.retry_after = retry_after
         label = f"HTTP {status_code}" if status_code is not None else "transport error"
         super().__init__(f"retryable {label}")
+
+
+class QuotaExhaustedError(RuntimeError):
+    """Stop paging when remaining quota hits zero; do not mark the task complete."""

@@ -1,7 +1,4 @@
-"""Worker process: lock first, then queue/cursors, then scheduler.
-
-No domain ingest in W2.
-"""
+"""Worker process: lock first, then queue/cursors, then dictionary ingest."""
 
 from __future__ import annotations
 
@@ -18,9 +15,11 @@ from predictor.client.football import FootballClient
 from predictor.logutil import configure_logging, log_json, log_startup
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, SettingsError, load_settings
+from predictor.services.ingest import CatalogIngest
 from predictor.services.lock import LockBusyError, WriterLock, lock_busy_message
 from predictor.services.queue import (
     ensure_cursors,
+    ensure_dictionary_tasks,
     record_run_end,
     record_run_start,
     requeue_orphans,
@@ -64,7 +63,14 @@ async def run_locked_loop(
                 run_id = await record_run_start(session, settings, lock)
                 await requeue_orphans(session)
                 await ensure_cursors(session)
-        scheduler = Scheduler(settings, client, session_factory)
+                await ensure_dictionary_tasks(session)
+        catalog = CatalogIngest(client, session_factory)
+        scheduler = Scheduler(
+            settings,
+            client,
+            session_factory,
+            handlers={1: catalog.refresh_priority_one},
+        )
         await scheduler.run(stop)
     finally:
         if run_id is not None:

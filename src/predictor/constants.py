@@ -33,3 +33,15 @@ ETL_STATUSES = frozenset(
 )
 
 API_SPORTS_KEY_HEADER = "x-apisports-key"
+
+# W3 catalog. Order is FK-safe: countries before leagues. No /fixtures.
+DICTIONARY_ENDPOINTS: tuple[str, ...] = (
+    "/timezone",
+    "/countries",
+    "/teams/countries",
+    "/leagues/seasons",
+    "/leagues",
+    "/odds/bookmakers",
+    "/odds/bets",
+    "/odds/live/bets",
+)

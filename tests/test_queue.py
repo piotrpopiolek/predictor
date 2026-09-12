@@ -111,7 +111,11 @@ async def test_requeue_orphans_and_claim_skips_cursors() -> None:
                         break
                     claimed_endpoints.append(claimed.endpoint)
                     assert claimed.cursor_kind is None
-                    await complete_task(session, claimed, "complete")
+                    if claimed.endpoint.startswith("/w2/"):
+                        await complete_task(session, claimed, "complete")
+                    else:
+                        claimed.status = "pending"
+                        claimed.started_at = None
                 assert "/w2/claim-me" in claimed_endpoints
                 assert "/w2/orphan" in claimed_endpoints
         async with factory() as session:

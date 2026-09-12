@@ -35,3 +35,13 @@ class StatusResponseBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     requests: StatusRequests
+
+
+def envelope_has_errors(errors: Any) -> bool:
+    if errors is None:
+        return False
+    if isinstance(errors, list):
+        return len(errors) > 0
+    if isinstance(errors, dict):
+        return len(errors) > 0
+    return True

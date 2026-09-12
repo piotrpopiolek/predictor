@@ -5,11 +5,12 @@ from __future__ import annotations
 import os
 import socket
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from predictor.constants import CURSOR_KINDS, ETL_STATUSES
+from predictor.constants import CURSOR_KINDS, DICTIONARY_ENDPOINTS, ETL_STATUSES
 from predictor.models.etl import EtlRun, EtlTask
 from predictor.schemas.settings import Settings
 from predictor.services.lock import WriterLock
@@ -80,7 +81,53 @@ async def requeue_orphans(session: AsyncSession) -> int:
         )
         .returning(EtlTask.id)
     )
-    return len(list(result.scalars().all()))
+    return len(list(result.scalars().all())            )
+
+
+async def ensure_dictionary_tasks(session: AsyncSession) -> None:
+    _require_transaction(session, "ensure dictionary tasks")
+    for endpoint in DICTIONARY_ENDPOINTS:
+        existing = await session.scalar(
+            select(EtlTask.id)
+            .where(EtlTask.endpoint == endpoint)
+            .where(EtlTask.cursor_kind.is_(None))
+        )
+        if existing is None:
+            session.add(EtlTask(endpoint=endpoint, params={}, status="pending"))
+
+
+async def get_or_create_endpoint_task(
+    session: AsyncSession, endpoint: str
+) -> EtlTask:
+    _require_transaction(session, "get or create task")
+    task = await session.scalar(
+        select(EtlTask)
+        .where(EtlTask.endpoint == endpoint)
+        .where(EtlTask.cursor_kind.is_(None))
+        .order_by(EtlTask.id)
+        .limit(1)
+    )
+    if task is None:
+        task = EtlTask(endpoint=endpoint, params={}, status="pending")
+        session.add(task)
+        await session.flush()
+    return task
+
+
+def needs_refresh(task: EtlTask, now: datetime) -> bool:
+    if task.status in {"pending", "retryable_error"}:
+        return True
+    if task.status == "complete" and task.completed_at is not None:
+        completed = task.completed_at
+        if completed.tzinfo is None:
+            completed = completed.replace(tzinfo=UTC)
+        return completed.astimezone(UTC).date() < now.astimezone(UTC).date()
+    return task.status not in {
+        "complete",
+        "coverage_empty",
+        "not_supported",
+        "permanent_error",
+    }
 
 
 async def claim_next(session: AsyncSession) -> EtlTask | None:
@@ -112,6 +159,7 @@ async def complete_task(
     error: str | None = None,
     paging_current: int | None = None,
     paging_total: int | None = None,
+    params: dict[str, Any] | None = None,
 ) -> None:
     """Mark completeness in the caller's open transaction (FR-026). Does not commit."""
     _require_transaction(session, "checkpoint")
@@ -126,5 +174,7 @@ async def complete_task(
         task.paging_current = paging_current
     if paging_total is not None:
         task.paging_total = paging_total
+    if params is not None:
+        task.params = params
     if status in TERMINAL_STATUSES:
         task.completed_at = now
