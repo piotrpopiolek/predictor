@@ -11,6 +11,7 @@ from tenacity import RetryCallState
 from tenacity.wait import wait_base
 
 from predictor.client.football import FootballClient
+from predictor.constants import GLOBAL_ENDPOINT_ORDER, LOOKUP_WITHOUT_HTTP
 from predictor.models.catalog import LeagueSeason, Player
 from predictor.models.children import (
     FixtureEvent,
@@ -290,7 +291,13 @@ async def _reset_w6(factory: async_sessionmaker[AsyncSession]) -> None:
                 delete(EtlTask)
                 .where(
                     EtlTask.endpoint.in_(
-                        ("/fixtures", "/fixtures/statistics", "/injuries")
+                        (
+                            "/fixtures",
+                            "/fixtures/statistics",
+                            "/injuries",
+                            *GLOBAL_ENDPOINT_ORDER,
+                            *LOOKUP_WITHOUT_HTTP,
+                        )
                     )
                 )
                 .where(EtlTask.cursor_kind.is_(None))

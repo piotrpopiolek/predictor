@@ -44,6 +44,9 @@ def test_enrichment_uses_id_not_ids_batch() -> None:
         "src/predictor/services/ingest/prematch.py",
         "src/predictor/services/ingest/persist_odds.py",
         "src/predictor/services/ingest/persist_predictions.py",
+        "src/predictor/services/ingest/global_entities.py",
+        "src/predictor/services/ingest/persist_seasonal.py",
+        "src/predictor/services/ingest/persist_people.py",
         "src/predictor/services/queue.py",
         "src/predictor/worker/main.py",
     ):
@@ -55,6 +58,29 @@ def test_enrichment_uses_id_not_ids_batch() -> None:
     assert "refresh_finalization" in worker
     assert "refresh_pending" in worker
     assert "PrematchIngest" in worker
+    assert "GlobalIngest" in worker
+    assert "priority_eight" in worker
+    assert worker.index("prematch.refresh_pending") < worker.index(
+        "global_ingest.refresh_pending"
+    )
+
+
+def test_global_catalog_skips_lookups_and_uses_coachs() -> None:
+    ingest = Path("src/predictor/services/ingest/global_entities.py").read_text(
+        encoding="utf-8"
+    )
+    queue = Path("src/predictor/services/queue.py").read_text(encoding="utf-8")
+    worker = Path("src/predictor/worker/main.py").read_text(encoding="utf-8")
+    assert "/teams/seasons" not in ingest
+    assert "/players/seasons" not in ingest
+    assert "/teams/seasons" not in queue
+    assert "/players/seasons" not in queue
+    assert "/teams/seasons" not in worker
+    assert '"/coachs"' in ingest
+    assert '"/coaches"' not in ingest
+    assert '"/coachs"' in queue
+    assert "LOOKUP_WITHOUT_HTTP" in ingest
+    assert "TEAM_STATS_SENTINEL_DATE" in ingest
 
 
 def test_prematch_odds_use_odds_bets_not_live() -> None:

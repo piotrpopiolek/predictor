@@ -245,6 +245,8 @@ async def upsert_fixtures(
             "id": fixture_id,
             "home": row["home_team_id"],
             "away": row["away_team_id"],
+            "league": row["league_id"],
+            "season": row["season"],
         }
         for fixture_id, row in unique.items()
     ]

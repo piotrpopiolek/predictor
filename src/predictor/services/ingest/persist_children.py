@@ -33,6 +33,7 @@ from predictor.schemas.enrichment import (
 )
 from predictor.services.ingest.persist import _chunks
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
+from predictor.services.queue import enqueue_coach_catalog
 
 
 async def upsert_player_stubs(
@@ -116,6 +117,8 @@ async def persist_fixture_detail(
     _collect_people(detail, players, coaches)
     await upsert_player_stubs(session, players)
     await upsert_coach_stubs(session, coaches)
+    for coach_id in dict.fromkeys(cid for cid, _, _ in coaches):
+        await enqueue_coach_catalog(session, coach_id)
     counts = {
         "events": 0,
         "lineups": 0,

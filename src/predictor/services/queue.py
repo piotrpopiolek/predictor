@@ -15,6 +15,10 @@ from predictor.constants import (
     DICTIONARY_ENDPOINTS,
     ENRICHABLE_FIXTURE_STATUSES,
     ETL_STATUSES,
+    GLOBAL_ENDPOINT_ORDER,
+    LOOKUP_WITHOUT_HTTP,
+    STALE_GLOBAL_ENDPOINTS,
+    TOP_PLAYER_ENDPOINTS,
 )
 from predictor.models.etl import EtlRun, EtlTask
 from predictor.models.fixtures import Fixture
@@ -453,6 +457,15 @@ async def enqueue_fixture_followups(
             await ensure_enrichment_task(session, fixture_id)
             await ensure_h2h_task(session, home_id, away_id)
             await ensure_predictions_task(session, fixture_id)
+            league_id = row.get("league")
+            season = row.get("season")
+            if league_id is not None and season is not None:
+                await enqueue_global_for_match(
+                    session,
+                    league_id=int(league_id),
+                    season=int(season),
+                    team_ids=(home_id, away_id),
+                )
     else:
         for raw_id in extra.get("fixture_ids", []):
             await ensure_enrichment_task(session, int(raw_id))
@@ -595,3 +608,102 @@ async def claim_odds_task(session: AsyncSession) -> EtlTask | None:
     if task is None:
         return None
     return _mark_claimed(task)
+
+
+async def ensure_param_task(
+    session: AsyncSession, endpoint: str, params: dict[str, Any]
+) -> None:
+    _require_transaction(session, "ensure param task")
+    existing = await session.scalar(
+        select(EtlTask.id)
+        .where(EtlTask.endpoint == endpoint)
+        .where(EtlTask.params.contains(params))
+        .where(EtlTask.cursor_kind.is_(None))
+    )
+    if existing is None:
+        session.add(EtlTask(endpoint=endpoint, params=params, status="pending"))
+
+
+async def enqueue_global_for_match(
+    session: AsyncSession,
+    *,
+    league_id: int,
+    season: int,
+    team_ids: tuple[int, ...],
+) -> None:
+    _require_transaction(session, "enqueue global")
+    league_params = {"league": league_id, "season": season}
+    await ensure_param_task(session, "/standings", league_params)
+    await ensure_param_task(session, "/players", league_params)
+    for endpoint in TOP_PLAYER_ENDPOINTS:
+        await ensure_param_task(session, endpoint, league_params)
+    for team_id in dict.fromkeys(team_ids):
+        await ensure_param_task(session, "/teams", {"id": team_id})
+        await ensure_param_task(session, "/players/squads", {"team": team_id})
+        await ensure_param_task(
+            session,
+            "/teams/statistics",
+            {"team": team_id, "league": league_id, "season": season},
+        )
+
+
+async def enqueue_player_catalog(session: AsyncSession, player_id: int) -> None:
+    _require_transaction(session, "enqueue player catalog")
+    params = {"player": player_id}
+    await ensure_param_task(session, "/players/profiles", params)
+    await ensure_param_task(session, "/players/teams", params)
+    await ensure_param_task(session, "/transfers", params)
+    await ensure_param_task(session, "/trophies", params)
+    await ensure_param_task(session, "/sidelined", params)
+
+
+async def enqueue_coach_catalog(session: AsyncSession, coach_id: int) -> None:
+    _require_transaction(session, "enqueue coach catalog")
+    await ensure_param_task(session, "/coachs", {"id": coach_id})
+    await ensure_param_task(session, "/trophies", {"coach": coach_id})
+    await ensure_param_task(session, "/sidelined", {"coach": coach_id})
+
+
+async def claim_global_task(session: AsyncSession) -> EtlTask | None:
+    _require_transaction(session, "claim global")
+    for endpoint in GLOBAL_ENDPOINT_ORDER:
+        task = await _claim_endpoint(session, endpoint)
+        if task is not None:
+            return task
+    return None
+
+
+async def requeue_stale_global(session: AsyncSession, now: datetime) -> int:
+    _require_transaction(session, "requeue stale global")
+    count = 0
+    tasks = await session.scalars(
+        select(EtlTask)
+        .where(EtlTask.endpoint.in_(tuple(STALE_GLOBAL_ENDPOINTS)))
+        .where(EtlTask.status == "complete")
+        .where(EtlTask.cursor_kind.is_(None))
+    )
+    for task in tasks:
+        if needs_refresh(task, now):
+            task.status = "pending"
+            task.updated_at = now
+            task.completed_at = None
+            count += 1
+    return count
+
+
+async def skip_reconstructable_lookups(session: AsyncSession) -> int:
+    _require_transaction(session, "skip lookups")
+    count = 0
+    for endpoint in LOOKUP_WITHOUT_HTTP:
+        while True:
+            task = await _claim_endpoint(session, endpoint)
+            if task is None:
+                break
+            await complete_task(
+                session,
+                task,
+                "not_supported",
+                error="reconstructable_lookup",
+            )
+            count += 1
+    return count

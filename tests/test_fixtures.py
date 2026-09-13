@@ -11,7 +11,11 @@ from tenacity import RetryCallState
 from tenacity.wait import wait_base
 
 from predictor.client.football import FootballClient
-from predictor.constants import IRREGULAR_FIXTURE_STATUSES
+from predictor.constants import (
+    GLOBAL_ENDPOINT_ORDER,
+    IRREGULAR_FIXTURE_STATUSES,
+    LOOKUP_WITHOUT_HTTP,
+)
 from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture, LeagueRound, Team, Venue
 from predictor.models.injuries import Injury
@@ -206,6 +210,8 @@ async def _reset_w4_state(factory: async_sessionmaker[AsyncSession]) -> None:
                             "/predictions",
                             "/odds",
                             "/odds/mapping",
+                            *GLOBAL_ENDPOINT_ORDER,
+                            *LOOKUP_WITHOUT_HTTP,
                         )
                     )
                 )
@@ -271,6 +277,9 @@ async def test_forward_upserts_fixtures_pages_and_children() -> None:
             h2h = await session.scalar(
                 select(EtlTask).where(EtlTask.endpoint == "/fixtures/headtohead")
             )
+            standings = await session.scalar(
+                select(EtlTask).where(EtlTask.endpoint == "/standings")
+            )
             round_row = await session.get(LeagueRound, (39, 2026, "Regular Season - 4"))
             n_fixtures = await session.scalar(select(func.count()).select_from(Fixture))
 
@@ -292,6 +301,8 @@ async def test_forward_upserts_fixtures_pages_and_children() -> None:
         assert h2h is not None
         assert h2h.status == "pending"
         assert h2h.params.get("h2h") == "33-34"
+        assert standings is not None
+        assert standings.status == "pending"
         assert round_row is not None
         assert n_fixtures == 3
         assert any("date=2026-09-13" in p and "page=2" in p for p in first_fixture_gets)

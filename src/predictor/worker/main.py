@@ -1,4 +1,4 @@
-"""Worker process: lock, cursors, catalog, live, fixtures, enrichment."""
+"""Worker process: lock, cursors, catalog, live, fixtures, enrichment, global."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from predictor.services.ingest import (
     CatalogIngest,
     EnrichmentIngest,
     FixtureIngest,
+    GlobalIngest,
     LiveIngest,
     PrematchIngest,
 )
@@ -79,6 +80,12 @@ async def run_locked_loop(
         )
         enrichment = EnrichmentIngest(client, session_factory)
         prematch = PrematchIngest(client, session_factory)
+        global_ingest = GlobalIngest(client, session_factory)
+
+        async def priority_eight() -> None:
+            await prematch.refresh_pending()
+            await global_ingest.refresh_pending()
+
         scheduler = Scheduler(
             settings,
             client,
@@ -91,7 +98,7 @@ async def run_locked_loop(
                 5: fixtures.refresh_forward,
                 6: enrichment.refresh_pending,
                 7: fixtures.refresh_backfill,
-                8: prematch.refresh_pending,
+                8: priority_eight,
             },
         )
         await scheduler.run(stop)

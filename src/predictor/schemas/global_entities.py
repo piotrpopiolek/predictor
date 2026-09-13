@@ -19,6 +19,7 @@ class IdName(ExtraAllow):
     founded: int | None = None
     national: bool | None = None
     winner: bool | None = None
+    season: int | None = None
 
 
 class BirthBlock(ExtraAllow):
