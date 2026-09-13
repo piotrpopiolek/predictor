@@ -1,0 +1,181 @@
+rule_files:
+  - /work/recording_rules.yml
+  - /work/alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: worker heartbeat
+    interval: 1m
+    input_series:
+      - series: 'predictor_writer_lock{service="status",environment="local"}'
+        values: "0 0 0 0"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PredictorWorkerHeartbeatMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: status
+              environment: local
+            exp_annotations:
+              summary: Writer lock is not held
+              description: "Worker heartbeat missing (writer lock 0) for 3m. env=local value=0 threshold=0"
+              runbook_url: docs/runbooks/worker-heartbeat.md
+
+  - name: postgres down
+    interval: 1m
+    input_series:
+      - series: 'up{job="postgres"}'
+        values: "0 0"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: PredictorPostgresDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: postgres
+            exp_annotations:
+              summary: PostgreSQL exporter is down
+              description: "PostgreSQL scrape failed for 1m. env= value=0 threshold=0"
+              runbook_url: docs/runbooks/postgres-down.md
+
+  - name: disk critical 80
+    interval: 1m
+    input_series:
+      - series: "instance:node_disk_root_used_ratio"
+        values: "0.85 0.85 0.85 0.85 0.85 0.85"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PredictorDiskCritical80
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Root disk >= 80%
+              description: "Root used ratio 0.85. env= threshold=0.80"
+              runbook_url: docs/runbooks/disk.md
+
+  - name: disk critical 90
+    interval: 1m
+    input_series:
+      - series: "instance:node_disk_root_used_ratio"
+        values: "0.95 0.95 0.95 0.95 0.95 0.95"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PredictorDiskCritical90
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Root disk >= 90%
+              description: "Root used ratio 0.95. env= threshold=0.90"
+              runbook_url: docs/runbooks/disk.md
+
+  - name: backup too old
+    interval: 1m
+    input_series:
+      - series: "predictor_backup_last_success_timestamp"
+        values: "0+0x1560"
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: PredictorBackupTooOld
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: predictor_prod backup is older than 24h
+              description: "Last successful dump age 93600s. env= threshold=86400"
+              runbook_url: docs/runbooks/backup.md
+
+  - name: backup failed
+    interval: 1m
+    input_series:
+      - series: "predictor_backup_last_success"
+        values: "0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PredictorBackupFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Last predictor_prod backup failed
+              description: "Backup success gauge is 0. env= value=0 threshold=0"
+              runbook_url: docs/runbooks/backup.md
+
+  - name: live stale
+    interval: 1m
+    input_series:
+      - series: 'predictor_in_play_fixtures{service="status",environment="local"}'
+        values: "2 2 2 2 2"
+      - series: 'predictor_live_last_snapshot_unixtime{service="status",environment="local"}'
+        values: "1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PredictorLiveStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: status
+              environment: local
+            exp_annotations:
+              summary: Live snapshots are stale
+              description: "In-play fixtures exist but last snapshot is older than two 60s intervals. env=local value=2 threshold=120s"
+              runbook_url: docs/runbooks/live-stale.md
+
+  - name: status down
+    interval: 1m
+    input_series:
+      - series: 'up{job="predictor-status"}'
+        values: "0 0 0 0"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PredictorStatusDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: predictor-status
+            exp_annotations:
+              summary: Status process is down
+              description: "predictor-status scrape failed for 3m. env= value=0 threshold=0"
+              runbook_url: docs/runbooks/worker-heartbeat.md
+
+  - name: auth blocked
+    interval: 1m
+    input_series:
+      - series: 'predictor_writer_lock{service="status",environment="local"}'
+        values: "0 0"
+      - series: 'up{job="predictor-status"}'
+        values: "1 1"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: PredictorApiAuthBlocked
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: status
+              environment: local
+            exp_annotations:
+              summary: Writer lock dropped while status is up
+              description: "Possible 401/403 API stop or worker crash. env=local value=0 threshold=0"
+              runbook_url: docs/runbooks/auth-blocked.md
+
+  - name: permanent error
+    interval: 1m
+    input_series:
+      - series: 'predictor_etl_tasks{service="status",environment="local",status="permanent_error"}'
+        values: "1 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PredictorPermanentError
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: status
+              environment: local
+              status: permanent_error
+            exp_annotations:
+              summary: Permanent ETL error present
+              description: "permanent_error tasks > 0. env=local value=1 threshold=0"
+              runbook_url: docs/runbooks/contract-drift.md

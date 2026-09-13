@@ -1,0 +1,37 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: telegram
+  group_by: ["alertname", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity="critical"
+      receiver: telegram
+      repeat_interval: 1h
+
+inhibit_rules:
+  - source_matchers:
+      - severity="critical"
+    target_matchers:
+      - severity="warning"
+    equal: ["alertname"]
+
+receivers:
+  - name: telegram
+    telegram_configs:
+      - bot_token: BOT_TOKEN_PLACEHOLDER
+        chat_id: CHAT_ID_PLACEHOLDER
+        parse_mode: HTML
+        send_resolved: true
+        message: |
+          <b>{{ .Status }}</b> {{ .CommonLabels.alertname }}
+          severity={{ .CommonLabels.severity }}
+          {{ range .Alerts -}}
+          {{ .Annotations.summary }}
+          {{ .Annotations.description }}
+          runbook={{ .Annotations.runbook_url }}
+          {{ end -}}

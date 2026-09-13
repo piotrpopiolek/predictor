@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     host_environment: HostEnvironment
     prometheus_metrics_token: SecretStr
     live_poll_target_seconds: int = 60
+    otel_exporter_otlp_endpoint: str | None = None
 
     @field_validator(
         "api_sports_key",
@@ -111,6 +112,15 @@ class Settings(BaseSettings):
     def _valid_port(cls, value: int) -> int:
         if value < 1 or value > 65535:
             raise ValueError("must be between 1 and 65535")
+        return value
+
+    @field_validator("otel_exporter_otlp_endpoint", mode="before")
+    @classmethod
+    def _empty_otel_endpoint(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
         return value
 
 

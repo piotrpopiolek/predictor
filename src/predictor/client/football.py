@@ -35,6 +35,7 @@ from predictor.constants import (
 )
 from predictor.schemas.api_football import ApiEnvelope
 from predictor.schemas.settings import Settings
+from predictor.telemetry import start_span
 
 
 class FootballClient:
@@ -126,7 +127,12 @@ class FootballClient:
             reraise=True,
         ):
             with attempt:
-                return await self._send_once(method, path, params)
+                with start_span(
+                    "http.client",
+                    http_route=path,
+                    http_method=method,
+                ):
+                    return await self._send_once(method, path, params)
         raise RuntimeError("unreachable retry loop")
 
     async def _send_once(

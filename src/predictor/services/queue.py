@@ -24,6 +24,7 @@ from predictor.models.etl import EtlRun, EtlTask
 from predictor.models.fixtures import Fixture
 from predictor.schemas.settings import Settings
 from predictor.services.lock import WriterLock
+from predictor.telemetry import start_span
 
 TERMINAL_STATUSES = frozenset(
     {"complete", "coverage_empty", "not_supported", "permanent_error"}
@@ -175,18 +176,23 @@ async def complete_task(
     if status not in ETL_STATUSES:
         raise ValueError(f"invalid etl status: {status}")
     now = datetime.now(UTC)
-    task.status = status
-    task.updated_at = now
-    if error is not None:
-        task.last_error = error
-    if paging_current is not None:
-        task.paging_current = paging_current
-    if paging_total is not None:
-        task.paging_total = paging_total
-    if params is not None:
-        task.params = params
-    if status in TERMINAL_STATUSES:
-        task.completed_at = now
+    with start_span(
+        "etl.transaction",
+        etl_endpoint=task.endpoint,
+        etl_result=status,
+    ):
+        task.status = status
+        task.updated_at = now
+        if error is not None:
+            task.last_error = error
+        if paging_current is not None:
+            task.paging_current = paging_current
+        if paging_total is not None:
+            task.paging_total = paging_total
+        if params is not None:
+            task.params = params
+        if status in TERMINAL_STATUSES:
+            task.completed_at = now
 
 
 async def get_or_create_day_task(

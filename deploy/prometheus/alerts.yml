@@ -1,0 +1,220 @@
+groups:
+  - name: predictor.worker
+    rules:
+      - alert: PredictorWorkerHeartbeatMissing
+        expr: predictor_writer_lock == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: Writer lock is not held
+          description: "Worker heartbeat missing (writer lock 0) for 3m. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/worker-heartbeat.md
+      - alert: PredictorStatusDown
+        expr: up{job="predictor-status"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: Status process is down
+          description: "predictor-status scrape failed for 3m. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/worker-heartbeat.md
+
+  - name: predictor.postgres
+    rules:
+      - alert: PredictorPostgresDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: PostgreSQL exporter is down
+          description: "PostgreSQL scrape failed for 1m. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/postgres-down.md
+
+  - name: predictor.live
+    rules:
+      - alert: PredictorLiveStale
+        expr: |
+          predictor_in_play_fixtures > 0
+          and (time() - predictor_live_last_snapshot_unixtime) > 120
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Live snapshots are stale
+          description: "In-play fixtures exist but last snapshot is older than two 60s intervals. env={{ $labels.environment }} value={{ $value }} threshold=120s"
+          runbook_url: docs/runbooks/live-stale.md
+      - alert: PredictorApiAuthBlocked
+        expr: predictor_writer_lock == 0 and on() (up{job="predictor-status"} == 1)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Writer lock dropped while status is up
+          description: "Possible 401/403 API stop or worker crash. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/auth-blocked.md
+
+  - name: predictor.quota
+    rules:
+      - alert: PredictorQuotaDrift
+        expr: |
+          predictor_quota_remaining >= 0
+          and predictor_quota_plan > 0
+          and (
+            (predictor_quota_remaining offset 5m - predictor_quota_remaining)
+            / predictor_quota_plan
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Quota burn exceeds 10% of plan in 5m
+          description: "Used more than 10% of daily plan in 5 minutes. env={{ $labels.environment }} value={{ $value }} threshold=0.10"
+          runbook_url: docs/runbooks/quota-drift.md
+
+  - name: predictor.quality
+    rules:
+      - alert: PredictorPermanentError
+        expr: predictor_etl_tasks{status="permanent_error"} > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Permanent ETL error present
+          description: "permanent_error tasks > 0. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/contract-drift.md
+      - alert: PredictorContractDrift
+        expr: increase(predictor_contract_drift_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: API contract drift detected
+          description: "Unknown API fields logged. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/contract-drift.md
+
+  - name: predictor.telemetry
+    rules:
+      - alert: PredictorPrometheusDown
+        expr: up{job="prometheus"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Prometheus is down
+          description: "Prometheus self-scrape failed. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/telemetry-down.md
+      - alert: PredictorCollectorDown
+        expr: up{job="otel-collector"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: OpenTelemetry Collector is down
+          description: "Collector scrape failed. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/telemetry-down.md
+      - alert: PredictorLokiDown
+        expr: up{job="loki"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Loki is down
+          description: "Loki scrape failed. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/telemetry-down.md
+      - alert: PredictorTempoDown
+        expr: up{job="tempo"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Tempo is down
+          description: "Tempo scrape failed. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/telemetry-down.md
+
+  - name: predictor.disk
+    rules:
+      - alert: PredictorDiskWarning50
+        expr: instance:node_disk_root_used_ratio >= 0.50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Root disk >= 50%
+          description: "Root used ratio {{ $value }}. env={{ $labels.environment }} threshold=0.50"
+          runbook_url: docs/runbooks/disk.md
+      - alert: PredictorDiskWarning60
+        expr: instance:node_disk_root_used_ratio >= 0.60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Root disk >= 60%
+          description: "Root used ratio {{ $value }}. env={{ $labels.environment }} threshold=0.60"
+          runbook_url: docs/runbooks/disk.md
+      - alert: PredictorDiskWarning70
+        expr: instance:node_disk_root_used_ratio >= 0.70
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Root disk >= 70%
+          description: "Root used ratio {{ $value }}. env={{ $labels.environment }} threshold=0.70"
+          runbook_url: docs/runbooks/disk.md
+      - alert: PredictorDiskCritical80
+        expr: instance:node_disk_root_used_ratio >= 0.80
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Root disk >= 80%
+          description: "Root used ratio {{ $value }}. env={{ $labels.environment }} threshold=0.80"
+          runbook_url: docs/runbooks/disk.md
+      - alert: PredictorDiskCritical90
+        expr: instance:node_disk_root_used_ratio >= 0.90
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Root disk >= 90%
+          description: "Root used ratio {{ $value }}. env={{ $labels.environment }} threshold=0.90"
+          runbook_url: docs/runbooks/disk.md
+      - alert: PredictorNodeExporterDown
+        expr: up{job="node"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: node_exporter is down
+          description: "Disk alerts cannot fire without node_exporter. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/node-exporter.md
+
+  - name: predictor.backup
+    rules:
+      - alert: PredictorBackupFailed
+        expr: predictor_backup_last_success == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Last predictor_prod backup failed
+          description: "Backup success gauge is 0. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/backup.md
+      - alert: PredictorBackupTooOld
+        expr: (time() - predictor_backup_last_success_timestamp) > 86400
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: predictor_prod backup is older than 24h
+          description: "Last successful dump age {{ $value }}s. env={{ $labels.environment }} threshold=86400"
+          runbook_url: docs/runbooks/backup.md
+      - alert: PredictorBackupOffsiteMissing
+        expr: predictor_backup_offsite_configured == 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Offsite backup is not configured
+          description: "Dump stays on the production host disk. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          runbook_url: docs/runbooks/backup.md

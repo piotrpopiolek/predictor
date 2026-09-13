@@ -23,6 +23,7 @@ services:
       start_period: 10s
 
   worker:
+    image: predictor:${PREDICTOR_IMAGE_TAG:-v0.1.0}
     build:
       context: .
       dockerfile: Dockerfile.prod
@@ -54,6 +55,7 @@ services:
     command: ["python", "-m", "predictor.worker"]
 
   status:
+    image: predictor:${PREDICTOR_IMAGE_TAG:-v0.1.0}
     build:
       context: .
       dockerfile: Dockerfile.prod
@@ -87,5 +89,24 @@ services:
         "8000",
       ]
 
+  backup:
+    image: predictor-postgres:17
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?}
+      BACKUP_OFFSITE_CONFIGURED: ${BACKUP_OFFSITE_CONFIGURED:-false}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+    volumes:
+      - predictor_pgdumps:/backups
+      - ./scripts/backup:/scripts:ro
+      - ${BACKUP_OFFSITE_DIR:-/tmp/predictor-offsite-unset}:/offsite
+    entrypoint: ["/bin/bash", "/scripts/backup-loop.sh"]
+
 volumes:
   predictor_pgdata:
+  predictor_pgdumps:

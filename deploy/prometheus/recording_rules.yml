@@ -1,0 +1,10 @@
+groups:
+  - name: host_disk
+    rules:
+      - record: instance:node_disk_root_used_ratio
+        expr: |
+          1 - (
+            node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint="/"}
+            /
+            node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint="/"}
+          )

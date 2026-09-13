@@ -138,6 +138,20 @@ def test_src_has_no_etl_lease() -> None:
     assert offenders == []
 
 
+def test_observability_compose_has_no_vendor_api_host() -> None:
+    for relative in (
+        "docker-compose.yml",
+        "docker-compose.prod.yml",
+        "docker-compose.observability.yml",
+        "deploy/otel/otel-collector.yml",
+        "deploy/prometheus/prometheus.yml",
+        "deploy/prometheus/alerts.yml",
+    ):
+        text = Path(relative).read_text(encoding="utf-8").lower()
+        assert "api-sports.io" not in text
+        assert "api-football.com" not in text
+
+
 def test_metrics_token_and_labels() -> None:
     assert metrics_token_ok(None, "secret") is False
     assert metrics_token_ok("Bearer secret", "secret") is True

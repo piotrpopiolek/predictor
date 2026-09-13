@@ -1,0 +1,44 @@
+{
+  "uid": "predictor-backfill",
+  "title": "Backfill and data quality",
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["predictor", "backfill"],
+  "time": {"from": "now-24h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "ETL tasks by status",
+      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "predictor_etl_tasks", "legendFormat": "{{status}}", "refId": "A"}
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Oldest pending age",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "predictor_oldest_pending_age_seconds", "refId": "A"}]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Contract drift",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "increase(predictor_contract_drift_total[15m])",
+          "legendFormat": "{{endpoint}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

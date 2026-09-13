@@ -3,16 +3,23 @@
 #   up:    docker compose -f docker-compose.yml up -d
 #   down:  docker compose -f docker-compose.yml down
 #   logs:  docker compose -f docker-compose.yml logs -f worker status
-#   postgres host port: 127.0.0.1:55432 (avoids Windows 5432 exclusions)
+#   postgres host port: 127.0.0.1:15432 (avoids Windows Hyper-V excluded ranges)
+#   obs:   docker compose -f docker-compose.yml -f docker-compose.observability.yml --profile observability up -d
 
+PREDICTOR_IMAGE_TAG ?= v0.1.0
+PROMTOOL_IMAGE := prom/prometheus:v3.4.1
 COMPOSE := docker compose -f docker-compose.yml
-COMPOSE_PROD := docker compose -f docker-compose.prod.yml
+COMPOSE_OBS := docker compose -f docker-compose.yml -f docker-compose.observability.yml
+COMPOSE_PROD := docker compose -f docker-compose.prod.yml -f docker-compose.observability.yml
 WORKER := $(COMPOSE) run --rm --no-deps worker
 
-.PHONY: up down logs migrate pytest test-ci up-prod down-prod build-prod
+.PHONY: up down logs migrate pytest test-ci up-obs up-prod down-prod build-prod promtool backup-restore-test
 
 up:
 	$(COMPOSE) up -d --build
+
+up-obs:
+	$(COMPOSE_OBS) --profile observability up -d --build
 
 down:
 	$(COMPOSE) down
@@ -27,6 +34,14 @@ migrate:
 pytest: migrate
 	$(WORKER) python -m pytest
 
+promtool:
+	docker run --rm -w /work --volume "$(CURDIR)/deploy/prometheus:/work:ro" --entrypoint /bin/promtool $(PROMTOOL_IMAGE) check rules /work/recording_rules.yml /work/alerts.yml
+	docker run --rm -w /work --volume "$(CURDIR)/deploy/prometheus:/work:ro" --entrypoint /bin/promtool $(PROMTOOL_IMAGE) test rules /work/tests/alerts.test.yml
+
+backup-restore-test:
+	$(COMPOSE) up -d postgres --wait
+	$(COMPOSE) exec -T postgres bash -s < scripts/backup/test-restore.sh
+
 test-ci:
 	$(COMPOSE) build
 	$(COMPOSE) up -d postgres --wait
@@ -35,10 +50,15 @@ test-ci:
 	$(WORKER) python -m mypy
 	$(WORKER) alembic upgrade head
 	$(WORKER) python -m pytest
-	docker build -f Dockerfile.prod -t predictor:test-prod .
+	$(MAKE) promtool
+	$(MAKE) backup-restore-test
+	docker build -f Dockerfile.prod -t predictor:$(PREDICTOR_IMAGE_TAG) -t predictor:test-prod .
 
 up-prod:
-	$(COMPOSE_PROD) up -d --build
+	$(COMPOSE_PROD) --profile observability up -d --build
 
 down-prod:
-	$(COMPOSE_PROD) down
+	$(COMPOSE_PROD) --profile observability down
+
+build-prod:
+	docker build -f Dockerfile.prod -t predictor:$(PREDICTOR_IMAGE_TAG) .

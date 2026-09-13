@@ -1,0 +1,75 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+connectors:
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+    dimensions:
+      - name: service.name
+      - name: http.method
+      - name: http.status_code
+    namespace: traces.span.metrics
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  attributes:
+    actions:
+      - key: authorization
+        action: delete
+      - key: api_key
+        action: delete
+      - key: api_sports_key
+        action: delete
+      - key: x-apisports-key
+        action: delete
+      - key: password
+        action: delete
+      - key: postgres_password
+        action: delete
+      - key: telegram_bot_token
+        action: delete
+      - key: dsn
+        action: delete
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: 0.0.0.0:8889
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+
+service:
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes, batch]
+      exporters: [otlp/tempo, spanmetrics]
+    metrics:
+      receivers: [otlp, spanmetrics]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes, batch]
+      exporters: [otlphttp/loki]

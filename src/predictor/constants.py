@@ -52,6 +52,9 @@ API_SPORTS_KEY_HEADER = "x-apisports-key"
 # FR-014: stored with fixtures; W6 marks irregular enrichment coverage_empty.
 IRREGULAR_FIXTURE_STATUSES = frozenset({"PST", "CANC", "ABD", "AWD", "WO"})
 FINISHED_FIXTURE_STATUSES = frozenset({"FT", "AET", "PEN"})
+IN_PLAY_FIXTURE_STATUSES = frozenset(
+    {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"}
+)
 ENRICHABLE_FIXTURE_STATUSES = FINISHED_FIXTURE_STATUSES | IRREGULAR_FIXTURE_STATUSES
 HALF_STATS_FROM_SEASON = 2024
 CONTROL_REFRESH_HOURS = 24

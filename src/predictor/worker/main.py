@@ -32,6 +32,7 @@ from predictor.services.queue import (
     requeue_orphans,
 )
 from predictor.services.scheduler import Scheduler
+from predictor.telemetry import configure_telemetry, instrument_engine
 
 LockedLoop = Callable[[Settings, WriterLock, asyncio.Event], Awaitable[None]]
 
@@ -61,6 +62,7 @@ async def run_locked_loop(
     owns_engine = engine is None
     owns_client = client is None
     engine = engine or make_async_engine(settings)
+    instrument_engine(engine)
     session_factory = make_session_factory(engine)
     client = client or FootballClient(settings, locked=True)
     run_id: int | None = None
@@ -124,6 +126,7 @@ async def run_worker(
 ) -> None:
     settings = settings or load_settings()
     configure_logging()
+    configure_telemetry(settings, service="predictor-worker")
     log_startup(settings, service="worker")
     stop_event = stop if stop is not None else asyncio.Event()
     _install_stop_signals(stop_event)

@@ -1,0 +1,53 @@
+{
+  "uid": "predictor-api-live",
+  "title": "API, quota and live",
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["predictor", "live"],
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Quota remaining vs plan",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "predictor_quota_remaining", "legendFormat": "remaining", "refId": "A"},
+        {"expr": "predictor_quota_plan", "legendFormat": "plan", "refId": "B"}
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "In-play fixtures",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "predictor_in_play_fixtures", "refId": "A"}]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Live snapshot age seconds",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "time() - predictor_live_last_snapshot_unixtime", "refId": "A"}]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "HTTP span latency",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(traces_span_metrics_duration_milliseconds_bucket[5m])) by (le, service_name))",
+          "legendFormat": "{{service_name}} p95",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from predictor.logutil import log_json
+from predictor.telemetry import record_contract_drift
 
 
 def log_contract_drift(endpoint: str, extras: dict[str, Any] | None) -> None:
@@ -20,6 +21,7 @@ def log_contract_drift(endpoint: str, extras: dict[str, Any] | None) -> None:
         endpoint=endpoint,
         fields=sorted(extras.keys()),
     )
+    record_contract_drift(endpoint)
 
 
 def warn_model_extra(endpoint: str, model: BaseModel) -> None:

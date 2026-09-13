@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from alembic.config import Config
@@ -10,8 +11,11 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from predictor.constants import IN_PLAY_FIXTURE_STATUSES, OPEN_ETL_STATUSES
 from predictor.logutil import log_json
 from predictor.models.etl import EtlRun, EtlTask
+from predictor.models.fixtures import Fixture
+from predictor.models.odds import FixtureOddsLive
 from predictor.schemas.settings import Settings
 from predictor.services.lock import HolderInfo, fetch_holder_sqlalchemy
 
@@ -123,6 +127,37 @@ async def task_counts(engine: AsyncEngine) -> dict[str, int]:
             select(EtlTask.status, func.count()).group_by(EtlTask.status)
         )
         return {str(status): int(n) for status, n in rows.all()}
+
+
+async def scrape_gauges(engine: AsyncEngine) -> dict[str, float]:
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        in_play = await session.scalar(
+            select(func.count())
+            .select_from(Fixture)
+            .where(Fixture.status_short.in_(tuple(IN_PLAY_FIXTURE_STATUSES)))
+        )
+        last_live = await session.scalar(select(func.max(FixtureOddsLive.captured_at)))
+        oldest = await session.scalar(
+            select(func.min(EtlTask.created_at)).where(
+                EtlTask.status.in_(tuple(OPEN_ETL_STATUSES)),
+                EtlTask.cursor_kind.is_(None),
+            )
+        )
+    live_ts = 0.0
+    if last_live is not None:
+        live_ts = float(last_live.timestamp())
+    age = 0.0
+    if oldest is not None:
+        now = datetime.now(UTC)
+        created = oldest
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        age = max(0.0, (now - created).total_seconds())
+    return {
+        "in_play_fixtures": float(in_play or 0),
+        "live_last_snapshot_unixtime": live_ts,
+        "oldest_pending_age_seconds": age,
+    }
 
 
 def _holder_payload(holder: HolderInfo | None) -> dict[str, Any]:

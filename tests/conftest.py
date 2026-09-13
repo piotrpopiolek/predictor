@@ -36,6 +36,7 @@ def event_loop_policy() -> asyncio.AbstractEventLoopPolicy:
 def valid_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for name in SETTING_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     for name, value in VALID_ENV.items():
         monkeypatch.setenv(name, value)
     yield
