@@ -52,3 +52,4 @@ class PrematchOddsItem(ExtraAllow):
 class OddsMappingItem(ExtraAllow):
     league: OddsLeagueStub | None = None
     fixture: OddsFixtureStub
+    update: datetime | None = None

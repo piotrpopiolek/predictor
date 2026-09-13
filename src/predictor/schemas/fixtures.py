@@ -46,6 +46,7 @@ class FixtureLeague(ExtraAllow):
     flag: str | None = None
     season: int | None = None
     round: str | None = None
+    standings: bool | None = None
 
 
 class FixtureTeam(ExtraAllow):
