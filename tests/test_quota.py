@@ -6,7 +6,11 @@ from datetime import UTC, datetime
 import pytest
 
 from predictor.client.quota import QuotaSnapshot
-from predictor.services.quota import quota_allows, seconds_until_utc_midnight
+from predictor.services.quota import (
+    live_poll_interval_seconds,
+    quota_allows,
+    seconds_until_utc_midnight,
+)
 
 
 def test_live_priorities_may_use_buffer() -> None:
@@ -44,3 +48,16 @@ def test_seconds_until_utc_midnight() -> None:
 def test_seconds_until_utc_midnight_rejects_naive() -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
         seconds_until_utc_midnight(datetime(2026, 9, 12, 23, 0, 0))
+
+
+def test_live_interval_stays_at_target_when_quota_allows() -> None:
+    now = datetime(2026, 9, 13, 23, 0, tzinfo=UTC)
+    snap = QuotaSnapshot(current=100, limit_day=7500, remaining=5000, source="api")
+    assert live_poll_interval_seconds(snap, 60, now) == 60.0
+
+
+def test_live_interval_stretches_when_quota_cannot_hold_target() -> None:
+    now = datetime(2026, 9, 13, 23, 0, tzinfo=UTC)
+    snap = QuotaSnapshot(current=7496, limit_day=7500, remaining=4, source="api")
+    interval = live_poll_interval_seconds(snap, 60, now)
+    assert interval == 1800.0
