@@ -233,6 +233,14 @@ async def _upsert_lineups(
         player_rows.extend(
             _lineup_player_rows(fixture_id, team_id, lineup.substitutes, starter=False)
         )
+    unique_lineups: dict[tuple[int, int], dict[str, Any]] = {}
+    for row in lineup_rows:
+        unique_lineups[(row["fixture_id"], row["team_id"])] = row
+    lineup_rows = list(unique_lineups.values())
+    unique_players: dict[tuple[int, int, int], dict[str, Any]] = {}
+    for row in player_rows:
+        unique_players[(row["fixture_id"], row["team_id"], row["player_id"])] = row
+    player_rows = list(unique_players.values())
     if lineup_rows:
         for chunk in _chunks(lineup_rows):
             stmt = insert(FixtureLineup).values(list(chunk))
@@ -311,6 +319,12 @@ async def upsert_team_statistics(
             )
         rows.extend(_stat_rows(fixture_id, team_id, item.statistics_1h, "1H"))
         rows.extend(_stat_rows(fixture_id, team_id, item.statistics_2h, "2H"))
+    unique_stats: dict[tuple[int, int, str, str], dict[str, Any]] = {}
+    for row in rows:
+        unique_stats[
+            (row["fixture_id"], row["team_id"], row["stat_type"], row["period"])
+        ] = row
+    rows = list(unique_stats.values())
     if not rows:
         return 0
     for chunk in _chunks(rows):
@@ -373,6 +387,10 @@ async def _upsert_player_stats(
                     block,
                 )
             )
+    unique: dict[tuple[int, int, int], dict[str, Any]] = {}
+    for row in rows:
+        unique[(row["fixture_id"], row["team_id"], row["player_id"])] = row
+    rows = list(unique.values())
     if not rows:
         return 0
     for chunk in _chunks(rows):

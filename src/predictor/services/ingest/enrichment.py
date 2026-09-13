@@ -210,12 +210,13 @@ class EnrichmentIngest:
                         paging_total=total,
                         params=params,
                     )
-        except Exception:
+        except Exception as exc:
             log_json(
                 logging.ERROR,
                 service="worker",
                 event="enrichment_persist_failed",
                 endpoint="/fixtures",
+                error=type(exc).__name__,
             )
             await self._fail(task_id, "retryable_error", "persist_failed")
 

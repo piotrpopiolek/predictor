@@ -259,6 +259,9 @@ def _router(
             payload = _id_payload()
             if state.get("event_twice"):
                 payload["events"] = [_event_payload(), _event_payload()]
+            if state.get("duplicate_player_stats"):
+                group = payload["players"][0]["players"]
+                payload["players"][0]["players"] = [*group, *group]
             return httpx.Response(200, json=_envelope([payload]))
         if path == "/fixtures/statistics" and params.get("half") == "true":
             return httpx.Response(200, json=_envelope([_half_payload()]))
@@ -697,6 +700,38 @@ async def test_all_children_coverage_false_still_gets_id() -> None:
         assert half_task is None
         assert any(p.startswith("/fixtures?id=") for p in paths)
         assert not any("half=true" in p for p in paths)
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_player_stats_do_not_fail_persist() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    extra: dict[str, Any] = {"duplicate_player_stats": True}
+    client = _client(settings, httpx.MockTransport(_router([], extra=extra)))
+    try:
+        await _reset_w6(factory)
+        await _seed_fixture(factory, FT_ID, status="FT")
+        ingest = EnrichmentIngest(client, factory, now_fn=lambda: NOW)
+        await ingest.refresh_pending()
+        async with factory() as session:
+            n = await session.scalar(
+                select(func.count())
+                .select_from(FixturePlayerStats)
+                .where(FixturePlayerStats.fixture_id == FT_ID)
+            )
+            task = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.endpoint == "/fixtures")
+                .where(EtlTask.fixture_id == FT_ID)
+            )
+        assert n == 1
+        assert task is not None
+        assert task.status == "complete"
+        assert task.params.get("counts", {}).get("player_stats") == 1
     finally:
         await client.aclose()
         await engine.dispose()
