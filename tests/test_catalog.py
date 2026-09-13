@@ -55,8 +55,7 @@ def test_next_goal_matches_live_name_not_scorer() -> None:
     assert is_next_goal_market("goal next") is True
     assert is_next_goal_market("Which team will score the 2nd goal?") is True
     assert (
-        is_next_goal_market("Which team will score the 1st goal in extra time?")
-        is True
+        is_next_goal_market("Which team will score the 1st goal in extra time?") is True
     )
     assert is_next_goal_market("Next Goal Scorer") is False
     assert is_next_goal_market("Goal Scorer") is False

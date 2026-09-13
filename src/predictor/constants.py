@@ -34,6 +34,9 @@ ETL_STATUSES = frozenset(
 
 API_SPORTS_KEY_HEADER = "x-apisports-key"
 
+# FR-014: stored with fixtures, children stay pending until W6.
+IRREGULAR_FIXTURE_STATUSES = frozenset({"PST", "CANC", "ABD", "AWD", "WO"})
+
 # W3 catalog. Order is FK-safe: countries before leagues. No /fixtures.
 DICTIONARY_ENDPOINTS: tuple[str, ...] = (
     "/timezone",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import socket
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import func, select, update
@@ -176,3 +176,102 @@ async def complete_task(
         task.params = params
     if status in TERMINAL_STATUSES:
         task.completed_at = now
+
+
+async def get_or_create_day_task(
+    session: AsyncSession, endpoint: str, day: date
+) -> EtlTask:
+    _require_transaction(session, "get or create day task")
+    task = await session.scalar(
+        select(EtlTask)
+        .where(EtlTask.endpoint == endpoint)
+        .where(EtlTask.day_utc == day)
+        .where(EtlTask.fixture_id.is_(None))
+        .where(EtlTask.cursor_kind.is_(None))
+        .order_by(EtlTask.id)
+        .limit(1)
+    )
+    if task is None:
+        task = EtlTask(
+            endpoint=endpoint,
+            day_utc=day,
+            params={"date": day.isoformat()},
+            status="pending",
+        )
+        session.add(task)
+        await session.flush()
+    return task
+
+
+async def get_cursor_task(session: AsyncSession, kind: str) -> EtlTask:
+    _require_transaction(session, "get cursor")
+    task = await session.scalar(select(EtlTask).where(EtlTask.cursor_kind == kind))
+    if task is None:
+        await ensure_cursors(session)
+        await session.flush()
+        task = await session.scalar(select(EtlTask).where(EtlTask.cursor_kind == kind))
+    if task is None:
+        raise RuntimeError(f"missing cursor {kind}")
+    return task
+
+
+async def ensure_enrichment_task(session: AsyncSession, fixture_id: int) -> None:
+    _require_transaction(session, "ensure enrichment")
+    existing = await session.scalar(
+        select(EtlTask.id)
+        .where(EtlTask.endpoint == "/fixtures")
+        .where(EtlTask.fixture_id == fixture_id)
+        .where(EtlTask.cursor_kind.is_(None))
+    )
+    if existing is None:
+        session.add(
+            EtlTask(
+                endpoint="/fixtures",
+                fixture_id=fixture_id,
+                params={"id": fixture_id},
+                status="pending",
+            )
+        )
+
+
+async def ensure_rounds_task(
+    session: AsyncSession, league_id: int, season: int
+) -> None:
+    _require_transaction(session, "ensure rounds")
+    params = {"league": league_id, "season": season}
+    existing = await session.scalar(
+        select(EtlTask.id)
+        .where(EtlTask.endpoint == "/fixtures/rounds")
+        .where(EtlTask.params.contains(params))
+        .where(EtlTask.cursor_kind.is_(None))
+    )
+    if existing is None:
+        session.add(
+            EtlTask(
+                endpoint="/fixtures/rounds",
+                params=params,
+                status="pending",
+            )
+        )
+
+
+async def claim_rounds_task(session: AsyncSession) -> EtlTask | None:
+    _require_transaction(session, "claim rounds")
+    stmt = (
+        select(EtlTask)
+        .where(EtlTask.endpoint == "/fixtures/rounds")
+        .where(EtlTask.status.in_(("pending", "retryable_error")))
+        .where(EtlTask.cursor_kind.is_(None))
+        .order_by(EtlTask.id)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    task = await session.scalar(stmt)
+    if task is None:
+        return None
+    now = datetime.now(UTC)
+    task.status = "in_progress"
+    task.started_at = now
+    task.updated_at = now
+    task.attempt_count = task.attempt_count + 1
+    return task

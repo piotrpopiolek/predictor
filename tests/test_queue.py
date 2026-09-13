@@ -105,6 +105,7 @@ async def test_requeue_orphans_and_claim_skips_cursors() -> None:
                 assert orphan.status == "pending"
                 assert orphan.last_error == "orphaned_in_progress"
                 claimed_endpoints: list[str] = []
+                parked: list[EtlTask] = []
                 while True:
                     claimed = await claim_next(session)
                     if claimed is None:
@@ -114,8 +115,10 @@ async def test_requeue_orphans_and_claim_skips_cursors() -> None:
                     if claimed.endpoint.startswith("/w2/"):
                         await complete_task(session, claimed, "complete")
                     else:
-                        claimed.status = "pending"
-                        claimed.started_at = None
+                        parked.append(claimed)
+                for task in parked:
+                    task.status = "pending"
+                    task.started_at = None
                 assert "/w2/claim-me" in claimed_endpoints
                 assert "/w2/orphan" in claimed_endpoints
         async with factory() as session:
