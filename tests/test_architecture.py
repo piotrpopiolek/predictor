@@ -41,6 +41,9 @@ def test_enrichment_uses_id_not_ids_batch() -> None:
     for relative in (
         "src/predictor/services/ingest/enrichment.py",
         "src/predictor/services/ingest/persist_children.py",
+        "src/predictor/services/ingest/prematch.py",
+        "src/predictor/services/ingest/persist_odds.py",
+        "src/predictor/services/ingest/persist_predictions.py",
         "src/predictor/services/queue.py",
         "src/predictor/worker/main.py",
     ):
@@ -51,6 +54,23 @@ def test_enrichment_uses_id_not_ids_batch() -> None:
     worker = Path("src/predictor/worker/main.py").read_text(encoding="utf-8")
     assert "refresh_finalization" in worker
     assert "refresh_pending" in worker
+    assert "PrematchIngest" in worker
+
+
+def test_prematch_odds_use_odds_bets_not_live() -> None:
+    persist = Path("src/predictor/services/ingest/persist_odds.py").read_text(
+        encoding="utf-8"
+    )
+    ingest = Path("src/predictor/services/ingest/prematch.py").read_text(
+        encoding="utf-8"
+    )
+    assert "odds_bets" in persist or "OddsBet" in persist
+    assert "OddsLiveBet" not in persist
+    assert "FixtureOddsLive" not in persist
+    assert "odds_live_bets" not in persist
+    assert "OddsLiveBet" not in ingest
+    assert "FixtureOddsLive" not in ingest
+    assert '"/odds/live"' not in ingest
 
 
 def test_live_odds_persist_is_append_only() -> None:

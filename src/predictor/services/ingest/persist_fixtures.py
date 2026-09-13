@@ -60,7 +60,7 @@ async def _upsert_venues(session: AsyncSession, items: Sequence[FixtureVenue]) -
     return count
 
 
-async def _upsert_teams(session: AsyncSession, items: Sequence[FixtureTeam]) -> int:
+async def upsert_teams(session: AsyncSession, items: Sequence[FixtureTeam]) -> int:
     unique: dict[int, FixtureTeam] = {item.id: item for item in items}
     if not unique:
         return 0
@@ -214,7 +214,7 @@ async def upsert_fixtures(
     for item in ready:
         teams.append(item.teams.home)
         teams.append(item.teams.away)
-    await _upsert_teams(session, teams)
+    await upsert_teams(session, teams)
 
     unique: dict[int, dict[str, Any]] = {}
     for item in ready:
@@ -240,6 +240,14 @@ async def upsert_fixtures(
             if item.league.season is not None
         }
     )
+    discovered = [
+        {
+            "id": fixture_id,
+            "home": row["home_team_id"],
+            "away": row["away_team_id"],
+        }
+        for fixture_id, row in unique.items()
+    ]
     return {
         "count": len(unique),
         "skipped": skipped,
@@ -247,6 +255,7 @@ async def upsert_fixtures(
             {"league": league_id, "season": season} for league_id, season in pairs
         ],
         "fixture_ids": sorted(unique),
+        "discovered": discovered,
     }
 
 

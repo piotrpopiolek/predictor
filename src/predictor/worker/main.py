@@ -20,6 +20,7 @@ from predictor.services.ingest import (
     EnrichmentIngest,
     FixtureIngest,
     LiveIngest,
+    PrematchIngest,
 )
 from predictor.services.lock import LockBusyError, WriterLock, lock_busy_message
 from predictor.services.queue import (
@@ -77,6 +78,7 @@ async def run_locked_loop(
             target_seconds=settings.live_poll_target_seconds,
         )
         enrichment = EnrichmentIngest(client, session_factory)
+        prematch = PrematchIngest(client, session_factory)
         scheduler = Scheduler(
             settings,
             client,
@@ -89,6 +91,7 @@ async def run_locked_loop(
                 5: fixtures.refresh_forward,
                 6: enrichment.refresh_pending,
                 7: fixtures.refresh_backfill,
+                8: prematch.refresh_pending,
             },
         )
         await scheduler.run(stop)

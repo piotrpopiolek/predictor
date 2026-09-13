@@ -1,4 +1,4 @@
-"""ORM for live odds snapshots. History is append-only (captured_at in PK)."""
+"""ORM for pre-match odds, mapping snapshot, and append-only live snapshots."""
 
 from __future__ import annotations
 
@@ -18,6 +18,42 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from predictor.models.base import Base
+
+
+class FixtureOdds(Base):
+    __tablename__ = "fixture_odds"
+
+    fixture_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("fixtures.id", ondelete="CASCADE"), primary_key=True
+    )
+    bookmaker_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("bookmakers.id"), primary_key=True
+    )
+    bet_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("odds_bets.id"), primary_key=True
+    )
+    value_label: Mapped[str] = mapped_column(String(64), primary_key=True)
+    odd: Mapped[Decimal] = mapped_column(Numeric(10, 3), nullable=False)
+    total: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
+    handicap: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
+    api_update: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class OddsFixtureMapping(Base):
+    __tablename__ = "odds_fixture_mapping"
+
+    fixture_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("fixtures.id", ondelete="CASCADE"), primary_key=True
+    )
+    league_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("leagues.id"), nullable=True
+    )
+    season: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class FixtureOddsLive(Base):

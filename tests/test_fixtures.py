@@ -15,6 +15,8 @@ from predictor.constants import IRREGULAR_FIXTURE_STATUSES
 from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture, LeagueRound, Team, Venue
 from predictor.models.injuries import Injury
+from predictor.models.odds import FixtureOdds, OddsFixtureMapping
+from predictor.models.predictions import Prediction, PredictionH2H
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, load_settings
 from predictor.services.ingest.fixtures import FixtureIngest
@@ -199,13 +201,21 @@ async def _reset_w4_state(factory: async_sessionmaker[AsyncSession]) -> None:
                             "/fixtures",
                             "/fixtures/rounds",
                             "/fixtures/statistics",
+                            "/fixtures/headtohead",
                             "/injuries",
+                            "/predictions",
+                            "/odds",
+                            "/odds/mapping",
                         )
                     )
                 )
                 .where(EtlTask.cursor_kind.is_(None))
             )
             await session.execute(delete(Injury))
+            await session.execute(delete(PredictionH2H))
+            await session.execute(delete(Prediction))
+            await session.execute(delete(FixtureOdds))
+            await session.execute(delete(OddsFixtureMapping))
             await session.execute(delete(Fixture))
             await session.execute(delete(LeagueRound))
             await ensure_cursors(session)
@@ -253,6 +263,14 @@ async def test_forward_upserts_fixtures_pages_and_children() -> None:
                 .where(EtlTask.endpoint == "/fixtures")
                 .where(EtlTask.fixture_id == 1001)
             )
+            pred = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.endpoint == "/predictions")
+                .where(EtlTask.fixture_id == 1001)
+            )
+            h2h = await session.scalar(
+                select(EtlTask).where(EtlTask.endpoint == "/fixtures/headtohead")
+            )
             round_row = await session.get(LeagueRound, (39, 2026, "Regular Season - 4"))
             n_fixtures = await session.scalar(select(func.count()).select_from(Fixture))
 
@@ -268,6 +286,12 @@ async def test_forward_upserts_fixtures_pages_and_children() -> None:
         assert child is not None
         assert child.status == "pending"
         assert child.params.get("id") == 1001
+        assert pred is not None
+        assert pred.status == "pending"
+        assert pred.params.get("fixture") == 1001
+        assert h2h is not None
+        assert h2h.status == "pending"
+        assert h2h.params.get("h2h") == "33-34"
         assert round_row is not None
         assert n_fixtures == 3
         assert any("date=2026-09-13" in p and "page=2" in p for p in first_fixture_gets)

@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tenacity import RetryCallState
 from tenacity.wait import wait_base
@@ -13,7 +13,8 @@ from tenacity.wait import wait_base
 from predictor.client.football import FootballClient
 from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture
-from predictor.models.odds import FixtureOddsLive
+from predictor.models.odds import FixtureOdds, FixtureOddsLive, OddsFixtureMapping
+from predictor.models.predictions import Prediction, PredictionH2H
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, load_settings
 from predictor.services.ingest.live import LiveIngest
@@ -168,6 +169,23 @@ async def _reset_w5(factory: async_sessionmaker[AsyncSession]) -> None:
     async with factory() as session:
         async with session.begin():
             await session.execute(delete(FixtureOddsLive))
+            await session.execute(
+                delete(PredictionH2H).where(
+                    or_(
+                        PredictionH2H.fixture_id == 9001,
+                        PredictionH2H.h2h_fixture_id == 9001,
+                    )
+                )
+            )
+            await session.execute(
+                delete(Prediction).where(Prediction.fixture_id == 9001)
+            )
+            await session.execute(
+                delete(FixtureOdds).where(FixtureOdds.fixture_id == 9001)
+            )
+            await session.execute(
+                delete(OddsFixtureMapping).where(OddsFixtureMapping.fixture_id == 9001)
+            )
             await session.execute(
                 delete(EtlTask)
                 .where(EtlTask.endpoint.in_(("/odds/live", "/fixtures")))

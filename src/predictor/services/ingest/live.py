@@ -31,9 +31,8 @@ from predictor.services.ingest.persist_live import (
 )
 from predictor.services.queue import (
     complete_task,
-    ensure_enrichment_task,
-    ensure_injuries_task,
-    ensure_rounds_task,
+    enqueue_fixture_followups,
+    ensure_prematch_for_fixture_ids,
     get_or_create_endpoint_task,
     get_or_create_live_fixtures_task,
 )
@@ -87,15 +86,7 @@ class LiveIngest:
                         return
                     extra = await upsert_fixtures(session, parsed)
                     fixture_ids = [int(fid) for fid in extra.get("fixture_ids", [])]
-                    for fixture_id in fixture_ids:
-                        await ensure_enrichment_task(session, fixture_id)
-                    for pair in extra.get("league_seasons", []):
-                        await ensure_rounds_task(
-                            session, int(pair["league"]), int(pair["season"])
-                        )
-                        await ensure_injuries_task(
-                            session, int(pair["league"]), int(pair["season"])
-                        )
+                    await enqueue_fixture_followups(session, extra)
                     params = dict(task.params)
                     params.update(
                         {
@@ -169,8 +160,10 @@ class LiveIngest:
                         mapped_next_goal=mapped,
                         discovered_fixture_ids=set(self.last_live_fixture_ids),
                     )
-                    for fixture_id in extra.get("stored_fixture_ids", []):
-                        await ensure_enrichment_task(session, int(fixture_id))
+                    await ensure_prematch_for_fixture_ids(
+                        session,
+                        [int(fid) for fid in extra.get("stored_fixture_ids", [])],
+                    )
                     params = dict(task.params)
                     params.update(
                         {

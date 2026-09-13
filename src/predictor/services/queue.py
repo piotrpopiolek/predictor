@@ -108,6 +108,7 @@ async def get_or_create_endpoint_task(session: AsyncSession, endpoint: str) -> E
         select(EtlTask)
         .where(EtlTask.endpoint == endpoint)
         .where(EtlTask.cursor_kind.is_(None))
+        .where(EtlTask.fixture_id.is_(None))
         .order_by(EtlTask.id)
         .limit(1)
     )
@@ -424,6 +425,168 @@ async def claim_control_refresh_task(
         .where(EtlTask.status == "complete")
         .where(EtlTask.params.contains({"control_done": False}))
         .where(EtlTask.params["control_due"].as_string() <= due)
+        .order_by(EtlTask.id)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    task = await session.scalar(stmt)
+    if task is None:
+        return None
+    return _mark_claimed(task)
+
+
+async def enqueue_fixture_followups(
+    session: AsyncSession, extra: dict[str, Any]
+) -> None:
+    _require_transaction(session, "enqueue fixture followups")
+    discovered = extra.get("discovered")
+    if isinstance(discovered, list) and discovered:
+        for row in discovered:
+            if not isinstance(row, dict):
+                continue
+            try:
+                fixture_id = int(row["id"])
+                home_id = int(row["home"])
+                away_id = int(row["away"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            await ensure_enrichment_task(session, fixture_id)
+            await ensure_h2h_task(session, home_id, away_id)
+            await ensure_predictions_task(session, fixture_id)
+    else:
+        for raw_id in extra.get("fixture_ids", []):
+            await ensure_enrichment_task(session, int(raw_id))
+    for pair in extra.get("league_seasons", []):
+        await ensure_rounds_task(session, int(pair["league"]), int(pair["season"]))
+        await ensure_injuries_task(session, int(pair["league"]), int(pair["season"]))
+
+
+async def ensure_prematch_for_fixture_ids(
+    session: AsyncSession, fixture_ids: list[int]
+) -> None:
+    _require_transaction(session, "ensure prematch for fixtures")
+    ids = sorted({int(fid) for fid in fixture_ids})
+    if not ids:
+        return
+    rows = await session.execute(
+        select(Fixture.id, Fixture.home_team_id, Fixture.away_team_id).where(
+            Fixture.id.in_(ids)
+        )
+    )
+    for fixture_id, home_id, away_id in rows:
+        await ensure_enrichment_task(session, int(fixture_id))
+        await ensure_h2h_task(session, int(home_id), int(away_id))
+        await ensure_predictions_task(session, int(fixture_id))
+
+
+def h2h_param(home_id: int, away_id: int) -> str:
+    return f"{home_id}-{away_id}"
+
+
+async def ensure_h2h_task(session: AsyncSession, home_id: int, away_id: int) -> None:
+    _require_transaction(session, "ensure h2h")
+    params = {"h2h": h2h_param(home_id, away_id)}
+    existing = await session.scalar(
+        select(EtlTask.id)
+        .where(EtlTask.endpoint == "/fixtures/headtohead")
+        .where(EtlTask.params.contains(params))
+        .where(EtlTask.cursor_kind.is_(None))
+    )
+    if existing is None:
+        session.add(
+            EtlTask(
+                endpoint="/fixtures/headtohead",
+                params=params,
+                status="pending",
+            )
+        )
+
+
+async def ensure_predictions_task(session: AsyncSession, fixture_id: int) -> None:
+    _require_transaction(session, "ensure predictions")
+    existing = await session.scalar(
+        select(EtlTask.id)
+        .where(EtlTask.endpoint == "/predictions")
+        .where(EtlTask.fixture_id == fixture_id)
+        .where(EtlTask.cursor_kind.is_(None))
+    )
+    if existing is None:
+        session.add(
+            EtlTask(
+                endpoint="/predictions",
+                fixture_id=fixture_id,
+                params={"fixture": fixture_id},
+                status="pending",
+            )
+        )
+
+
+async def ensure_odds_task(session: AsyncSession, fixture_id: int) -> None:
+    _require_transaction(session, "ensure odds")
+    existing = await session.scalar(
+        select(EtlTask.id)
+        .where(EtlTask.endpoint == "/odds")
+        .where(EtlTask.fixture_id == fixture_id)
+        .where(EtlTask.cursor_kind.is_(None))
+    )
+    if existing is None:
+        session.add(
+            EtlTask(
+                endpoint="/odds",
+                fixture_id=fixture_id,
+                params={"fixture": fixture_id},
+                status="pending",
+            )
+        )
+
+
+async def _claim_endpoint(session: AsyncSession, endpoint: str) -> EtlTask | None:
+    stmt = (
+        select(EtlTask)
+        .where(EtlTask.endpoint == endpoint)
+        .where(EtlTask.status.in_(("pending", "retryable_error")))
+        .where(EtlTask.cursor_kind.is_(None))
+        .order_by(EtlTask.id)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    task = await session.scalar(stmt)
+    if task is None:
+        return None
+    return _mark_claimed(task)
+
+
+async def claim_h2h_task(session: AsyncSession) -> EtlTask | None:
+    _require_transaction(session, "claim h2h")
+    return await _claim_endpoint(session, "/fixtures/headtohead")
+
+
+async def claim_predictions_task(session: AsyncSession) -> EtlTask | None:
+    _require_transaction(session, "claim predictions")
+    stmt = (
+        select(EtlTask)
+        .where(EtlTask.endpoint == "/predictions")
+        .where(EtlTask.fixture_id.is_not(None))
+        .where(EtlTask.cursor_kind.is_(None))
+        .where(EtlTask.status.in_(("pending", "retryable_error")))
+        .order_by(EtlTask.id)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    task = await session.scalar(stmt)
+    if task is None:
+        return None
+    return _mark_claimed(task)
+
+
+async def claim_odds_task(session: AsyncSession) -> EtlTask | None:
+    _require_transaction(session, "claim odds")
+    stmt = (
+        select(EtlTask)
+        .where(EtlTask.endpoint == "/odds")
+        .where(EtlTask.fixture_id.is_not(None))
+        .where(EtlTask.cursor_kind.is_(None))
+        .where(EtlTask.status.in_(("pending", "retryable_error")))
         .order_by(EtlTask.id)
         .with_for_update(skip_locked=True)
         .limit(1)

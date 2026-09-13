@@ -26,7 +26,8 @@ from predictor.models.fixtures import (
     Venue,
 )
 from predictor.models.injuries import Injury
-from predictor.models.odds import FixtureOddsLive
+from predictor.models.odds import FixtureOdds, FixtureOddsLive, OddsFixtureMapping
+from predictor.models.predictions import Prediction, PredictionH2H
 
 __all__ = [
     "Base",
@@ -39,6 +40,7 @@ __all__ = [
     "FixtureEvent",
     "FixtureLineup",
     "FixtureLineupPlayer",
+    "FixtureOdds",
     "FixtureOddsLive",
     "FixturePlayerStats",
     "FixtureStatistic",
@@ -48,8 +50,11 @@ __all__ = [
     "LeagueRound",
     "LeagueSeason",
     "OddsBet",
+    "OddsFixtureMapping",
     "OddsLiveBet",
     "Player",
+    "Prediction",
+    "PredictionH2H",
     "Season",
     "Team",
     "Venue",

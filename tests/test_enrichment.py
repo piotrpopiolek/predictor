@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tenacity import RetryCallState
 from tenacity.wait import wait_base
@@ -22,6 +22,8 @@ from predictor.models.children import (
 from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture
 from predictor.models.injuries import Injury
+from predictor.models.odds import FixtureOdds, OddsFixtureMapping
+from predictor.models.predictions import Prediction, PredictionH2H
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.enrichment import FixtureDetail
 from predictor.schemas.settings import Settings, load_settings
@@ -295,6 +297,29 @@ async def _reset_w6(factory: async_sessionmaker[AsyncSession]) -> None:
                 .where(EtlTask.day_utc.is_(None))
             )
             await session.execute(delete(Injury))
+            await session.execute(
+                delete(PredictionH2H).where(
+                    or_(
+                        PredictionH2H.fixture_id.in_((FT_ID, PST_ID, NS_ID)),
+                        PredictionH2H.h2h_fixture_id.in_((FT_ID, PST_ID, NS_ID)),
+                    )
+                )
+            )
+            await session.execute(
+                delete(Prediction).where(
+                    Prediction.fixture_id.in_((FT_ID, PST_ID, NS_ID))
+                )
+            )
+            await session.execute(
+                delete(FixtureOdds).where(
+                    FixtureOdds.fixture_id.in_((FT_ID, PST_ID, NS_ID))
+                )
+            )
+            await session.execute(
+                delete(OddsFixtureMapping).where(
+                    OddsFixtureMapping.fixture_id.in_((FT_ID, PST_ID, NS_ID))
+                )
+            )
             await session.execute(delete(FixtureEvent))
             await session.execute(delete(FixtureLineupPlayer))
             await session.execute(delete(FixtureLineup))
