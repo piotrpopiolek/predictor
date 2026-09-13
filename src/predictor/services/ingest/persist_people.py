@@ -27,7 +27,6 @@ from predictor.schemas.global_entities import (
 from predictor.services.ingest.persist import _chunks, upsert_seasons
 from predictor.services.ingest.persist_children import upsert_player_stubs
 from predictor.services.ingest.persist_seasonal import (
-    as_int,
     as_str,
     parse_flexible_date,
     upsert_team_ids,
@@ -308,9 +307,13 @@ async def persist_coaches(session: AsyncSession, items: Sequence[CoachItem]) -> 
             },
         )
         await session.execute(stmt)
-        await session.execute(delete(CoachCareer).where(CoachCareer.coach_id == item.id))
+        await session.execute(
+            delete(CoachCareer).where(CoachCareer.coach_id == item.id)
+        )
         if career_rows:
-            await session.execute(insert(CoachCareer).values(list(career_rows.values())))
+            await session.execute(
+                insert(CoachCareer).values(list(career_rows.values()))
+            )
         stored += 1
     return stored
 

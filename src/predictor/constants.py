@@ -52,9 +52,7 @@ GLOBAL_PER_TICK = 3
 TEAM_STATS_SENTINEL_DATE = "1970-01-01"
 
 # Reconstructable lookups: never HTTP (T087 / T083 seasons).
-LOOKUP_WITHOUT_HTTP: frozenset[str] = frozenset(
-    {"/teams/seasons", "/players/seasons"}
-)
+LOOKUP_WITHOUT_HTTP: frozenset[str] = frozenset({"/teams/seasons", "/players/seasons"})
 
 TOP_PLAYER_ENDPOINTS: tuple[str, ...] = (
     "/players/topscorers",

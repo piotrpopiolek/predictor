@@ -82,9 +82,7 @@ async def upsert_team_ids(session: AsyncSession, teams: Sequence[IdName]) -> Non
         await upsert_teams(session, ready)
 
 
-async def upsert_venues_full(
-    session: AsyncSession, items: Sequence[VenueFull]
-) -> int:
+async def upsert_venues_full(session: AsyncSession, items: Sequence[VenueFull]) -> int:
     countries: list[CountryItem] = []
     unique: dict[int, VenueFull] = {}
     for item in items:

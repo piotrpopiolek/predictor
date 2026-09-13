@@ -24,9 +24,7 @@ from predictor.models.base import Base
 
 class Standing(Base):
     __tablename__ = "standings"
-    __table_args__ = (
-        UniqueConstraint("league_id", "season", "group_name", "team_id"),
-    )
+    __table_args__ = (UniqueConstraint("league_id", "season", "group_name", "team_id"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     league_id: Mapped[int] = mapped_column(
@@ -35,7 +33,9 @@ class Standing(Base):
     season: Mapped[int] = mapped_column(Integer, nullable=False)
     group_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
-    team_id: Mapped[int] = mapped_column(Integer, ForeignKey("teams.id"), nullable=False)
+    team_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("teams.id"), nullable=False
+    )
     points: Mapped[int | None] = mapped_column(Integer, nullable=True)
     goals_diff: Mapped[int | None] = mapped_column(Integer, nullable=True)
     form: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -72,7 +72,9 @@ class PlayerStatistic(Base):
     player_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("players.id"), nullable=False
     )
-    team_id: Mapped[int] = mapped_column(Integer, ForeignKey("teams.id"), nullable=False)
+    team_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("teams.id"), nullable=False
+    )
     league_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("leagues.id"), nullable=False
     )

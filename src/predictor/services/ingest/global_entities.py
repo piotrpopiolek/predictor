@@ -52,6 +52,7 @@ from predictor.services.ingest.persist_people import (
     persist_trophies,
 )
 from predictor.services.ingest.persist_seasonal import (
+    as_int,
     persist_standings,
     persist_team_statistics,
     persist_teams,
@@ -206,8 +207,8 @@ class GlobalIngest:
         if endpoint == "/standings":
             parsed = _parse_many(items, StandingItem, endpoint)
             extra = await persist_standings(session, parsed)
-            league = _int(params.get("league"))
-            season = _int(params.get("season"))
+            league = as_int(params.get("league"))
+            season = as_int(params.get("season"))
             if league is not None and season is not None:
                 await enqueue_global_for_match(
                     session,
@@ -233,9 +234,9 @@ class GlobalIngest:
                 session,
                 parsed_stats,
                 as_of=as_of,
-                fallback_team=_int(params.get("team")),
-                fallback_league=_int(params.get("league")),
-                fallback_season=_int(params.get("season")),
+                fallback_team=as_int(params.get("team")),
+                fallback_league=as_int(params.get("league")),
+                fallback_season=as_int(params.get("season")),
             )
             return {"count": count, "as_of_date": as_of.isoformat()}
         if endpoint in _PLAYER_ENDPOINTS:
@@ -257,7 +258,7 @@ class GlobalIngest:
                         await enqueue_player_catalog(session, player.id)
             return {"count": count}
         if endpoint == "/players/teams":
-            player_id = _int(params.get("player"))
+            player_id = as_int(params.get("player"))
             if player_id is None:
                 return {"count": 0}
             parsed_career = _parse_many(items, CareerTeamItem, endpoint)
@@ -278,8 +279,8 @@ class GlobalIngest:
             count = await persist_trophies(
                 session,
                 parsed_tr,
-                player_id=_int(params.get("player")),
-                coach_id=_int(params.get("coach")),
+                player_id=as_int(params.get("player")),
+                coach_id=as_int(params.get("coach")),
             )
             return {"count": count}
         if endpoint == "/sidelined":
@@ -287,8 +288,8 @@ class GlobalIngest:
             count = await persist_sidelined(
                 session,
                 parsed_sl,
-                player_id=_int(params.get("player")),
-                coach_id=_int(params.get("coach")),
+                player_id=as_int(params.get("player")),
+                coach_id=as_int(params.get("coach")),
             )
             return {"count": count}
         return {"count": 0}
@@ -299,23 +300,19 @@ class GlobalIngest:
                 task = await claim_global_task(session)
                 return None if task is None else int(task.id)
 
-    async def _load_task(
-        self, task_id: int
-    ) -> tuple[int, str, dict[str, Any]] | None:
+    async def _load_task(self, task_id: int) -> tuple[int, str, dict[str, Any]] | None:
         async with self._session_factory() as session:
             task = await session.get(EtlTask, task_id)
             if task is None:
                 return None
             return int(task.id), task.endpoint, dict(task.params)
 
-    async def _coverage_blocked(
-        self, endpoint: str, params: dict[str, Any]
-    ) -> bool:
+    async def _coverage_blocked(self, endpoint: str, params: dict[str, Any]) -> bool:
         flag_name = _COVERAGE_BY_ENDPOINT.get(endpoint)
         if flag_name is None:
             return False
-        league_id = _int(params.get("league"))
-        season = _int(params.get("season"))
+        league_id = as_int(params.get("league"))
+        season = as_int(params.get("season"))
         if league_id is None or season is None:
             return False
         async with self._session_factory() as session:
@@ -359,15 +356,6 @@ class GlobalIngest:
                 await complete_task(session, task, status, error=error)
 
 
-def _int(raw: object) -> int | None:
-    if raw is None or isinstance(raw, bool):
-        return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
-
-
 def _as_of_date(params: dict[str, Any]) -> date:
     raw_date = params.get("date")
     if isinstance(raw_date, str) and raw_date and raw_date != TEAM_STATS_SENTINEL_DATE:
@@ -378,19 +366,17 @@ def _as_of_date(params: dict[str, Any]) -> date:
     return sentinel_date()
 
 
-def _http_params(
-    endpoint: str, params: dict[str, Any]
-) -> dict[str, str | int] | None:
+def _http_params(endpoint: str, params: dict[str, Any]) -> dict[str, str | int] | None:
     if endpoint in {"/standings", "/players", *TOP_PLAYER_ENDPOINTS}:
-        league = _int(params.get("league"))
-        season = _int(params.get("season"))
+        league = as_int(params.get("league"))
+        season = as_int(params.get("season"))
         if league is None or season is None:
             return None
         return {"league": league, "season": season}
     if endpoint == "/teams/statistics":
-        team = _int(params.get("team"))
-        league = _int(params.get("league"))
-        season = _int(params.get("season"))
+        team = as_int(params.get("team"))
+        league = as_int(params.get("league"))
+        season = as_int(params.get("season"))
         if team is None or league is None or season is None:
             return None
         query: dict[str, str | int] = {
@@ -407,23 +393,23 @@ def _http_params(
             query["date"] = raw_date
         return query
     if endpoint in {"/teams", "/venues", "/coachs"}:
-        ident = _int(params.get("id"))
+        ident = as_int(params.get("id"))
         if ident is None:
             return None
         return {"id": ident}
     if endpoint in {"/players/profiles", "/players/teams", "/transfers"}:
-        player = _int(params.get("player"))
+        player = as_int(params.get("player"))
         if player is None:
             return None
         return {"player": player}
     if endpoint == "/players/squads":
-        team = _int(params.get("team"))
+        team = as_int(params.get("team"))
         if team is None:
             return None
         return {"team": team}
     if endpoint in {"/trophies", "/sidelined"}:
-        player = _int(params.get("player"))
-        coach = _int(params.get("coach"))
+        player = as_int(params.get("player"))
+        coach = as_int(params.get("coach"))
         if player is not None and coach is None:
             return {"player": player}
         if coach is not None and player is None:
@@ -432,9 +418,7 @@ def _http_params(
     return None
 
 
-def _parse_many[T: BaseModel](
-    raw: list[Any], model: type[T], endpoint: str
-) -> list[T]:
+def _parse_many[T: BaseModel](raw: list[Any], model: type[T], endpoint: str) -> list[T]:
     items: list[T] = []
     for row in raw:
         try:

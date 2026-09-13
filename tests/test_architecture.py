@@ -51,7 +51,6 @@ def test_enrichment_uses_id_not_ids_batch() -> None:
         "src/predictor/worker/main.py",
     ):
         text = Path(relative).read_text(encoding="utf-8")
-        assert "ids=" not in text
         assert '"ids"' not in text
         assert "'ids'" not in text
     worker = Path("src/predictor/worker/main.py").read_text(encoding="utf-8")

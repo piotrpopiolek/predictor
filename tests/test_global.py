@@ -376,9 +376,11 @@ def _router(
         if path in empty:
             return httpx.Response(200, json=_envelope([]))
         if path == "/standings":
-            body = standings if standings is not None else [
-                _standings_payload(_standing_row(33, 1), _standing_row(34, 2))
-            ]
+            body = (
+                standings
+                if standings is not None
+                else [_standings_payload(_standing_row(33, 1), _standing_row(34, 2))]
+            )
             return httpx.Response(200, json=_envelope(body))
         if path == "/teams":
             team_id = int(params.get("id") or "33")
@@ -448,9 +450,7 @@ async def _reset_w8(factory: async_sessionmaker[AsyncSession]) -> None:
                 )
             )
             await session.execute(
-                delete(Transfer).where(
-                    Transfer.player_id.in_((PLAYER_ID, PLAYER_B))
-                )
+                delete(Transfer).where(Transfer.player_id.in_((PLAYER_ID, PLAYER_B)))
             )
             await session.execute(
                 delete(CoachCareer).where(CoachCareer.coach_id == COACH_ID)
@@ -751,9 +751,7 @@ async def test_coachs_career_and_xor_catalog() -> None:
                 await ensure_param_task(session, "/transfers", {"player": PLAYER_ID})
                 await ensure_param_task(session, "/trophies", {"player": PLAYER_ID})
                 await ensure_param_task(session, "/sidelined", {"player": PLAYER_ID})
-                await ensure_param_task(
-                    session, "/players/squads", {"team": 33}
-                )
+                await ensure_param_task(session, "/players/squads", {"team": 33})
                 await ensure_param_task(
                     session, "/players/teams", {"player": PLAYER_ID}
                 )
@@ -909,6 +907,7 @@ async def test_coverage_false_and_empty_are_terminal() -> None:
     settings = load_settings()
     engine = make_async_engine(settings)
     factory = make_session_factory(engine)
+    client: FootballClient | None = None
     try:
         await _reset_w8(factory)
         await _seed(factory, cov_standings=False)
@@ -939,7 +938,8 @@ async def test_coverage_false_and_empty_are_terminal() -> None:
                 )
         paths = []
         client = _client(
-            settings, httpx.MockTransport(_router(paths, empty=frozenset({"/standings"})))
+            settings,
+            httpx.MockTransport(_router(paths, empty=frozenset({"/standings"}))),
         )
         ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=1)
         await ingest.refresh_pending()
@@ -951,7 +951,8 @@ async def test_coverage_false_and_empty_are_terminal() -> None:
         assert task.status == "coverage_empty"
         assert any(p.startswith("/standings") for p in paths)
     finally:
-        await client.aclose()
+        if client is not None:
+            await client.aclose()
         await engine.dispose()
 
 
@@ -966,9 +967,7 @@ async def test_fixture_followups_skip_season_lookups() -> None:
         async with factory() as session:
             endpoints = set(
                 await session.scalars(
-                    select(EtlTask.endpoint).where(
-                        EtlTask.endpoint.in_(W8_ENDPOINTS)
-                    )
+                    select(EtlTask.endpoint).where(EtlTask.endpoint.in_(W8_ENDPOINTS))
                 )
             )
         assert "/standings" in endpoints
