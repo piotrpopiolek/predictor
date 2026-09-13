@@ -30,6 +30,7 @@ from predictor.services.queue import (
     claim_rounds_task,
     complete_task,
     ensure_enrichment_task,
+    ensure_injuries_task,
     ensure_rounds_task,
     get_cursor_task,
     get_or_create_day_task,
@@ -157,6 +158,9 @@ class FixtureIngest:
                         await ensure_enrichment_task(session, int(fixture_id))
                     for pair in extra.get("league_seasons", []):
                         await ensure_rounds_task(
+                            session, int(pair["league"]), int(pair["season"])
+                        )
+                        await ensure_injuries_task(
                             session, int(pair["league"]), int(pair["season"])
                         )
                     params = dict(task.params)

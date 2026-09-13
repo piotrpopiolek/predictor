@@ -81,3 +81,26 @@ class OddsLiveBet(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class Player(Base):
+    __tablename__ = "players"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    firstname: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lastname: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    photo: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Coach(Base):
+    __tablename__ = "coaches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    firstname: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lastname: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    photo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    team_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("teams.id"), nullable=True
+    )

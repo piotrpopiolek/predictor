@@ -14,6 +14,7 @@ from predictor.client.football import FootballClient
 from predictor.constants import IRREGULAR_FIXTURE_STATUSES
 from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture, LeagueRound, Team, Venue
+from predictor.models.injuries import Injury
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, load_settings
 from predictor.services.ingest.fixtures import FixtureIngest
@@ -192,9 +193,19 @@ async def _reset_w4_state(factory: async_sessionmaker[AsyncSession]) -> None:
         async with session.begin():
             await session.execute(
                 delete(EtlTask)
-                .where(EtlTask.endpoint.in_(("/fixtures", "/fixtures/rounds")))
+                .where(
+                    EtlTask.endpoint.in_(
+                        (
+                            "/fixtures",
+                            "/fixtures/rounds",
+                            "/fixtures/statistics",
+                            "/injuries",
+                        )
+                    )
+                )
                 .where(EtlTask.cursor_kind.is_(None))
             )
+            await session.execute(delete(Injury))
             await session.execute(delete(Fixture))
             await session.execute(delete(LeagueRound))
             await ensure_cursors(session)

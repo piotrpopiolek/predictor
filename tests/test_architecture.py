@@ -37,6 +37,22 @@ def test_catalog_ingest_does_not_call_fixtures() -> None:
     assert "'/fixtures'" not in text
 
 
+def test_enrichment_uses_id_not_ids_batch() -> None:
+    for relative in (
+        "src/predictor/services/ingest/enrichment.py",
+        "src/predictor/services/ingest/persist_children.py",
+        "src/predictor/services/queue.py",
+        "src/predictor/worker/main.py",
+    ):
+        text = Path(relative).read_text(encoding="utf-8")
+        assert "ids=" not in text
+        assert '"ids"' not in text
+        assert "'ids'" not in text
+    worker = Path("src/predictor/worker/main.py").read_text(encoding="utf-8")
+    assert "refresh_finalization" in worker
+    assert "refresh_pending" in worker
+
+
 def test_live_odds_persist_is_append_only() -> None:
     text = Path("src/predictor/services/ingest/persist_live.py").read_text(
         encoding="utf-8"

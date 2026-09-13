@@ -1,4 +1,4 @@
-"""Worker process: lock first, then queue/cursors, then catalog, live, fixtures."""
+"""Worker process: lock first, then queue/cursors, then catalog, live, fixtures, enrichment."""
 
 from __future__ import annotations
 
@@ -15,7 +15,12 @@ from predictor.client.football import FootballClient
 from predictor.logutil import configure_logging, log_json, log_startup
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, SettingsError, load_settings
-from predictor.services.ingest import CatalogIngest, FixtureIngest, LiveIngest
+from predictor.services.ingest import (
+    CatalogIngest,
+    EnrichmentIngest,
+    FixtureIngest,
+    LiveIngest,
+)
 from predictor.services.lock import LockBusyError, WriterLock, lock_busy_message
 from predictor.services.queue import (
     ensure_cursors,
@@ -71,6 +76,7 @@ async def run_locked_loop(
             session_factory,
             target_seconds=settings.live_poll_target_seconds,
         )
+        enrichment = EnrichmentIngest(client, session_factory)
         scheduler = Scheduler(
             settings,
             client,
@@ -79,7 +85,9 @@ async def run_locked_loop(
                 1: catalog.refresh_priority_one,
                 2: live.refresh_live_fixtures,
                 3: live.refresh_next_goal_snapshots,
+                4: enrichment.refresh_finalization,
                 5: fixtures.refresh_forward,
+                6: enrichment.refresh_pending,
                 7: fixtures.refresh_backfill,
             },
         )

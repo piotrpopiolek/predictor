@@ -32,6 +32,7 @@ from predictor.services.ingest.persist_live import (
 from predictor.services.queue import (
     complete_task,
     ensure_enrichment_task,
+    ensure_injuries_task,
     ensure_rounds_task,
     get_or_create_endpoint_task,
     get_or_create_live_fixtures_task,
@@ -90,6 +91,9 @@ class LiveIngest:
                         await ensure_enrichment_task(session, fixture_id)
                     for pair in extra.get("league_seasons", []):
                         await ensure_rounds_task(
+                            session, int(pair["league"]), int(pair["season"])
+                        )
+                        await ensure_injuries_task(
                             session, int(pair["league"]), int(pair["season"])
                         )
                     params = dict(task.params)

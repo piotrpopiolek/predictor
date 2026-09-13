@@ -38,8 +38,13 @@ ETL_STATUSES = frozenset(
 
 API_SPORTS_KEY_HEADER = "x-apisports-key"
 
-# FR-014: stored with fixtures, children stay pending until W6.
+# FR-014: stored with fixtures; W6 marks irregular enrichment coverage_empty.
 IRREGULAR_FIXTURE_STATUSES = frozenset({"PST", "CANC", "ABD", "AWD", "WO"})
+FINISHED_FIXTURE_STATUSES = frozenset({"FT", "AET", "PEN"})
+ENRICHABLE_FIXTURE_STATUSES = FINISHED_FIXTURE_STATUSES | IRREGULAR_FIXTURE_STATUSES
+HALF_STATS_FROM_SEASON = 2024
+CONTROL_REFRESH_HOURS = 24
+ENRICHMENT_PER_TICK = 6
 
 # W3 catalog. Order is FK-safe: countries before leagues. No /fixtures.
 DICTIONARY_ENDPOINTS: tuple[str, ...] = (
