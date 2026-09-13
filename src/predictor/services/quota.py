@@ -1,4 +1,4 @@
-"""Quota budget: live priorities may use the 3% buffer; the rest may not."""
+"""Quota budget: live priorities may use the 5% buffer; the rest may not."""
 
 from __future__ import annotations
 

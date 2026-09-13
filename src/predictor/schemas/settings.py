@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     postgres_password: SecretStr
     postgres_db: str
     quota_daily_limit: int
-    quota_safety_buffer_percent: float = 3.0
+    quota_safety_buffer_percent: float = 5.0
     instance_id: str
     host_environment: HostEnvironment
     prometheus_metrics_token: SecretStr

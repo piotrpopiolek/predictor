@@ -15,7 +15,7 @@ VALID_ENV: dict[str, str] = {
     "POSTGRES_PASSWORD": "test-db-password",
     "POSTGRES_DB": "predictor_dev",
     "QUOTA_DAILY_LIMIT": "7500",
-    "QUOTA_SAFETY_BUFFER_PERCENT": "3",
+    "QUOTA_SAFETY_BUFFER_PERCENT": "5",
     "INSTANCE_ID": "test-1",
     "HOST_ENVIRONMENT": "local",
     "PROMETHEUS_METRICS_TOKEN": "test-metrics-token",
