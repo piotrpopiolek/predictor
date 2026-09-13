@@ -128,6 +128,22 @@ tests:
               description: "In-play fixtures exist but last snapshot is older than two live poll intervals. env=local value=200 threshold=two poll intervals"
               runbook_url: docs/runbooks/live-stale.md
 
+  - name: live stale respects stretched poll interval
+    interval: 1m
+    input_series:
+      - series: 'predictor_in_play_fixtures{service="status",environment="local"}'
+        values: "2 2 2 2 2"
+      - series: 'predictor_live_last_snapshot_unixtime{service="status",environment="local"}'
+        values: "1 1 1 1 1"
+      - series: 'predictor_live_snapshot_age_seconds{service="status",environment="local"}'
+        values: "200 200 200 200 200"
+      - series: 'predictor_live_poll_interval_seconds{service="status",environment="local"}'
+        values: "467 467 467 467 467"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PredictorLiveStale
+        exp_alerts: []
+
   - name: status down
     interval: 1m
     input_series:
