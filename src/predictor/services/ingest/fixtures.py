@@ -145,7 +145,7 @@ class FixtureIngest:
         except (RetryableHttpError, FootballHttpError) as exc:
             await self._fail(task_id, "retryable_error", type(exc).__name__)
             return False
-        parsed = _parse_fixtures(items)
+        parsed = parse_fixtures(items)
         try:
             async with self._session_factory() as session:
                 async with session.begin():
@@ -276,7 +276,7 @@ class FixtureIngest:
                 await complete_task(session, task, status, error=error)
 
 
-def _parse_fixtures(raw: list[Any]) -> list[FixtureItem]:
+def parse_fixtures(raw: list[Any]) -> list[FixtureItem]:
     items: list[FixtureItem] = []
     for row in raw:
         try:

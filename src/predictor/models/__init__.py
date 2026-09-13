@@ -9,6 +9,7 @@ from predictor.models.catalog import (
     Season,
 )
 from predictor.models.etl import EtlRun, EtlTask
+from predictor.models.odds import FixtureOddsLive
 from predictor.models.fixtures import (
     Fixture,
     FixtureStatusRow,
@@ -24,6 +25,7 @@ __all__ = [
     "EtlRun",
     "EtlTask",
     "Fixture",
+    "FixtureOddsLive",
     "FixtureStatusRow",
     "League",
     "LeagueRound",

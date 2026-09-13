@@ -18,6 +18,10 @@ HTTP_RETRY_ATTEMPTS = 5
 # the configured safety buffer. Forward/backfill/enrichment/global may not.
 LIVE_QUOTA_PRIORITIES = frozenset({1, 2, 3})
 
+# Forecast for FR-019: one /fixtures?live=all plus one /odds/live per tick
+# (extra pages are not reserved; quota_exhausted stops mid-page).
+LIVE_REQUESTS_PER_TICK = 2
+
 CURSOR_KINDS = ("forward", "backfill", "enrichment")
 
 ETL_STATUSES = frozenset(

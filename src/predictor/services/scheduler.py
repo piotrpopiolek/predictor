@@ -20,7 +20,7 @@ from predictor.client.quota import QuotaSnapshot
 from predictor.logutil import log_json
 from predictor.schemas.settings import Settings
 from predictor.services.queue import ensure_cursors
-from predictor.services.quota import quota_allows, seconds_until_utc_midnight
+from predictor.services.quota import live_poll_interval_seconds, quota_allows, seconds_until_utc_midnight
 
 Handler = Callable[[], Awaitable[None]]
 
@@ -68,10 +68,15 @@ class Scheduler:
         self._status_refresh_seconds = status_refresh_seconds
         self._now = now_fn or (lambda: datetime.now(UTC))
         self._quota: QuotaSnapshot | None = None
+        self._live_interval_seconds: float | None = None
 
     @property
     def quota(self) -> QuotaSnapshot | None:
         return self._quota
+
+    @property
+    def live_interval_seconds(self) -> float | None:
+        return self._live_interval_seconds
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -96,6 +101,24 @@ class Scheduler:
                 remaining=0,
             )
             return
+        target = float(self._settings.live_poll_target_seconds)
+        if quota.source == "api":
+            interval = live_poll_interval_seconds(
+                quota, self._settings.live_poll_target_seconds, self._now()
+            )
+        else:
+            interval = target
+        self._live_interval_seconds = interval
+        if interval > target:
+            log_json(
+                logging.WARNING,
+                service="worker",
+                event="live_freshness_missed",
+                interval_seconds=round(interval, 3),
+                target_seconds=self._settings.live_poll_target_seconds,
+                remaining=quota.remaining,
+            )
+        tick_start = self._now()
         for slot in PRIORITY_ORDER:
             if stop.is_set():
                 return
@@ -103,6 +126,10 @@ class Scheduler:
                 slot.priority, quota, self._settings.quota_safety_buffer_percent
             ):
                 continue
+            if slot.priority >= 4:
+                elapsed = (self._now() - tick_start).total_seconds()
+                if elapsed >= target:
+                    break
             handler = self._handlers.get(slot.priority, _noop)
             await handler()
 
@@ -147,4 +174,6 @@ class Scheduler:
         if quota is not None and quota.source == "api" and quota.remaining <= 0:
             until_reset = seconds_until_utc_midnight(self._now())
             return min(self._idle_cap_seconds, until_reset)
+        if self._live_interval_seconds is not None:
+            return self._live_interval_seconds
         return float(self._settings.live_poll_target_seconds)

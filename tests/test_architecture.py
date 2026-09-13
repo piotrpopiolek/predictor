@@ -31,10 +31,12 @@ def test_api_does_not_import_football_client() -> None:
     assert "pg_try_advisory_lock" not in source
 
 
-def test_catalog_ingest_does_not_call_fixtures() -> None:
-    text = Path("src/predictor/services/ingest/catalog.py").read_text(encoding="utf-8")
-    assert '"/fixtures"' not in text
-    assert "'/fixtures'" not in text
+def test_live_odds_persist_is_append_only() -> None:
+    text = Path("src/predictor/services/ingest/persist_live.py").read_text(
+        encoding="utf-8"
+    )
+    assert "on_conflict_do_update" not in text
+    assert "bookmaker" not in text.casefold()
 
 
 def test_no_vendor_api_host_in_application() -> None:

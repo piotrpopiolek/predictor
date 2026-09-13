@@ -203,6 +203,30 @@ async def get_or_create_day_task(
     return task
 
 
+async def get_or_create_live_fixtures_task(session: AsyncSession) -> EtlTask:
+    _require_transaction(session, "get or create live fixtures")
+    params = {"live": "all"}
+    task = await session.scalar(
+        select(EtlTask)
+        .where(EtlTask.endpoint == "/fixtures")
+        .where(EtlTask.cursor_kind.is_(None))
+        .where(EtlTask.fixture_id.is_(None))
+        .where(EtlTask.day_utc.is_(None))
+        .where(EtlTask.params.contains(params))
+        .order_by(EtlTask.id)
+        .limit(1)
+    )
+    if task is None:
+        task = EtlTask(
+            endpoint="/fixtures",
+            params=params,
+            status="pending",
+        )
+        session.add(task)
+        await session.flush()
+    return task
+
+
 async def get_cursor_task(session: AsyncSession, kind: str) -> EtlTask:
     _require_transaction(session, "get cursor")
     task = await session.scalar(select(EtlTask).where(EtlTask.cursor_kind == kind))
