@@ -111,6 +111,8 @@ tests:
         values: "2 2 2 2 2"
       - series: 'predictor_live_last_snapshot_unixtime{service="status",environment="local"}'
         values: "1 1 1 1 1"
+      - series: 'predictor_live_snapshot_age_seconds{service="status",environment="local"}'
+        values: "200 200 200 200 200"
     alert_rule_test:
       - eval_time: 4m
         alertname: PredictorLiveStale

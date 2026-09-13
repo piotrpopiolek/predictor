@@ -37,7 +37,10 @@ groups:
       - alert: PredictorLiveStale
         expr: |
           predictor_in_play_fixtures > 0
-          and (time() - predictor_live_last_snapshot_unixtime) > 120
+          and (
+            predictor_live_last_snapshot_unixtime == 0
+            or predictor_live_snapshot_age_seconds > 120
+          )
         for: 1m
         labels:
           severity: critical

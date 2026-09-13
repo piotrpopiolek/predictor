@@ -21,6 +21,7 @@ def render_metrics(
     task_counts: dict[str, int],
     in_play_fixtures: int = 0,
     live_last_snapshot_unixtime: float = 0,
+    live_snapshot_age_seconds: float = 0,
     oldest_pending_age_seconds: float = 0,
     quota_plan: int = 0,
     quota_remaining: int = -1,
@@ -45,6 +46,12 @@ def render_metrics(
             "predictor_live_last_snapshot_unixtime{"
             f"{labels}}} {live_last_snapshot_unixtime}"
         ),
+        (
+            "# HELP predictor_live_snapshot_age_seconds "
+            "Seconds since the newest live odds snapshot (future timestamps ignored)."
+        ),
+        "# TYPE predictor_live_snapshot_age_seconds gauge",
+        f"predictor_live_snapshot_age_seconds{{{labels}}} {live_snapshot_age_seconds}",
         "# HELP predictor_oldest_pending_age_seconds Age of the oldest open ETL task.",
         "# TYPE predictor_oldest_pending_age_seconds gauge",
         (

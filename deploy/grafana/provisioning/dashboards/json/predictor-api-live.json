@@ -3,7 +3,7 @@
   "title": "API, quota and live",
   "timezone": "utc",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "tags": ["predictor", "live"],
   "time": {"from": "now-6h", "to": "now"},
@@ -15,7 +15,11 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"expr": "predictor_quota_remaining", "legendFormat": "remaining", "refId": "A"},
+        {
+          "expr": "predictor_quota_remaining >= 0",
+          "legendFormat": "remaining",
+          "refId": "A"
+        },
         {"expr": "predictor_quota_plan", "legendFormat": "plan", "refId": "B"}
       ]
     },
@@ -25,7 +29,23 @@
       "title": "In-play fixtures",
       "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "predictor_in_play_fixtures", "refId": "A"}]
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "blue", "value": null}]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {"expr": "predictor_in_play_fixtures", "refId": "A", "instant": true}
+      ]
     },
     {
       "id": 3,
@@ -33,7 +53,31 @@
       "title": "Live snapshot age seconds",
       "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "time() - predictor_live_last_snapshot_unixtime", "refId": "A"}]
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 60},
+              {"color": "red", "value": 120}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "expr": "predictor_live_snapshot_age_seconds",
+          "refId": "A",
+          "instant": true
+        }
+      ]
     },
     {
       "id": 4,

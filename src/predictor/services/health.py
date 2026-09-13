@@ -129,6 +129,27 @@ async def task_counts(engine: AsyncEngine) -> dict[str, int]:
         return {str(status): int(n) for status, n in rows.all()}
 
 
+def live_poll_gauges(last_live: datetime | None, now: datetime) -> tuple[float, float]:
+    """Unix time and age of the newest live snapshot that is not in the future.
+
+    Pytest clocks and API ``update`` can sit ahead of wall clock. Taking
+    ``max(captured_at)`` then makes ``time() - unixtime`` negative and
+    suppresses PredictorLiveStale.
+    """
+    if last_live is None:
+        return 0.0, 0.0
+    if last_live.tzinfo is None:
+        captured = last_live.replace(tzinfo=UTC)
+    else:
+        captured = last_live
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+    captured = captured.astimezone(UTC)
+    now_utc = now_utc.astimezone(UTC)
+    if captured > now_utc:
+        return 0.0, 0.0
+    return float(captured.timestamp()), max(0.0, (now_utc - captured).total_seconds())
+
+
 async def scrape_gauges(engine: AsyncEngine) -> dict[str, float]:
     async with AsyncSession(engine, expire_on_commit=False) as session:
         in_play = await session.scalar(
@@ -136,27 +157,30 @@ async def scrape_gauges(engine: AsyncEngine) -> dict[str, float]:
             .select_from(Fixture)
             .where(Fixture.status_short.in_(tuple(IN_PLAY_FIXTURE_STATUSES)))
         )
-        last_live = await session.scalar(select(func.max(FixtureOddsLive.captured_at)))
+        last_live = await session.scalar(
+            select(func.max(FixtureOddsLive.captured_at)).where(
+                FixtureOddsLive.captured_at <= func.now()
+            )
+        )
         oldest = await session.scalar(
             select(func.min(EtlTask.created_at)).where(
                 EtlTask.status.in_(tuple(OPEN_ETL_STATUSES)),
                 EtlTask.cursor_kind.is_(None),
             )
         )
-    live_ts = 0.0
-    if last_live is not None:
-        live_ts = float(last_live.timestamp())
-    age = 0.0
+    now = datetime.now(UTC)
+    live_ts, live_age = live_poll_gauges(last_live, now)
+    pending_age = 0.0
     if oldest is not None:
-        now = datetime.now(UTC)
         created = oldest
         if created.tzinfo is None:
             created = created.replace(tzinfo=UTC)
-        age = max(0.0, (now - created).total_seconds())
+        pending_age = max(0.0, (now - created).total_seconds())
     return {
         "in_play_fixtures": float(in_play or 0),
         "live_last_snapshot_unixtime": live_ts,
-        "oldest_pending_age_seconds": age,
+        "live_snapshot_age_seconds": live_age,
+        "oldest_pending_age_seconds": pending_age,
     }
 
 

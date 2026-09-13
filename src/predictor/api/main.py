@@ -97,6 +97,7 @@ def create_app() -> FastAPI:
             task_counts=counts,
             in_play_fixtures=int(gauges["in_play_fixtures"]),
             live_last_snapshot_unixtime=gauges["live_last_snapshot_unixtime"],
+            live_snapshot_age_seconds=gauges["live_snapshot_age_seconds"],
             oldest_pending_age_seconds=gauges["oldest_pending_age_seconds"],
             quota_plan=settings.quota_daily_limit,
         )

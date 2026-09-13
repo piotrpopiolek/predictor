@@ -66,6 +66,15 @@ def test_three_provisioned_grafana_dashboards() -> None:
         uids.add(data["uid"])
         assert data["title"]
         assert data["panels"]
+        if data["uid"] == "predictor-api-live":
+            exprs = [
+                str(target.get("expr", ""))
+                for panel in data["panels"]
+                for target in panel.get("targets", [])
+            ]
+            joined = " ".join(exprs)
+            assert "predictor_live_snapshot_age_seconds" in joined
+            assert "time() - predictor_live_last_snapshot_unixtime" not in joined
     assert uids == {"predictor-infra", "predictor-api-live", "predictor-backfill"}
 
 
