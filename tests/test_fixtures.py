@@ -5,7 +5,8 @@ from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tenacity import RetryCallState
 from tenacity.wait import wait_base
 
@@ -186,6 +187,24 @@ def _client(settings: Settings, transport: httpx.BaseTransport) -> FootballClien
     )
 
 
+async def _reset_w4_state(factory: async_sessionmaker[AsyncSession]) -> None:
+    async with factory() as session:
+        async with session.begin():
+            await session.execute(
+                delete(EtlTask)
+                .where(EtlTask.endpoint.in_(("/fixtures", "/fixtures/rounds")))
+                .where(EtlTask.cursor_kind.is_(None))
+            )
+            await session.execute(delete(Fixture))
+            await session.execute(delete(LeagueRound))
+            await ensure_cursors(session)
+            cursor = await get_cursor_task(session, "backfill")
+            cursor.params = {}
+            cursor.day_utc = None
+            cursor.status = "pending"
+            cursor.completed_at = None
+
+
 def test_irregular_statuses_match_fr014() -> None:
     assert IRREGULAR_FIXTURE_STATUSES == {"PST", "CANC", "ABD", "AWD", "WO"}
 
@@ -198,9 +217,7 @@ async def test_forward_upserts_fixtures_pages_and_children() -> None:
     paths: list[str] = []
     client = _client(settings, httpx.MockTransport(_router(paths)))
     try:
-        async with factory() as session:
-            async with session.begin():
-                await ensure_cursors(session)
+        await _reset_w4_state(factory)
         ingest = FixtureIngest(client, factory, now_fn=lambda: NOW)
         await ingest.refresh_forward()
         first_fixture_gets = [p for p in paths if p.startswith("/fixtures?")]
@@ -260,9 +277,7 @@ async def test_backfill_waits_for_today_then_moves_yesterday() -> None:
     paths: list[str] = []
     client = _client(settings, httpx.MockTransport(_router(paths)))
     try:
-        async with factory() as session:
-            async with session.begin():
-                await ensure_cursors(session)
+        await _reset_w4_state(factory)
         ingest = FixtureIngest(client, factory, now_fn=lambda: NOW)
         await ingest.refresh_backfill()
         assert not any("date=2026-09-12" in p for p in paths)
@@ -301,9 +316,7 @@ async def test_empty_day_is_complete() -> None:
     client = _client(settings, httpx.MockTransport(_router(paths)))
     empty_now = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
     try:
-        async with factory() as session:
-            async with session.begin():
-                await ensure_cursors(session)
+        await _reset_w4_state(factory)
         ingest = FixtureIngest(client, factory, now_fn=lambda: empty_now)
         await ingest.refresh_forward()
         async with factory() as session:

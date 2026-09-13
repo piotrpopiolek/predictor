@@ -57,17 +57,15 @@ async def test_scheduler_quota_exhausted_does_not_spin_http(valid_env: None) -> 
         retry_wait=WaitZero(),
     )
     stop = asyncio.Event()
-        frozen = datetime.now(UTC).replace(
-            hour=12, minute=0, second=0, microsecond=0
-        )
-        scheduler = Scheduler(
-            settings,
-            client,
-            _unused_factory(),
-            idle_cap_seconds=0.05,
-            status_refresh_seconds=3600,
-            now_fn=lambda: frozen,
-        )
+    frozen = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
+    scheduler = Scheduler(
+        settings,
+        client,
+        _unused_factory(),
+        idle_cap_seconds=0.05,
+        status_refresh_seconds=3600,
+        now_fn=lambda: frozen,
+    )
     persisted = {"n": 0}
 
     async def fake_persist() -> None:

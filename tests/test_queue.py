@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from sqlalchemy import select
 
@@ -85,21 +87,23 @@ async def test_requeue_orphans_and_claim_skips_cursors() -> None:
     engine = make_async_engine(settings)
     factory = make_session_factory(engine)
     try:
+        orphan_endpoint = f"/w2/orphan-{uuid.uuid4().hex[:8]}"
+        claim_endpoint = f"/w2/claim-{uuid.uuid4().hex[:8]}"
         async with factory() as session:
             async with session.begin():
                 await ensure_cursors(session)
                 session.add(
-                    EtlTask(endpoint="/w2/orphan", params={}, status="in_progress")
+                    EtlTask(endpoint=orphan_endpoint, params={}, status="in_progress")
                 )
                 session.add(
-                    EtlTask(endpoint="/w2/claim-me", params={}, status="pending")
+                    EtlTask(endpoint=claim_endpoint, params={}, status="pending")
                 )
         async with factory() as session:
             async with session.begin():
                 n = await requeue_orphans(session)
                 assert n >= 1
                 orphan = await session.scalar(
-                    select(EtlTask).where(EtlTask.endpoint == "/w2/orphan")
+                    select(EtlTask).where(EtlTask.endpoint == orphan_endpoint)
                 )
                 assert orphan is not None
                 assert orphan.status == "pending"
@@ -119,14 +123,14 @@ async def test_requeue_orphans_and_claim_skips_cursors() -> None:
                 for task in parked:
                     task.status = "pending"
                     task.started_at = None
-                assert "/w2/claim-me" in claimed_endpoints
-                assert "/w2/orphan" in claimed_endpoints
+                assert claim_endpoint in claimed_endpoints
+                assert orphan_endpoint in claimed_endpoints
         async with factory() as session:
             orphan = await session.scalar(
-                select(EtlTask).where(EtlTask.endpoint == "/w2/orphan")
+                select(EtlTask).where(EtlTask.endpoint == orphan_endpoint)
             )
             done = await session.scalar(
-                select(EtlTask).where(EtlTask.endpoint == "/w2/claim-me")
+                select(EtlTask).where(EtlTask.endpoint == claim_endpoint)
             )
         assert orphan is not None
         assert orphan.status == "complete"
