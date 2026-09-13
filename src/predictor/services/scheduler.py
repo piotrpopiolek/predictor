@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -19,6 +19,7 @@ from predictor.client.football import FootballClient
 from predictor.client.quota import QuotaSnapshot
 from predictor.logutil import log_json
 from predictor.schemas.settings import Settings
+from predictor.services.completeness import write_daily_report
 from predictor.services.queue import ensure_cursors
 from predictor.services.quota import (
     live_poll_interval_seconds,
@@ -94,6 +95,7 @@ class Scheduler:
     async def _tick(self, stop: asyncio.Event) -> None:
         if stop.is_set():
             return
+        await self._maybe_daily_report()
         quota = await self._ensure_quota()
         self._quota = quota
         if quota.source == "api" and quota.remaining <= 0:
@@ -136,6 +138,32 @@ class Scheduler:
                     break
             handler = self._handlers.get(slot.priority, _noop)
             await handler()
+
+    async def _maybe_daily_report(self) -> None:
+        yesterday = self._now().astimezone(UTC).date() - timedelta(days=1)
+        wrote = False
+        try:
+            session_cm = self._session_factory()
+        except TypeError:
+            return
+        try:
+            async with session_cm as session:
+                async with session.begin():
+                    wrote = await write_daily_report(
+                        session,
+                        yesterday,
+                        quota=self._quota,
+                        now=self._now(),
+                    )
+        except (TypeError, AttributeError):
+            return
+        if wrote:
+            log_json(
+                logging.INFO,
+                service="worker",
+                event="daily_report",
+                day=yesterday.isoformat(),
+            )
 
     async def _ensure_quota(self) -> QuotaSnapshot:
         now = self._now()

@@ -48,6 +48,7 @@ def test_enrichment_uses_id_not_ids_batch() -> None:
         "src/predictor/services/ingest/persist_seasonal.py",
         "src/predictor/services/ingest/persist_people.py",
         "src/predictor/services/queue.py",
+        "src/predictor/services/completeness.py",
         "src/predictor/worker/main.py",
     ):
         text = Path(relative).read_text(encoding="utf-8")
@@ -126,6 +127,15 @@ def test_lock_busy_message_without_holder() -> None:
     message = lock_busy_message(None)
     assert str(WRITER_LOCK_KEY) in message
     assert "another backend" in message
+
+
+def test_src_has_no_etl_lease() -> None:
+    root = Path("src/predictor")
+    offenders: list[str] = []
+    for path in root.rglob("*.py"):
+        if "etl_lease" in path.read_text(encoding="utf-8"):
+            offenders.append(str(path))
+    assert offenders == []
 
 
 def test_metrics_token_and_labels() -> None:

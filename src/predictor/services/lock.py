@@ -1,4 +1,4 @@
-"""Session advisory lock for the single writer (FR-039). Not xact, not etl_lease."""
+"""Session advisory lock for the single writer (FR-039). Not a transaction lock."""
 
 from __future__ import annotations
 

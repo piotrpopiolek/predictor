@@ -12,9 +12,12 @@ from tenacity.wait import wait_base
 
 from predictor.client.football import FootballClient
 from predictor.constants import (
+    DAILY_REPORT_ENDPOINT,
+    DAY_CONTRACT_ENDPOINTS,
     GLOBAL_ENDPOINT_ORDER,
     IRREGULAR_FIXTURE_STATUSES,
     LOOKUP_WITHOUT_HTTP,
+    OPEN_ETL_STATUSES,
 )
 from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture, LeagueRound, Team, Venue
@@ -24,7 +27,12 @@ from predictor.models.predictions import Prediction, PredictionH2H
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, load_settings
 from predictor.services.ingest.fixtures import FixtureIngest
-from predictor.services.queue import ensure_cursors, get_cursor_task
+from predictor.services.queue import (
+    complete_task,
+    ensure_cursors,
+    get_cursor_task,
+    h2h_param,
+)
 
 
 class WaitZero(wait_base):
@@ -58,13 +66,14 @@ def _fixture_payload(
     away_id: int = 34,
     venue_id: int | None = 556,
     extra_field: bool = False,
+    kickoff: str = "2026-09-13T15:00:00+00:00",
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "fixture": {
             "id": fixture_id,
             "referee": "M. Oliver",
             "timezone": "UTC",
-            "date": "2026-09-13T15:00:00+00:00",
+            "date": kickoff,
             "timestamp": 1789311600,
             "periods": {"first": None, "second": None},
             "venue": {
@@ -159,9 +168,11 @@ def _router(paths: list[str]) -> Any:
                     [
                         _fixture_payload(
                             fixture_id=2001,
+                            status="FT",
                             home_id=50,
                             away_id=51,
                             venue_id=600,
+                            kickoff="2026-09-12T15:00:00+00:00",
                         )
                     ]
                 ),
@@ -212,6 +223,7 @@ async def _reset_w4_state(factory: async_sessionmaker[AsyncSession]) -> None:
                             "/odds/mapping",
                             *GLOBAL_ENDPOINT_ORDER,
                             *LOOKUP_WITHOUT_HTTP,
+                            DAILY_REPORT_ENDPOINT,
                         )
                     )
                 )
@@ -230,6 +242,32 @@ async def _reset_w4_state(factory: async_sessionmaker[AsyncSession]) -> None:
             cursor.day_utc = None
             cursor.status = "pending"
             cursor.completed_at = None
+
+
+async def _close_match_contract(
+    factory: async_sessionmaker[AsyncSession],
+    fixture_id: int,
+    home_id: int,
+    away_id: int,
+) -> None:
+    pair = h2h_param(home_id, away_id)
+    async with factory() as session:
+        async with session.begin():
+            tasks = await session.scalars(
+                select(EtlTask)
+                .where(EtlTask.endpoint.in_(tuple(DAY_CONTRACT_ENDPOINTS)))
+                .where(EtlTask.cursor_kind.is_(None))
+            )
+            for task in tasks:
+                if task.status not in OPEN_ETL_STATUSES:
+                    continue
+                if task.endpoint == "/fixtures" and task.fixture_id is None:
+                    continue
+                if task.fixture_id == fixture_id or (
+                    task.endpoint == "/fixtures/headtohead"
+                    and task.params.get("h2h") == pair
+                ):
+                    await complete_task(session, task, "coverage_empty")
 
 
 def test_irregular_statuses_match_fr014() -> None:
@@ -336,18 +374,29 @@ async def test_backfill_waits_for_today_then_moves_yesterday() -> None:
             cursor = await session.scalar(
                 select(EtlTask).where(EtlTask.cursor_kind == "backfill")
             )
+        assert yesterday is not None
+        assert yesterday.status_short == "FT"
+        assert cursor is not None
+        assert cursor.params.get("last_complete") != "2026-09-12"
+        assert any("date=2026-09-12" in p for p in paths)
+
+        await _close_match_contract(factory, 2001, 50, 51)
+        await ingest.refresh_backfill()
+
+        async with factory() as session:
+            cursor = await session.scalar(
+                select(EtlTask).where(EtlTask.cursor_kind == "backfill")
+            )
             empty_day = await session.scalar(
                 select(EtlTask)
                 .where(EtlTask.endpoint == "/fixtures")
                 .where(EtlTask.day_utc == NOW.date().replace(day=11))
             )
 
-        assert yesterday is not None
         assert cursor is not None
         assert cursor.params.get("last_complete") == "2026-09-12"
         assert cursor.params.get("next_day") == "2026-09-11"
         assert empty_day is None
-        assert any("date=2026-09-12" in p for p in paths)
     finally:
         await client.aclose()
         await engine.dispose()

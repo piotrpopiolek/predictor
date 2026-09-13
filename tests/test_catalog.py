@@ -180,10 +180,20 @@ def test_unknown_country_field_logs_contract_drift(
 ) -> None:
     configure_logging()
     item = CountryItem.model_validate(
-        {"name": "Poland", "code": "PL", "flag": None, "mystery": True}
+        {
+            "name": "Poland",
+            "code": "PL",
+            "flag": None,
+            "mystery": True,
+            "api_key": "should-not-leak",
+        }
     )
     warn_model_extra("/countries", item)
     text = capsys.readouterr().out
+    assert item.model_extra == {"mystery": True, "api_key": "should-not-leak"}
     assert "contract_drift" in text
     assert "mystery" in text
+    assert "api_key" in text
     assert "/countries" in text
+    assert "should-not-leak" not in text
+    assert "x-apisports-key" not in text

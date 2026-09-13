@@ -35,6 +35,17 @@ ETL_STATUSES = frozenset(
         "permanent_error",
     }
 )
+OPEN_ETL_STATUSES = frozenset({"pending", "in_progress", "retryable_error"})
+DAILY_REPORT_ENDPOINT = "report/daily"
+DAY_CONTRACT_ENDPOINTS = frozenset(
+    {
+        "/fixtures",
+        "/fixtures/statistics",
+        "/fixtures/headtohead",
+        "/predictions",
+        "/odds",
+    }
+)
 
 API_SPORTS_KEY_HEADER = "x-apisports-key"
 

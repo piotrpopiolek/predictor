@@ -20,6 +20,7 @@ from predictor.client.football import FootballClient
 from predictor.logutil import log_json
 from predictor.models.etl import EtlTask
 from predictor.schemas.fixtures import FixtureItem
+from predictor.services.completeness import day_is_complete
 from predictor.services.ingest.drift import warn_model_extra
 from predictor.services.ingest.paging import fetch_all_pages
 from predictor.services.ingest.persist_fixtures import (
@@ -74,8 +75,15 @@ class FixtureIngest:
         if day >= self._today():
             day = self._today() - timedelta(days=1)
         ok = await self._ingest_day(day, role="backfill")
-        if ok:
+        if not ok:
+            return
+        if await self._day_complete(day):
             await self._advance_backfill(day)
+
+    async def _day_complete(self, day: date) -> bool:
+        async with self._session_factory() as session:
+            async with session.begin():
+                return await day_is_complete(session, day)
 
     async def refresh_rounds_pending(self) -> None:
         for _ in range(_ROUNDS_PER_TICK):
