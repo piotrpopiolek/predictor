@@ -123,7 +123,11 @@ def _event_payload() -> dict[str, Any]:
 
 def _lineup_payload(team_id: int, coach_id: int, player_id: int) -> dict[str, Any]:
     return {
-        "team": {"id": team_id, "name": "Club", "colors": {"player": {"primary": "ff0"}}},
+        "team": {
+            "id": team_id,
+            "name": "Club",
+            "colors": {"player": {"primary": "ff0"}},
+        },
         "coach": {"id": coach_id, "name": "Coach"},
         "formation": "4-3-3",
         "startXI": [
@@ -186,7 +190,12 @@ def _id_payload(fixture_id: int = FT_ID) -> dict[str, Any]:
                             },
                             "offsides": 1,
                             "shots": {"total": 3, "on": 2},
-                            "goals": {"total": 1, "conceded": 0, "assists": 0, "saves": 0},
+                            "goals": {
+                                "total": 1,
+                                "conceded": 0,
+                                "assists": 0,
+                                "saves": 0,
+                            },
                             "passes": {"total": 20, "key": 2, "accuracy": "80"},
                             "tackles": {"total": 1, "blocks": 0, "interceptions": 0},
                             "duels": {"total": 8, "won": 5},
@@ -454,7 +463,9 @@ async def test_irregular_is_coverage_empty_without_http() -> None:
                 .where(EtlTask.endpoint == "/fixtures")
                 .where(EtlTask.fixture_id == PST_ID)
             )
-            events = await session.scalar(select(func.count()).select_from(FixtureEvent))
+            events = await session.scalar(
+                select(func.count()).select_from(FixtureEvent)
+            )
         assert task is not None
         assert task.status == "coverage_empty"
         assert task.params.get("reason") == "irregular_status"
@@ -669,7 +680,9 @@ async def test_all_children_coverage_false_still_gets_id() -> None:
         ingest = EnrichmentIngest(client, factory, now_fn=lambda: NOW)
         await ingest.refresh_pending()
         async with factory() as session:
-            events = await session.scalar(select(func.count()).select_from(FixtureEvent))
+            events = await session.scalar(
+                select(func.count()).select_from(FixtureEvent)
+            )
             task = await session.scalar(
                 select(EtlTask)
                 .where(EtlTask.endpoint == "/fixtures")

@@ -16,7 +16,9 @@ class Injury(Base):
     player_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("players.id"), nullable=False
     )
-    team_id: Mapped[int] = mapped_column(Integer, ForeignKey("teams.id"), nullable=False)
+    team_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("teams.id"), nullable=False
+    )
     fixture_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("fixtures.id"), nullable=True
     )

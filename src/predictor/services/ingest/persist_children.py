@@ -231,9 +231,7 @@ async def _upsert_lineups(
             _lineup_player_rows(fixture_id, team_id, lineup.start_xi, starter=True)
         )
         player_rows.extend(
-            _lineup_player_rows(
-                fixture_id, team_id, lineup.substitutes, starter=False
-            )
+            _lineup_player_rows(fixture_id, team_id, lineup.substitutes, starter=False)
         )
     if lineup_rows:
         for chunk in _chunks(lineup_rows):

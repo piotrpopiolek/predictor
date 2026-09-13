@@ -1,4 +1,4 @@
-"""Worker process: lock first, then queue/cursors, then catalog, live, fixtures, enrichment."""
+"""Worker process: lock, cursors, catalog, live, fixtures, enrichment."""
 
 from __future__ import annotations
 

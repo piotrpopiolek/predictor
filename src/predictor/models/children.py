@@ -27,7 +27,9 @@ class FixtureEvent(Base):
     fixture_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("fixtures.id", ondelete="CASCADE"), nullable=False
     )
-    team_id: Mapped[int] = mapped_column(Integer, ForeignKey("teams.id"), nullable=False)
+    team_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("teams.id"), nullable=False
+    )
     player_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("players.id"), nullable=True
     )

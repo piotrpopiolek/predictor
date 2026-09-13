@@ -352,7 +352,10 @@ class EnrichmentIngest:
                     return None, None
                 fixture_id = task.fixture_id or task.params.get("fixture")
                 try:
-                    return int(task.id), int(fixture_id) if fixture_id is not None else None
+                    return (
+                        int(task.id),
+                        int(fixture_id) if fixture_id is not None else None,
+                    )
                 except (TypeError, ValueError):
                     await complete_task(
                         session, task, "permanent_error", error="bad_half_params"
@@ -367,6 +370,11 @@ class EnrichmentIngest:
                     return None
                 league_id = task.params.get("league")
                 season = task.params.get("season")
+                if league_id is None or season is None:
+                    await complete_task(
+                        session, task, "permanent_error", error="bad_injuries_params"
+                    )
+                    return None
                 try:
                     return int(task.id), int(league_id), int(season)
                 except (TypeError, ValueError):
@@ -390,9 +398,7 @@ class EnrichmentIngest:
                 season=int(fixture.season),
             )
 
-    async def _coverage(
-        self, league_id: int, season: int
-    ) -> dict[str, bool | None]:
+    async def _coverage(self, league_id: int, season: int) -> dict[str, bool | None]:
         async with self._session_factory() as session:
             row = await session.get(LeagueSeason, (league_id, season))
         if row is None:
