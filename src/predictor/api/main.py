@@ -24,7 +24,10 @@ from predictor.services.health import (
 )
 from predictor.services.lock import fetch_holder_sqlalchemy
 from predictor.services.metrics import metrics_token_ok, render_metrics
-from predictor.services.quota import live_poll_interval_gauge
+from predictor.services.quota import (
+    live_poll_interval_gauge,
+    seconds_until_utc_midnight,
+)
 from predictor.telemetry import (
     configure_telemetry,
     instrument_engine,
@@ -95,12 +98,13 @@ def create_app() -> FastAPI:
             ) from None
         remaining = int(gauges["quota_remaining"])
         used = int(gauges["quota_used"])
+        now = datetime.now(UTC)
         interval = live_poll_interval_gauge(
             remaining,
             used,
             settings.quota_daily_limit,
             settings.live_poll_target_seconds,
-            datetime.now(UTC),
+            now,
         )
         body = render_metrics(
             environment=settings.host_environment.value,
@@ -113,6 +117,7 @@ def create_app() -> FastAPI:
             quota_plan=settings.quota_daily_limit,
             quota_remaining=remaining,
             quota_used=used,
+            quota_seconds_until_reset=seconds_until_utc_midnight(now),
             live_poll_interval_seconds=interval,
         )
         return PlainTextResponse(

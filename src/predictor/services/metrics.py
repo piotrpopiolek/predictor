@@ -26,6 +26,7 @@ def render_metrics(
     quota_plan: int = 0,
     quota_remaining: int = -1,
     quota_used: int = 0,
+    quota_seconds_until_reset: float = 0,
     live_poll_interval_seconds: float = 60,
 ) -> str:
     labels = f'service="status",environment="{environment}"'
@@ -72,6 +73,15 @@ def render_metrics(
         "# HELP predictor_quota_used Requests used in the current UTC day.",
         "# TYPE predictor_quota_used gauge",
         f"predictor_quota_used{{{labels}}} {quota_used}",
+        (
+            "# HELP predictor_quota_seconds_until_reset "
+            "Seconds until vendor daily quota reset at 00:00 UTC."
+        ),
+        "# TYPE predictor_quota_seconds_until_reset gauge",
+        (
+            "predictor_quota_seconds_until_reset{"
+            f"{labels}}} {quota_seconds_until_reset}"
+        ),
         (
             "# HELP predictor_live_poll_interval_seconds "
             "Sleep between live ticks after FR-019 stretch."

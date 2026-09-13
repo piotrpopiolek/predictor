@@ -54,3 +54,14 @@ def test_render_metrics_includes_live_poll_interval() -> None:
     )
     assert "predictor_live_poll_interval_seconds" in body
     assert "467.676" in body
+
+
+def test_render_metrics_includes_quota_seconds_until_reset() -> None:
+    body = render_metrics(
+        environment="local",
+        lock_held=True,
+        task_counts={},
+        quota_seconds_until_reset=14340,
+    )
+    assert "predictor_quota_seconds_until_reset" in body
+    assert "14340" in body

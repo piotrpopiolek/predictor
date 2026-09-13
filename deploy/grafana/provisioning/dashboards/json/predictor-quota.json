@@ -3,7 +3,7 @@
   "title": "Quota usage",
   "timezone": "utc",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "30s",
   "tags": ["predictor", "quota"],
   "time": {"from": "now-6h", "to": "now"},
@@ -12,7 +12,7 @@
       "id": 1,
       "type": "stat",
       "title": "Remaining",
-      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "gridPos": {"h": 6, "w": 4, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {
         "defaults": {
@@ -40,7 +40,7 @@
       "id": 2,
       "type": "stat",
       "title": "Used today",
-      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "gridPos": {"h": 6, "w": 4, "x": 4, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {
         "defaults": {
@@ -64,7 +64,7 @@
       "id": 3,
       "type": "stat",
       "title": "Used percent of plan",
-      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "gridPos": {"h": 6, "w": 4, "x": 8, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {
         "defaults": {
@@ -94,10 +94,39 @@
       ]
     },
     {
+      "id": 7,
+      "type": "stat",
+      "title": "Quota reset in (00:00 UTC)",
+      "gridPos": {"h": 6, "w": 7, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dtdurations",
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "blue", "value": null}]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "expr": "predictor_quota_seconds_until_reset",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
       "id": 4,
       "type": "stat",
       "title": "Burn vs sustainable (req/min)",
-      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "gridPos": {"h": 6, "w": 5, "x": 19, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {
         "defaults": {
@@ -120,7 +149,7 @@
       },
       "targets": [
         {
-          "expr": "(clamp_min(-deriv(predictor_quota_remaining[15m]) * 60, 0) / clamp_min(predictor_quota_remaining * 60 / (86400 - (time() % 86400)), 0.001)) and on() (predictor_quota_remaining >= 0)",
+          "expr": "(clamp_min(-deriv(predictor_quota_remaining[15m]) * 60, 0) / clamp_min(predictor_quota_remaining * 60 / clamp_min(predictor_quota_seconds_until_reset, 1), 0.001)) and on() (predictor_quota_remaining >= 0)",
           "refId": "A",
           "instant": true
         }
@@ -165,8 +194,8 @@
           "refId": "B"
         },
         {
-          "expr": "(predictor_quota_remaining * 60 / (86400 - (time() % 86400))) and on() (predictor_quota_remaining >= 0)",
-          "legendFormat": "sustainable to UTC midnight",
+          "expr": "(predictor_quota_remaining * 60 / clamp_min(predictor_quota_seconds_until_reset, 1)) and on() (predictor_quota_remaining >= 0)",
+          "legendFormat": "sustainable to 00:00 UTC",
           "refId": "C"
         }
       ]

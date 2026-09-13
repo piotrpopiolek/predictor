@@ -29,6 +29,7 @@ def quota_allows(priority: int, snapshot: QuotaSnapshot, buffer_percent: float) 
 
 
 def seconds_until_utc_midnight(now: datetime) -> float:
+    """Seconds until the vendor daily quota resets."""
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
     utc_now = now.astimezone(UTC)

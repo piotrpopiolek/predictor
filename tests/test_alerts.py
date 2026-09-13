@@ -97,6 +97,8 @@ def test_provisioned_grafana_dashboards() -> None:
             joined = " ".join(exprs)
             assert "predictor_quota_used" in joined
             assert "deriv(predictor_quota_remaining" in joined
+            assert "predictor_quota_seconds_until_reset" in joined
+            assert "time() % 86400" not in joined
             percent = next(
                 str(t.get("expr", ""))
                 for p in data["panels"]

@@ -5,7 +5,7 @@
 
 ## Diagnose
 - Worker logs: `quota_exhausted`, `live_freshness_missed`, HTTP 429.
-- Compare `predictor_live_snapshot_age_seconds` to `2 * predictor_live_poll_interval_seconds` (FR-019 stretches the interval when remaining quota cannot hold 60s until UTC midnight). `$value` is snapshot age, not in-play count.
+- Compare `predictor_live_snapshot_age_seconds` to `2 * predictor_live_poll_interval_seconds` (FR-019 stretches the interval when remaining quota cannot hold 60s until vendor reset at **00:00 UTC**). `$value` is snapshot age, not in-play count.
 - Ignore `captured_at` values ahead of database `now()` (pytest frozen clocks, API `update`).
 - Host sleep (Windows) or Docker Desktop stopped.
 
