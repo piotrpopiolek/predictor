@@ -123,3 +123,31 @@ async def test_unknown_quota_does_not_call_domain_handlers(valid_env: None) -> N
     )
     await scheduler._tick(asyncio.Event())
     assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_logs_when_live_interval_must_stretch(
+    valid_env: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    class _Client:
+        async def get_status(self) -> QuotaSnapshot:
+            return QuotaSnapshot(
+                current=7496,
+                limit_day=7500,
+                remaining=4,
+                fetched_at=datetime(2026, 9, 13, 23, 0, tzinfo=UTC),
+                source="api",
+            )
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        cast(Any, _Client()),
+        _unused_factory(),
+        idle_cap_seconds=0.01,
+        now_fn=lambda: datetime(2026, 9, 13, 23, 0, tzinfo=UTC),
+    )
+    with caplog.at_level("WARNING"):
+        await scheduler._tick(asyncio.Event())
+    assert "live_freshness_missed" in caplog.text
+    assert scheduler.live_interval_seconds == 1800.0

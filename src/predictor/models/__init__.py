@@ -9,7 +9,6 @@ from predictor.models.catalog import (
     Season,
 )
 from predictor.models.etl import EtlRun, EtlTask
-from predictor.models.odds import FixtureOddsLive
 from predictor.models.fixtures import (
     Fixture,
     FixtureStatusRow,
@@ -17,6 +16,7 @@ from predictor.models.fixtures import (
     Team,
     Venue,
 )
+from predictor.models.odds import FixtureOddsLive
 
 __all__ = [
     "Base",

@@ -225,9 +225,7 @@ async def test_live_all_and_odds_live_append_only() -> None:
             n = await session.scalar(select(func.count()).select_from(FixtureOddsLive))
             fixture = await session.get(Fixture, 9001)
             first_captured = list(
-                await session.scalars(
-                    select(FixtureOddsLive.captured_at).distinct()
-                )
+                await session.scalars(select(FixtureOddsLive.captured_at).distinct())
             )
             live_task = await session.scalar(
                 select(EtlTask).where(EtlTask.endpoint == "/odds/live")

@@ -20,7 +20,11 @@ from predictor.client.quota import QuotaSnapshot
 from predictor.logutil import log_json
 from predictor.schemas.settings import Settings
 from predictor.services.queue import ensure_cursors
-from predictor.services.quota import live_poll_interval_seconds, quota_allows, seconds_until_utc_midnight
+from predictor.services.quota import (
+    live_poll_interval_seconds,
+    quota_allows,
+    seconds_until_utc_midnight,
+)
 
 Handler = Callable[[], Awaitable[None]]
 

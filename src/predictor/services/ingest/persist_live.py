@@ -6,10 +6,12 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from predictor.models.catalog import OddsLiveBet
+from predictor.models.fixtures import Fixture
 from predictor.models.odds import FixtureOddsLive
 from predictor.schemas.catalog import NamedIdItem
 from predictor.schemas.fixtures import (
@@ -21,7 +23,7 @@ from predictor.schemas.fixtures import (
     FixtureTeam,
     FixtureTeams,
 )
-from predictor.schemas.live import LiveOddBet, OddsLiveItem
+from predictor.schemas.live import LiveFixtureStatus, LiveOddBet, OddsLiveItem
 from predictor.services.ingest.next_goal import is_next_goal_market
 from predictor.services.ingest.persist import _chunks, upsert_named_ids
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
@@ -111,8 +113,14 @@ async def ensure_live_fixtures(
             parsed.append(fixture)
     if not parsed:
         return set()
-    extra = await upsert_fixtures(session, parsed)
-    return {int(fid) for fid in extra.get("fixture_ids", [])}
+    ids = [item.fixture.id for item in parsed]
+    existing = set(await session.scalars(select(Fixture.id).where(Fixture.id.in_(ids))))
+    missing = [item for item in parsed if item.fixture.id not in existing]
+    stored = {int(fid) for fid in existing}
+    if missing:
+        extra = await upsert_fixtures(session, missing)
+        stored.update(int(fid) for fid in extra.get("fixture_ids", []))
+    return stored
 
 
 async def persist_odds_live_snapshots(
@@ -182,8 +190,8 @@ async def persist_odds_live_snapshots(
                     FixtureOddsLive.captured_at,
                 ]
             )
-            result = await session.execute(stmt)
-            inserted += result.rowcount or 0
+            await session.execute(stmt)
+            inserted += len(chunk)
 
     return {
         "count": inserted if rows else 0,
@@ -202,7 +210,7 @@ def _value_rows(
     stopped: bool | None,
     blocked: bool | None,
     finished: bool | None,
-    stub: Any,
+    stub: LiveFixtureStatus | None,
     home_goals: int | None,
     away_goals: int | None,
 ) -> list[dict[str, Any]]:
