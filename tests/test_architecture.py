@@ -166,6 +166,7 @@ def test_metrics_token_and_labels() -> None:
     assert "predictor_writer_lock" in body
     assert "predictor_live_snapshot_age_seconds" in body
     assert "predictor_quota_used" in body
+    assert "predictor_live_poll_interval_seconds" in body
     assert "fixture_id" not in body
     assert "task_id" not in body
     assert "run_id" not in body

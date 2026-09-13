@@ -113,6 +113,8 @@ tests:
         values: "1 1 1 1 1"
       - series: 'predictor_live_snapshot_age_seconds{service="status",environment="local"}'
         values: "200 200 200 200 200"
+      - series: 'predictor_live_poll_interval_seconds{service="status",environment="local"}'
+        values: "60 60 60 60 60"
     alert_rule_test:
       - eval_time: 4m
         alertname: PredictorLiveStale
@@ -123,7 +125,7 @@ tests:
               environment: local
             exp_annotations:
               summary: Live snapshots are stale
-              description: "In-play fixtures exist but last snapshot is older than two 60s intervals. env=local value=2 threshold=120s"
+              description: "In-play fixtures exist but last snapshot is older than two live poll intervals. env=local value=200 threshold=two poll intervals"
               runbook_url: docs/runbooks/live-stale.md
 
   - name: status down

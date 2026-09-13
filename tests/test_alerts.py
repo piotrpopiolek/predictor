@@ -36,6 +36,14 @@ def test_every_alert_has_runbook_and_operator_fields() -> None:
         assert labels["severity"] in {"warning", "critical"}
 
 
+def test_live_stale_compares_age_to_two_poll_intervals() -> None:
+    rule = next(r for r in _alerts() if r["alert"] == "PredictorLiveStale")
+    expr = str(rule["expr"])
+    assert "predictor_live_snapshot_age_seconds" in expr
+    assert "2 * predictor_live_poll_interval_seconds" in expr
+    assert "> 120" not in expr
+
+
 def test_every_critical_alert_has_promtool_case() -> None:
     tested = set()
     text = ALERT_TESTS.read_text(encoding="utf-8")
@@ -74,6 +82,7 @@ def test_provisioned_grafana_dashboards() -> None:
             ]
             joined = " ".join(exprs)
             assert "predictor_live_snapshot_age_seconds" in joined
+            assert "predictor_live_poll_interval_seconds" in joined
             assert "time() - predictor_live_last_snapshot_unixtime" not in joined
         if data["uid"] == "predictor-backfill":
             age = next(p for p in data["panels"] if p["id"] == 2)
@@ -88,6 +97,13 @@ def test_provisioned_grafana_dashboards() -> None:
             joined = " ".join(exprs)
             assert "predictor_quota_used" in joined
             assert "deriv(predictor_quota_remaining" in joined
+            percent = next(
+                str(t.get("expr", ""))
+                for p in data["panels"]
+                if p["id"] == 3
+                for t in p.get("targets", [])
+            )
+            assert percent.startswith("(predictor_quota_used / predictor_quota_plan)")
     assert uids == {
         "predictor-infra",
         "predictor-api-live",

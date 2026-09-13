@@ -36,17 +36,21 @@ groups:
     rules:
       - alert: PredictorLiveStale
         expr: |
-          predictor_in_play_fixtures > 0
-          and (
-            predictor_live_last_snapshot_unixtime == 0
-            or predictor_live_snapshot_age_seconds > 120
+          (
+            predictor_live_snapshot_age_seconds
+            > (2 * predictor_live_poll_interval_seconds)
+            and predictor_in_play_fixtures > 0
+          )
+          or (
+            predictor_in_play_fixtures > 0
+            and predictor_live_last_snapshot_unixtime == 0
           )
         for: 1m
         labels:
           severity: critical
         annotations:
           summary: Live snapshots are stale
-          description: "In-play fixtures exist but last snapshot is older than two 60s intervals. env={{ $labels.environment }} value={{ $value }} threshold=120s"
+          description: "In-play fixtures exist but last snapshot is older than two live poll intervals. env={{ $labels.environment }} value={{ $value }} threshold=two poll intervals"
           runbook_url: docs/runbooks/live-stale.md
       - alert: PredictorApiAuthBlocked
         expr: predictor_writer_lock == 0 and on() (up{job="predictor-status"} == 1)

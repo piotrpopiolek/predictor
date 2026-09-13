@@ -3,7 +3,7 @@
   "title": "API, quota and live",
   "timezone": "utc",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "30s",
   "tags": ["predictor", "live"],
   "time": {"from": "now-6h", "to": "now"},
@@ -27,7 +27,7 @@
       "id": 2,
       "type": "stat",
       "title": "In-play fixtures",
-      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0},
+      "gridPos": {"h": 8, "w": 4, "x": 12, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {
         "defaults": {
@@ -51,7 +51,7 @@
       "id": 3,
       "type": "stat",
       "title": "Live snapshot age seconds",
-      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0},
+      "gridPos": {"h": 8, "w": 4, "x": 16, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {
         "defaults": {
@@ -74,6 +74,37 @@
       "targets": [
         {
           "expr": "predictor_live_snapshot_age_seconds",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Live poll interval seconds",
+      "gridPos": {"h": 8, "w": 4, "x": 20, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "blue", "value": null},
+              {"color": "yellow", "value": 61}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "expr": "predictor_live_poll_interval_seconds",
           "refId": "A",
           "instant": true
         }

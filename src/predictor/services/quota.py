@@ -59,6 +59,28 @@ def live_poll_interval_seconds(
     return max(target, seconds_left / max_ticks)
 
 
+def live_poll_interval_gauge(
+    remaining: int,
+    used: int,
+    limit_day: int,
+    target_seconds: int,
+    now: datetime,
+) -> float:
+    """Interval Prometheus should compare snapshot age against (FR-019)."""
+    if remaining < 0:
+        return float(target_seconds)
+    return live_poll_interval_seconds(
+        QuotaSnapshot(
+            current=used,
+            limit_day=max(limit_day, 1),
+            remaining=remaining,
+            source="api",
+        ),
+        target_seconds,
+        now,
+    )
+
+
 def quota_gauges_from_params(params: dict[str, Any] | None) -> tuple[int, int]:
     """Return (remaining, used). remaining is -1 when unknown."""
     if not params:

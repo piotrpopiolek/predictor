@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from fastapi import FastAPI, Header, HTTPException
@@ -23,6 +24,7 @@ from predictor.services.health import (
 )
 from predictor.services.lock import fetch_holder_sqlalchemy
 from predictor.services.metrics import metrics_token_ok, render_metrics
+from predictor.services.quota import live_poll_interval_gauge
 from predictor.telemetry import (
     configure_telemetry,
     instrument_engine,
@@ -91,6 +93,15 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=503, detail="postgres_unavailable"
             ) from None
+        remaining = int(gauges["quota_remaining"])
+        used = int(gauges["quota_used"])
+        interval = live_poll_interval_gauge(
+            remaining,
+            used,
+            settings.quota_daily_limit,
+            settings.live_poll_target_seconds,
+            datetime.now(UTC),
+        )
         body = render_metrics(
             environment=settings.host_environment.value,
             lock_held=holder is not None,
@@ -100,8 +111,9 @@ def create_app() -> FastAPI:
             live_snapshot_age_seconds=gauges["live_snapshot_age_seconds"],
             oldest_pending_age_seconds=gauges["oldest_pending_age_seconds"],
             quota_plan=settings.quota_daily_limit,
-            quota_remaining=int(gauges["quota_remaining"]),
-            quota_used=int(gauges["quota_used"]),
+            quota_remaining=remaining,
+            quota_used=used,
+            live_poll_interval_seconds=interval,
         )
         return PlainTextResponse(
             body, media_type="text/plain; version=0.0.4; charset=utf-8"

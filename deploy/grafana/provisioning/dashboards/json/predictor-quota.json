@@ -3,7 +3,7 @@
   "title": "Quota usage",
   "timezone": "utc",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "tags": ["predictor", "quota"],
   "time": {"from": "now-6h", "to": "now"},
@@ -87,7 +87,7 @@
       },
       "targets": [
         {
-          "expr": "predictor_quota_remaining >= 0 and predictor_quota_plan > 0 and (predictor_quota_used / predictor_quota_plan) * 100",
+          "expr": "(predictor_quota_used / predictor_quota_plan) * 100 and on() (predictor_quota_remaining >= 0)",
           "refId": "A",
           "instant": true
         }
@@ -120,7 +120,7 @@
       },
       "targets": [
         {
-          "expr": "predictor_quota_remaining >= 0 and (clamp_min(-deriv(predictor_quota_remaining[15m]) * 60, 0) / clamp_min(predictor_quota_remaining * 60 / (86400 - (time() % 86400)), 0.001))",
+          "expr": "(clamp_min(-deriv(predictor_quota_remaining[15m]) * 60, 0) / clamp_min(predictor_quota_remaining * 60 / (86400 - (time() % 86400)), 0.001)) and on() (predictor_quota_remaining >= 0)",
           "refId": "A",
           "instant": true
         }
@@ -165,7 +165,7 @@
           "refId": "B"
         },
         {
-          "expr": "predictor_quota_remaining >= 0 and (predictor_quota_remaining * 60 / (86400 - (time() % 86400)))",
+          "expr": "(predictor_quota_remaining * 60 / (86400 - (time() % 86400))) and on() (predictor_quota_remaining >= 0)",
           "legendFormat": "sustainable to UTC midnight",
           "refId": "C"
         }
