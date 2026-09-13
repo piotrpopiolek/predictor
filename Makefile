@@ -40,7 +40,8 @@ promtool:
 
 backup-restore-test:
 	$(COMPOSE) up -d postgres --wait
-	$(COMPOSE) exec -T postgres bash -s < scripts/backup/test-restore.sh
+	$(COMPOSE) cp scripts/backup/test-restore.sh postgres:/tmp/test-restore.sh
+	$(COMPOSE) exec -T postgres bash /tmp/test-restore.sh
 
 test-ci:
 	$(COMPOSE) build

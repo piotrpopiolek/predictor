@@ -1,4 +1,6 @@
 * text=auto
 docker/postgres/*.sh text eol=lf
+scripts/backup/*.sh text eol=lf
+deploy/alertmanager/*.sh text eol=lf
 Makefile text eol=lf
 *.py text eol=lf

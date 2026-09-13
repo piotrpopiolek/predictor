@@ -51,6 +51,12 @@ services:
       - ./alembic:/app/alembic
       - ./pyproject.toml:/app/pyproject.toml
       - ./alembic.ini:/app/alembic.ini
+      - ./deploy:/app/deploy
+      - ./scripts:/app/scripts
+      - ./docs:/app/docs
+      - ./docker-compose.yml:/app/docker-compose.yml
+      - ./docker-compose.prod.yml:/app/docker-compose.prod.yml
+      - ./docker-compose.observability.yml:/app/docker-compose.observability.yml
     healthcheck:
       test: ["CMD-SHELL", "kill -0 1"]
       interval: 10s

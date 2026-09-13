@@ -21,7 +21,9 @@ if ($LASTEXITCODE -ne 0) { throw "promtool check rules failed" }
 docker run --rm -w /work -v "${PWD}/deploy/prometheus:/work:ro" --entrypoint /bin/promtool prom/prometheus:v3.4.1 test rules /work/tests/alerts.test.yml
 if ($LASTEXITCODE -ne 0) { throw "promtool test rules failed" }
 
-Get-Content -Raw scripts/backup/test-restore.sh | docker compose -f docker-compose.yml exec -T postgres bash -s
+docker compose -f docker-compose.yml cp scripts/backup/test-restore.sh postgres:/tmp/test-restore.sh
+if ($LASTEXITCODE -ne 0) { throw "copy restore script failed" }
+docker compose -f docker-compose.yml exec -T postgres bash /tmp/test-restore.sh
 if ($LASTEXITCODE -ne 0) { throw "backup restore test failed" }
 
 docker build -f Dockerfile.prod -t predictor:v0.1.0 -t predictor:test-prod .

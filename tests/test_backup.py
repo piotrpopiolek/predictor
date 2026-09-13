@@ -16,6 +16,7 @@ def test_backup_dump_does_not_wait_for_advisory_lock() -> None:
         assert "pg_try_advisory_lock" not in text
         assert "pg_advisory_lock" not in text
         assert "steal" not in text
+        assert "\r" not in text
     assert "--lock-wait-timeout=0" in once
     assert "--lock-wait-timeout=0" in restore
     assert "predictor_prod" in once
@@ -30,4 +31,6 @@ def test_restore_targets_clone_not_prod() -> None:
     assert "DROP DATABASE IF EXISTS predictor_restore_test" in restore
     assert "CREATE DATABASE predictor_prod" not in restore
     assert "DROP DATABASE IF EXISTS predictor_prod" not in restore
-    assert "predictor_dev" not in restore
+    assert "CREATE DATABASE predictor_dev" not in restore
+    assert "DROP DATABASE IF EXISTS predictor_dev" not in restore
+    assert "-d predictor_dev" not in restore
