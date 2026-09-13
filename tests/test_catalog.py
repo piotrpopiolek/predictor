@@ -13,6 +13,9 @@ from predictor.client.football import FootballClient
 from predictor.logutil import configure_logging
 from predictor.models.etl import EtlTask
 from predictor.schemas.catalog import CountryItem
+from predictor.schemas.enrichment import FixtureDetail
+from predictor.schemas.fixtures import FixtureItem
+from predictor.schemas.odds import OddsMappingItem
 from predictor.schemas.settings import load_settings
 from predictor.services.ingest.drift import warn_model_extra
 from predictor.services.ingest.next_goal import is_next_goal_market, next_goal_matches
@@ -197,3 +200,56 @@ def test_unknown_country_field_logs_contract_drift(
     assert "/countries" in text
     assert "should-not-leak" not in text
     assert "x-apisports-key" not in text
+
+
+def test_fixture_vendor_events_and_standings_are_not_drift(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging()
+    item = FixtureItem.model_validate(
+        {
+            "fixture": {"id": 1, "status": {"short": "1H"}},
+            "league": {
+                "id": 39,
+                "season": 2026,
+                "standings": True,
+                "events": True,
+            },
+            "teams": {"home": {"id": 33}, "away": {"id": 34}},
+            "events": [{"type": "Goal"}],
+        }
+    )
+    warn_model_extra("/fixtures", item)
+    warn_model_extra("/fixtures", item.league)
+    assert not item.model_extra
+    assert not item.league.model_extra
+    assert "contract_drift" not in capsys.readouterr().out
+
+
+def test_odds_mapping_update_is_not_drift(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging()
+    item = OddsMappingItem.model_validate(
+        {
+            "fixture": {"id": 1},
+            "update": "2026-09-13T15:00:00+00:00",
+        }
+    )
+    warn_model_extra("/odds/mapping", item)
+    assert not item.model_extra
+    assert "contract_drift" not in capsys.readouterr().out
+
+
+def test_fixture_detail_still_parses_event_list() -> None:
+    detail = FixtureDetail.model_validate(
+        {
+            "fixture": {"id": 1},
+            "league": {"id": 39, "season": 2026, "events": True},
+            "teams": {"home": {"id": 33}, "away": {"id": 34}},
+            "events": [{"type": "Goal", "time": {"elapsed": 12}}],
+        }
+    )
+    assert len(detail.events) == 1
+    assert detail.events[0].type == "Goal"
+    assert detail.league.events is True

@@ -6,8 +6,10 @@
 ## Diagnose
 `etl_tasks` with `permanent_error`. JSON logs `fields` on `contract_drift`. Do not expect secrets in those logs.
 
+`$value` on `PredictorContractDrift` is PromQL `increase(…[15m])` (can be thousands after a worker restart). It is not an HTTP status or field id. Grouping is `endpoint`.
+
 ## Action
 Inspect the endpoint template. Keep extra fields on the model (`extra=allow`). Patch mapping if the vendor added a required column.
 
 ## Resolved
-No new `permanent_error` and no `contract_drift` increase for 15 minutes.
+No new `permanent_error` and no `contract_drift` increase for 15 minutes. Restart the worker after a schema patch; it does not auto-reload.

@@ -88,12 +88,13 @@ groups:
           description: "permanent_error tasks > 0. env={{ $labels.environment }} value={{ $value }} threshold=0"
           runbook_url: docs/runbooks/contract-drift.md
       - alert: PredictorContractDrift
-        expr: increase(predictor_contract_drift_total[15m]) > 0
+        expr: |
+          sum by (endpoint) (increase(predictor_contract_drift_total[15m])) > 0
         labels:
           severity: warning
         annotations:
           summary: API contract drift detected
-          description: "Unknown API fields logged. env={{ $labels.environment }} value={{ $value }} threshold=0"
+          description: "Unknown API fields logged. endpoint={{ $labels.endpoint }} value={{ $value }} threshold=0"
           runbook_url: docs/runbooks/contract-drift.md
 
   - name: predictor.telemetry

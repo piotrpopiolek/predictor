@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Any
 
 from pydantic import Field
 
@@ -47,6 +48,7 @@ class FixtureLeague(ExtraAllow):
     season: int | None = None
     round: str | None = None
     standings: bool | None = None
+    events: bool | list[Any] | None = None
 
 
 class FixtureTeam(ExtraAllow):
@@ -84,6 +86,7 @@ class FixtureItem(ExtraAllow):
     teams: FixtureTeams
     goals: FixtureGoals | None = None
     score: FixtureScore | None = None
+    events: list[Any] | bool | None = None
 
 
 class RoundDatesItem(ExtraAllow):
