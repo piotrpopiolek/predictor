@@ -29,3 +29,17 @@ def test_render_metrics_includes_live_age_gauge() -> None:
     )
     assert "predictor_live_snapshot_age_seconds" in body
     assert "12.5" in body
+
+
+def test_render_metrics_includes_quota_used() -> None:
+    body = render_metrics(
+        environment="local",
+        lock_held=True,
+        task_counts={},
+        quota_remaining=1200,
+        quota_used=6300,
+    )
+    assert "predictor_quota_used" in body
+    assert "6300" in body
+    assert "predictor_quota_remaining" in body
+    assert "1200" in body

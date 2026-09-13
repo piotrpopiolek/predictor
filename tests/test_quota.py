@@ -9,6 +9,7 @@ from predictor.client.quota import QuotaSnapshot
 from predictor.services.quota import (
     live_poll_interval_seconds,
     quota_allows,
+    quota_gauges_from_params,
     seconds_until_utc_midnight,
 )
 
@@ -61,3 +62,11 @@ def test_live_interval_stretches_when_quota_cannot_hold_target() -> None:
     snap = QuotaSnapshot(current=7496, limit_day=7500, remaining=4, source="api")
     interval = live_poll_interval_seconds(snap, 60, now)
     assert interval == 1800.0
+
+
+def test_quota_gauges_from_params() -> None:
+    assert quota_gauges_from_params(None) == (-1, 0)
+    assert quota_gauges_from_params({}) == (-1, 0)
+    remaining, used = quota_gauges_from_params({"remaining": 1200, "current": 6300})
+    assert remaining == 1200
+    assert used == 6300

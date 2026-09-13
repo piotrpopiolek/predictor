@@ -58,7 +58,7 @@ def test_recording_rule_excludes_tmpfs_overlay() -> None:
     assert "overlay" in text
 
 
-def test_three_provisioned_grafana_dashboards() -> None:
+def test_provisioned_grafana_dashboards() -> None:
     files = sorted(DASH_DIR.glob("*.json"))
     uids = set()
     for path in files:
@@ -75,7 +75,25 @@ def test_three_provisioned_grafana_dashboards() -> None:
             joined = " ".join(exprs)
             assert "predictor_live_snapshot_age_seconds" in joined
             assert "time() - predictor_live_last_snapshot_unixtime" not in joined
-    assert uids == {"predictor-infra", "predictor-api-live", "predictor-backfill"}
+        if data["uid"] == "predictor-backfill":
+            age = next(p for p in data["panels"] if p["id"] == 2)
+            steps = age["fieldConfig"]["defaults"]["thresholds"]["steps"]
+            assert steps[-1]["value"] == 86400
+        if data["uid"] == "predictor-quota":
+            exprs = [
+                str(target.get("expr", ""))
+                for panel in data["panels"]
+                for target in panel.get("targets", [])
+            ]
+            joined = " ".join(exprs)
+            assert "predictor_quota_used" in joined
+            assert "deriv(predictor_quota_remaining" in joined
+    assert uids == {
+        "predictor-infra",
+        "predictor-api-live",
+        "predictor-backfill",
+        "predictor-quota",
+    }
 
 
 def test_observability_host_ports_bind_loopback() -> None:

@@ -3,7 +3,7 @@
   "title": "Backfill and data quality",
   "timezone": "utc",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "tags": ["predictor", "backfill"],
   "time": {"from": "now-24h", "to": "now"},
@@ -24,7 +24,32 @@
       "title": "Oldest pending age",
       "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "predictor_oldest_pending_age_seconds", "refId": "A"}]
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 21600},
+              {"color": "red", "value": 86400}
+            ]
+          },
+          "unit": "s"
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "expr": "predictor_oldest_pending_age_seconds",
+          "refId": "A",
+          "instant": true
+        }
+      ]
     },
     {
       "id": 3,
@@ -34,7 +59,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "increase(predictor_contract_drift_total[15m])",
+          "expr": "sum by (endpoint) (increase(predictor_contract_drift_total[15m]))",
           "legendFormat": "{{endpoint}}",
           "refId": "A"
         }

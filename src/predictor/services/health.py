@@ -11,13 +11,18 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from predictor.constants import IN_PLAY_FIXTURE_STATUSES, OPEN_ETL_STATUSES
+from predictor.constants import (
+    IN_PLAY_FIXTURE_STATUSES,
+    OPEN_ETL_STATUSES,
+    QUOTA_SNAPSHOT_ENDPOINT,
+)
 from predictor.logutil import log_json
 from predictor.models.etl import EtlRun, EtlTask
 from predictor.models.fixtures import Fixture
 from predictor.models.odds import FixtureOddsLive
 from predictor.schemas.settings import Settings
 from predictor.services.lock import HolderInfo, fetch_holder_sqlalchemy
+from predictor.services.quota import quota_gauges_from_params
 
 
 def current_alembic_head(config_path: str = "alembic.ini") -> str:
@@ -110,12 +115,19 @@ async def operator_status(settings: Settings, engine: AsyncEngine) -> dict[str, 
             }
             for task in cursor_rows
         ]
+        quota_row = await session.scalar(
+            select(EtlTask)
+            .where(EtlTask.endpoint == QUOTA_SNAPSHOT_ENDPOINT)
+            .order_by(EtlTask.id)
+            .limit(1)
+        )
+    quota_payload = quota_row.params if quota_row is not None else None
     return {
         "lock": _holder_payload(holder),
         "run": _run_payload(run),
         "cursors": cursors,
         "queue": counts,
-        "quota": None,
+        "quota": quota_payload,
         "host_environment": settings.host_environment.value,
         "instance_id": settings.instance_id,
     }
@@ -168,6 +180,12 @@ async def scrape_gauges(engine: AsyncEngine) -> dict[str, float]:
                 EtlTask.cursor_kind.is_(None),
             )
         )
+        quota_row = await session.scalar(
+            select(EtlTask)
+            .where(EtlTask.endpoint == QUOTA_SNAPSHOT_ENDPOINT)
+            .order_by(EtlTask.id)
+            .limit(1)
+        )
     now = datetime.now(UTC)
     live_ts, live_age = live_poll_gauges(last_live, now)
     pending_age = 0.0
@@ -176,11 +194,16 @@ async def scrape_gauges(engine: AsyncEngine) -> dict[str, float]:
         if created.tzinfo is None:
             created = created.replace(tzinfo=UTC)
         pending_age = max(0.0, (now - created).total_seconds())
+    remaining, used = quota_gauges_from_params(
+        quota_row.params if quota_row is not None else None
+    )
     return {
         "in_play_fixtures": float(in_play or 0),
         "live_last_snapshot_unixtime": live_ts,
         "live_snapshot_age_seconds": live_age,
         "oldest_pending_age_seconds": pending_age,
+        "quota_remaining": float(remaining),
+        "quota_used": float(used),
     }
 
 

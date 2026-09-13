@@ -25,6 +25,7 @@ def render_metrics(
     oldest_pending_age_seconds: float = 0,
     quota_plan: int = 0,
     quota_remaining: int = -1,
+    quota_used: int = 0,
 ) -> str:
     labels = f'service="status",environment="{environment}"'
     lines = [
@@ -67,6 +68,9 @@ def render_metrics(
         ),
         "# TYPE predictor_quota_remaining gauge",
         f"predictor_quota_remaining{{{labels}}} {quota_remaining}",
+        "# HELP predictor_quota_used Requests used in the current UTC day.",
+        "# TYPE predictor_quota_used gauge",
+        f"predictor_quota_used{{{labels}}} {quota_used}",
         "# HELP predictor_etl_tasks Number of etl_tasks by status.",
         "# TYPE predictor_etl_tasks gauge",
     ]

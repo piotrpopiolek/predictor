@@ -23,6 +23,7 @@ from predictor.services.completeness import write_daily_report
 from predictor.services.queue import ensure_cursors
 from predictor.services.quota import (
     live_poll_interval_seconds,
+    persist_quota_snapshot,
     quota_allows,
     seconds_until_utc_midnight,
 )
@@ -95,49 +96,71 @@ class Scheduler:
     async def _tick(self, stop: asyncio.Event) -> None:
         if stop.is_set():
             return
-        await self._maybe_daily_report()
-        quota = await self._ensure_quota()
-        self._quota = quota
-        if quota.source == "api" and quota.remaining <= 0:
-            await self._persist_cursors()
-            log_json(
-                logging.INFO,
-                service="worker",
-                event="quota_exhausted",
-                remaining=0,
-            )
-            return
-        target = float(self._settings.live_poll_target_seconds)
-        if quota.source == "api":
-            interval = live_poll_interval_seconds(
-                quota, self._settings.live_poll_target_seconds, self._now()
-            )
-        else:
-            interval = target
-        self._live_interval_seconds = interval
-        if interval > target:
-            log_json(
-                logging.WARNING,
-                service="worker",
-                event="live_freshness_missed",
-                interval_seconds=round(interval, 3),
-                target_seconds=self._settings.live_poll_target_seconds,
-                remaining=quota.remaining,
-            )
-        tick_start = self._now()
-        for slot in PRIORITY_ORDER:
-            if stop.is_set():
+        try:
+            await self._maybe_daily_report()
+            quota = await self._ensure_quota()
+            self._quota = quota
+            if quota.source == "api" and quota.remaining <= 0:
+                await self._persist_cursors()
+                log_json(
+                    logging.INFO,
+                    service="worker",
+                    event="quota_exhausted",
+                    remaining=0,
+                )
                 return
-            if not quota_allows(
-                slot.priority, quota, self._settings.quota_safety_buffer_percent
-            ):
-                continue
-            if slot.priority >= 4:
-                elapsed = (self._now() - tick_start).total_seconds()
-                if elapsed >= target:
-                    break
-            handler = self._handlers.get(slot.priority, _noop)
-            await handler()
+            target = float(self._settings.live_poll_target_seconds)
+            if quota.source == "api":
+                interval = live_poll_interval_seconds(
+                    quota, self._settings.live_poll_target_seconds, self._now()
+                )
+            else:
+                interval = target
+            self._live_interval_seconds = interval
+            if interval > target:
+                log_json(
+                    logging.WARNING,
+                    service="worker",
+                    event="live_freshness_missed",
+                    interval_seconds=round(interval, 3),
+                    target_seconds=self._settings.live_poll_target_seconds,
+                    remaining=quota.remaining,
+                )
+            tick_start = self._now()
+            for slot in PRIORITY_ORDER:
+                if stop.is_set():
+                    return
+                if not quota_allows(
+                    slot.priority, quota, self._settings.quota_safety_buffer_percent
+                ):
+                    continue
+                if slot.priority >= 4:
+                    elapsed = (self._now() - tick_start).total_seconds()
+                    if elapsed >= target:
+                        break
+                handler = self._handlers.get(slot.priority, _noop)
+                await handler()
+        finally:
+            await self._persist_quota()
+
+    async def _persist_quota(self) -> None:
+        snapshot = getattr(self._client, "quota", None)
+        if snapshot is None:
+            snapshot = self._quota
+        if snapshot is None or snapshot.source != "api":
+            return
+        try:
+            session_cm = self._session_factory()
+        except TypeError:
+            return
+        try:
+            async with session_cm as session:
+                async with session.begin():
+                    await persist_quota_snapshot(session, snapshot)
+        except (TypeError, AttributeError):
+            return
+        except Exception:
+            log_json(logging.WARNING, service="worker", event="quota_persist_failed")
 
     async def _maybe_daily_report(self) -> None:
         yesterday = self._now().astimezone(UTC).date() - timedelta(days=1)

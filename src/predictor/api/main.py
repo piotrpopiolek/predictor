@@ -100,6 +100,8 @@ def create_app() -> FastAPI:
             live_snapshot_age_seconds=gauges["live_snapshot_age_seconds"],
             oldest_pending_age_seconds=gauges["oldest_pending_age_seconds"],
             quota_plan=settings.quota_daily_limit,
+            quota_remaining=int(gauges["quota_remaining"]),
+            quota_used=int(gauges["quota_used"]),
         )
         return PlainTextResponse(
             body, media_type="text/plain; version=0.0.4; charset=utf-8"

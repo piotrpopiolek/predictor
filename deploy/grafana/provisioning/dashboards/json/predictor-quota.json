@@ -1,0 +1,175 @@
+{
+  "uid": "predictor-quota",
+  "title": "Quota usage",
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["predictor", "quota"],
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Remaining",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "blue", "value": null}]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "expr": "predictor_quota_remaining >= 0",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Used today",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "blue", "value": null}]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {"expr": "predictor_quota_used", "refId": "A", "instant": true}
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Used percent of plan",
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 70},
+              {"color": "red", "value": 90}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "expr": "predictor_quota_remaining >= 0 and predictor_quota_plan > 0 and (predictor_quota_used / predictor_quota_plan) * 100",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Burn vs sustainable (req/min)",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 1.5}
+            ]
+          },
+          "decimals": 2
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "expr": "predictor_quota_remaining >= 0 and (clamp_min(-deriv(predictor_quota_remaining[15m]) * 60, 0) / clamp_min(predictor_quota_remaining * 60 / (86400 - (time() % 86400)), 0.001))",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Remaining vs plan vs used",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "predictor_quota_remaining >= 0",
+          "legendFormat": "remaining",
+          "refId": "A"
+        },
+        {"expr": "predictor_quota_plan", "legendFormat": "plan", "refId": "B"},
+        {"expr": "predictor_quota_used", "legendFormat": "used", "refId": "C"}
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Request burn rate",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2
+        }
+      },
+      "targets": [
+        {
+          "expr": "clamp_min(-delta(predictor_quota_remaining[5m]) / 5, 0)",
+          "legendFormat": "5m avg",
+          "refId": "A"
+        },
+        {
+          "expr": "clamp_min(-deriv(predictor_quota_remaining[15m]) * 60, 0)",
+          "legendFormat": "15m avg",
+          "refId": "B"
+        },
+        {
+          "expr": "predictor_quota_remaining >= 0 and (predictor_quota_remaining * 60 / (86400 - (time() % 86400)))",
+          "legendFormat": "sustainable to UTC midnight",
+          "refId": "C"
+        }
+      ]
+    }
+  ]
+}

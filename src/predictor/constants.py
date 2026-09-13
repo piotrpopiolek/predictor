@@ -37,6 +37,7 @@ ETL_STATUSES = frozenset(
 )
 OPEN_ETL_STATUSES = frozenset({"pending", "in_progress", "retryable_error"})
 DAILY_REPORT_ENDPOINT = "report/daily"
+QUOTA_SNAPSHOT_ENDPOINT = "quota/snapshot"
 DAY_CONTRACT_ENDPOINTS = frozenset(
     {
         "/fixtures",
