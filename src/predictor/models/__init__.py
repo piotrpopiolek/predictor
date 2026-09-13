@@ -10,6 +10,7 @@ from predictor.models.catalog import (
     Player,
     Season,
 )
+from predictor.models.catalog_rest import CoachCareer, Sidelined, Transfer, Trophy
 from predictor.models.children import (
     FixtureEvent,
     FixtureLineup,
@@ -28,11 +29,19 @@ from predictor.models.fixtures import (
 from predictor.models.injuries import Injury
 from predictor.models.odds import FixtureOdds, FixtureOddsLive, OddsFixtureMapping
 from predictor.models.predictions import Prediction, PredictionH2H
+from predictor.models.seasonal import (
+    PlayerCareerTeam,
+    PlayerStatistic,
+    SquadMember,
+    Standing,
+    TeamSeasonStatistics,
+)
 
 __all__ = [
     "Base",
     "Bookmaker",
     "Coach",
+    "CoachCareer",
     "Country",
     "EtlRun",
     "EtlTask",
@@ -53,9 +62,17 @@ __all__ = [
     "OddsFixtureMapping",
     "OddsLiveBet",
     "Player",
+    "PlayerCareerTeam",
+    "PlayerStatistic",
     "Prediction",
     "PredictionH2H",
     "Season",
+    "Sidelined",
+    "SquadMember",
+    "Standing",
     "Team",
+    "TeamSeasonStatistics",
+    "Transfer",
+    "Trophy",
     "Venue",
 ]

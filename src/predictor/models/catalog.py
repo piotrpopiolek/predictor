@@ -90,6 +90,14 @@ class Player(Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     firstname: Mapped[str | None] = mapped_column(String(100), nullable=True)
     lastname: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    birth_place: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    birth_country: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    nationality: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    height: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    weight: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    injured: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     photo: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -100,6 +108,13 @@ class Coach(Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     firstname: Mapped[str | None] = mapped_column(String(100), nullable=True)
     lastname: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    birth_place: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    birth_country: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    nationality: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    height: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    weight: Mapped[str | None] = mapped_column(String(20), nullable=True)
     photo: Mapped[str | None] = mapped_column(Text, nullable=True)
     team_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("teams.id"), nullable=True

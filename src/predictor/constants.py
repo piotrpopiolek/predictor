@@ -46,6 +46,50 @@ HALF_STATS_FROM_SEASON = 2024
 CONTROL_REFRESH_HOURS = 24
 ENRICHMENT_PER_TICK = 6
 PREMATCH_PER_TICK = 4
+GLOBAL_PER_TICK = 3
+
+# ETL sentinel for /teams/statistics without a date filter (schema §2.6).
+TEAM_STATS_SENTINEL_DATE = "1970-01-01"
+
+# Reconstructable lookups: never HTTP (T087 / T083 seasons).
+LOOKUP_WITHOUT_HTTP: frozenset[str] = frozenset(
+    {"/teams/seasons", "/players/seasons"}
+)
+
+TOP_PLAYER_ENDPOINTS: tuple[str, ...] = (
+    "/players/topscorers",
+    "/players/topassists",
+    "/players/topyellowcards",
+    "/players/topredcards",
+)
+
+# Drain order inside runtime priority 8 (after pre-match).
+GLOBAL_ENDPOINT_ORDER: tuple[str, ...] = (
+    "/standings",
+    "/teams",
+    "/venues",
+    "/teams/statistics",
+    "/players",
+    "/players/profiles",
+    "/players/squads",
+    "/players/teams",
+    *TOP_PLAYER_ENDPOINTS,
+    "/coachs",
+    "/transfers",
+    "/trophies",
+    "/sidelined",
+)
+
+# Snapshot endpoints re-queued the next UTC day.
+STALE_GLOBAL_ENDPOINTS: frozenset[str] = frozenset(
+    {
+        "/standings",
+        "/teams/statistics",
+        "/players",
+        "/players/squads",
+        *TOP_PLAYER_ENDPOINTS,
+    }
+)
 
 # W3 catalog. Order is FK-safe: countries before leagues. No /fixtures.
 DICTIONARY_ENDPOINTS: tuple[str, ...] = (
