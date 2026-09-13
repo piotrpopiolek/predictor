@@ -20,14 +20,14 @@ jobs:
       QUOTA_SAFETY_BUFFER_PERCENT: "3"
       LIVE_POLL_TARGET_SECONDS: "60"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run test-ci
         run: make test-ci
 
   pip-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
