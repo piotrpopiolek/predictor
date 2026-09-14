@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
 from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from predictor.client.errors import (
@@ -84,7 +85,8 @@ class EnrichmentIngest:
             task_id = await self._claim_control_id()
             if task_id is None:
                 return
-            await self._enrich_task(task_id, control=True)
+            if not await self._enrich_task(task_id, control=True):
+                return
 
     async def refresh_pending(self) -> None:
         for _ in range(self._per_tick):
@@ -93,7 +95,8 @@ class EnrichmentIngest:
             task_id = await self._claim_enrichment_id()
             if task_id is None:
                 break
-            await self._enrich_task(task_id, control=False)
+            if not await self._enrich_task(task_id, control=False):
+                break
         await self._drain_half_stats()
         await self._drain_injuries()
 
@@ -109,11 +112,11 @@ class EnrichmentIngest:
                 task = await claim_control_refresh_task(session, self._now())
                 return None if task is None else int(task.id)
 
-    async def _enrich_task(self, task_id: int, *, control: bool) -> None:
+    async def _enrich_task(self, task_id: int, *, control: bool) -> bool:
         loaded = await self._load_task_fixture(task_id)
         if loaded is None:
             await self._fail(task_id, "permanent_error", "missing_fixture")
-            return
+            return False
         fixture = loaded
         if fixture.status_short in IRREGULAR_FIXTURE_STATUSES:
             await self._finish(
@@ -125,7 +128,7 @@ class EnrichmentIngest:
                     "status_short": fixture.status_short,
                 },
             )
-            return
+            return True
         try:
             items, current, total = await fetch_all_pages(
                 self._client, "/fixtures", params={"id": fixture.id}
@@ -134,13 +137,13 @@ class EnrichmentIngest:
             raise
         except QuotaExhaustedError:
             await self._fail(task_id, "retryable_error", "quota_exhausted")
-            return
+            return False
         except (RetryableHttpError, FootballHttpError) as exc:
             await self._fail(task_id, "retryable_error", type(exc).__name__)
-            return
+            return False
         if not items:
             await self._finish(task_id, "coverage_empty", params={"id": fixture.id})
-            return
+            return True
         try:
             detail = FixtureDetail.model_validate(items[0])
         except ValidationError:
@@ -151,7 +154,7 @@ class EnrichmentIngest:
                 endpoint="/fixtures",
             )
             await self._fail(task_id, "retryable_error", "invalid_fixture_detail")
-            return
+            return False
         warn_model_extra("/fixtures", detail)
         coverage = await self._coverage(fixture.league_id, fixture.season)
         try:
@@ -159,7 +162,7 @@ class EnrichmentIngest:
                 async with session.begin():
                     task = await session.get(EtlTask, task_id)
                     if task is None:
-                        return
+                        return False
                     counts = await persist_fixture_detail(
                         session,
                         detail,
@@ -210,6 +213,18 @@ class EnrichmentIngest:
                         paging_total=total,
                         params=params,
                     )
+        except IntegrityError as exc:
+            log_json(
+                logging.ERROR,
+                service="worker",
+                event="enrichment_persist_failed",
+                endpoint="/fixtures",
+                error="IntegrityError",
+                fixture_id=fixture.id,
+                **_integrity_fields(exc),
+            )
+            await self._fail(task_id, "permanent_error", "persist_failed")
+            return False
         except Exception as exc:
             log_json(
                 logging.ERROR,
@@ -217,8 +232,11 @@ class EnrichmentIngest:
                 event="enrichment_persist_failed",
                 endpoint="/fixtures",
                 error=type(exc).__name__,
+                fixture_id=fixture.id,
             )
             await self._fail(task_id, "retryable_error", "persist_failed")
+            return False
+        return True
 
     async def _drain_half_stats(self) -> None:
         for _ in range(self._per_tick):
@@ -455,6 +473,20 @@ class EnrichmentIngest:
 
 def _allowed(flag: bool | None) -> bool:
     return flag is not False
+
+
+def _integrity_fields(exc: BaseException) -> dict[str, str]:
+    diag = getattr(getattr(exc, "orig", None), "diag", None)
+    if diag is None:
+        return {}
+    fields: dict[str, str] = {}
+    constraint = getattr(diag, "constraint_name", None)
+    detail = getattr(diag, "message_detail", None)
+    if constraint:
+        fields["constraint"] = str(constraint)
+    if detail:
+        fields["pg_detail"] = str(detail)[:200]
+    return fields
 
 
 def _parse_team_stats(raw: list[Any]) -> list[TeamStatisticsItem]:

@@ -23,6 +23,7 @@ from predictor.models.injuries import Injury
 from predictor.schemas.enrichment import (
     FixtureDetail,
     FixtureEventItem,
+    IdName,
     InjuryItem,
     LineupItem,
     LineupPlayerWrap,
@@ -31,8 +32,9 @@ from predictor.schemas.enrichment import (
     TeamPlayersItem,
     TeamStatisticsItem,
 )
+from predictor.schemas.fixtures import FixtureTeam
 from predictor.services.ingest.persist import _chunks
-from predictor.services.ingest.persist_fixtures import upsert_fixtures
+from predictor.services.ingest.persist_fixtures import upsert_fixtures, upsert_teams
 from predictor.services.queue import enqueue_coach_catalog
 
 
@@ -109,6 +111,7 @@ async def persist_fixture_detail(
     include_players: bool,
 ) -> dict[str, int]:
     extra = await upsert_fixtures(session, [detail])
+    await upsert_teams(session, nested_fixture_teams(detail))
     fixture_id = detail.fixture.id
     fixture = await session.get(Fixture, fixture_id)
     home_id = fixture.home_team_id if fixture is not None else None
@@ -144,6 +147,27 @@ async def persist_fixture_detail(
             session, fixture_id, detail.players
         )
     return counts
+
+
+def nested_fixture_teams(detail: FixtureDetail) -> list[FixtureTeam]:
+    """Stub clubs that appear on children but are not home/away."""
+    found: dict[int, FixtureTeam] = {}
+    for item in (
+        *[event.team for event in detail.events],
+        *[lineup.team for lineup in detail.lineups],
+        *[block.team for block in detail.statistics],
+        *[group.team for group in detail.players],
+    ):
+        team = _id_name_as_team(item)
+        if team is not None:
+            found[team.id] = team
+    return list(found.values())
+
+
+def _id_name_as_team(item: IdName | None) -> FixtureTeam | None:
+    if item is None or item.id is None:
+        return None
+    return FixtureTeam(id=item.id, name=item.name, logo=item.logo)
 
 
 def _collect_people(
@@ -478,6 +502,7 @@ def _player_stat_row(
 
 async def persist_injuries(session: AsyncSession, items: Sequence[InjuryItem]) -> int:
     people: list[tuple[int, str | None, str | None]] = []
+    teams: list[FixtureTeam] = []
     rows: list[dict[str, Any]] = []
     seen: set[tuple[int, int]] = set()
     for item in items:
@@ -492,6 +517,9 @@ async def persist_injuries(session: AsyncSession, items: Sequence[InjuryItem]) -
             continue
         seen.add(key)
         people.append((item.player.id, item.player.name, item.player.photo))
+        team = _id_name_as_team(item.team)
+        if team is not None:
+            teams.append(team)
         rows.append(
             {
                 "player_id": item.player.id,
@@ -504,6 +532,7 @@ async def persist_injuries(session: AsyncSession, items: Sequence[InjuryItem]) -
             }
         )
     await upsert_player_stubs(session, people)
+    await upsert_teams(session, teams)
     if not rows:
         return 0
     fixture_ids = {row["fixture_id"] for row in rows}

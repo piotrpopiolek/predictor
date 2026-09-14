@@ -21,7 +21,7 @@ from predictor.models.children import (
     FixtureStatistic,
 )
 from predictor.models.etl import EtlTask
-from predictor.models.fixtures import Fixture
+from predictor.models.fixtures import Fixture, Team
 from predictor.models.injuries import Injury
 from predictor.models.odds import FixtureOdds, OddsFixtureMapping
 from predictor.models.predictions import Prediction, PredictionH2H
@@ -29,6 +29,7 @@ from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.enrichment import FixtureDetail
 from predictor.schemas.settings import Settings, load_settings
 from predictor.services.ingest.enrichment import EnrichmentIngest
+from predictor.services.ingest.persist_children import nested_fixture_teams
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.queue import (
     ensure_cursors,
@@ -216,9 +217,29 @@ def _id_payload(fixture_id: int = FT_ID) -> dict[str, Any]:
                     ],
                 }
             ],
-        }
+        },
+        {
+            "team": {
+                "id": 26594,
+                "name": "Guest FC",
+                "update": "2026-09-13T17:00:00+00:00",
+            },
+            "players": [
+                {
+                    "player": {"id": 91001, "name": "Guest"},
+                    "statistics": [
+                        {"games": {"minutes": 12, "position": "M"}},
+                    ],
+                }
+            ],
+        },
     ]
     return body
+
+
+def test_nested_fixture_teams_include_player_block_club() -> None:
+    detail = FixtureDetail.model_validate(_id_payload())
+    assert {team.id for team in nested_fixture_teams(detail)} >= {33, 34, 26594}
 
 
 def _half_payload() -> dict[str, Any]:
@@ -437,6 +458,13 @@ async def test_id_enrichment_persists_children_and_half_stats() -> None:
                     FixturePlayerStats.player_id == 90001,
                 )
             )
+            guest_stats = await session.scalar(
+                select(FixturePlayerStats).where(
+                    FixturePlayerStats.fixture_id == FT_ID,
+                    FixturePlayerStats.player_id == 91001,
+                )
+            )
+            guest_team = await session.get(Team, 26594)
             player = await session.get(Player, 90001)
             task = await session.scalar(
                 select(EtlTask)
@@ -462,6 +490,9 @@ async def test_id_enrichment_persists_children_and_half_stats() -> None:
         assert player_stats is not None
         assert player_stats.goals == 1
         assert player_stats.pen_committed == 0
+        assert guest_stats is not None
+        assert guest_team is not None
+        assert guest_team.name == "Guest FC"
         assert player is not None
         assert task is not None
         assert task.status == "complete"
