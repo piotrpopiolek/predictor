@@ -786,15 +786,22 @@ async def test_duplicate_player_stats_do_not_fail_persist() -> None:
                 .select_from(FixturePlayerStats)
                 .where(FixturePlayerStats.fixture_id == FT_ID)
             )
+            strikers = await session.scalar(
+                select(func.count())
+                .select_from(FixturePlayerStats)
+                .where(FixturePlayerStats.fixture_id == FT_ID)
+                .where(FixturePlayerStats.player_id == 90001)
+            )
             task = await session.scalar(
                 select(EtlTask)
                 .where(EtlTask.endpoint == "/fixtures")
                 .where(EtlTask.fixture_id == FT_ID)
             )
-        assert n == 1
+        assert n == 2
+        assert strikers == 1
         assert task is not None
         assert task.status == "complete"
-        assert task.params.get("counts", {}).get("player_stats") == 1
+        assert task.params.get("counts", {}).get("player_stats") == 2
     finally:
         await client.aclose()
         await engine.dispose()
