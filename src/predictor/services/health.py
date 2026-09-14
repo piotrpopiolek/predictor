@@ -181,11 +181,12 @@ async def scrape_gauges(engine: AsyncEngine) -> dict[str, float]:
         live_ids = await load_live_all_fixture_ids(session)
         in_play = 0
         if live_ids:
-            in_play = await session.scalar(
+            counted = await session.scalar(
                 select(func.count())
                 .select_from(Fixture)
                 .where(Fixture.id.in_(live_ids))
             )
+            in_play = int(counted or 0)
         last_live = await session.scalar(
             select(func.max(FixtureOddsLive.captured_at)).where(
                 FixtureOddsLive.captured_at <= func.now()
