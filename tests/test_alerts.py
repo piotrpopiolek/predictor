@@ -118,8 +118,7 @@ def test_provisioned_grafana_dashboards() -> None:
             assert "predictor_oldest_pending_age_seconds" in joined
             assert "predictor_writer_lock" in joined
             assert (
-                'sum(deriv(predictor_etl_queue{status="pending"}[15m])) * 60'
-                in joined
+                'sum(deriv(predictor_etl_queue{status="pending"}[15m])) * 60' in joined
             )
             assert "predictor_etl_tasks{" not in joined
     assert uids == {
