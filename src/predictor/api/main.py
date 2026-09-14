@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -22,6 +22,7 @@ from predictor.services.health import (
     scrape_gauges,
     task_counts,
 )
+from predictor.services.live_board import LiveMatch, list_live_matches, render_live_html
 from predictor.services.lock import fetch_holder_sqlalchemy
 from predictor.services.metrics import metrics_token_ok, render_metrics
 from predictor.services.quota import (
@@ -77,6 +78,31 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=503, detail="postgres_unavailable"
             ) from None
+
+    async def _live_matches() -> list[LiveMatch]:
+        engine = cast(AsyncEngine, app.state.engine)
+        try:
+            return await list_live_matches(engine)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
+
+    @app.get("/")
+    @app.get("/live")
+    async def live() -> HTMLResponse:
+        matches = await _live_matches()
+        html = render_live_html(matches, generated_at=datetime.now(UTC))
+        return HTMLResponse(html)
+
+    @app.get("/live.json")
+    async def live_json() -> dict[str, Any]:
+        matches = await _live_matches()
+        return {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "count": len(matches),
+            "matches": [item.as_dict() for item in matches],
+        }
 
     @app.get("/metrics")
     async def metrics(

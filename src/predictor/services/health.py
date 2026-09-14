@@ -12,7 +12,6 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from predictor.constants import (
-    IN_PLAY_FIXTURE_STATUSES,
     OPEN_ETL_STATUSES,
     QUOTA_SNAPSHOT_ENDPOINT,
 )
@@ -21,6 +20,7 @@ from predictor.models.etl import EtlRun, EtlTask
 from predictor.models.fixtures import Fixture
 from predictor.models.odds import FixtureOddsLive
 from predictor.schemas.settings import Settings
+from predictor.services.live_board import load_live_all_fixture_ids
 from predictor.services.lock import HolderInfo, fetch_holder_sqlalchemy
 from predictor.services.quota import quota_gauges_from_params
 
@@ -164,11 +164,14 @@ def live_poll_gauges(last_live: datetime | None, now: datetime) -> tuple[float, 
 
 async def scrape_gauges(engine: AsyncEngine) -> dict[str, float]:
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        in_play = await session.scalar(
-            select(func.count())
-            .select_from(Fixture)
-            .where(Fixture.status_short.in_(tuple(IN_PLAY_FIXTURE_STATUSES)))
-        )
+        live_ids = await load_live_all_fixture_ids(session)
+        in_play = 0
+        if live_ids:
+            in_play = await session.scalar(
+                select(func.count())
+                .select_from(Fixture)
+                .where(Fixture.id.in_(live_ids))
+            )
         last_live = await session.scalar(
             select(func.max(FixtureOddsLive.captured_at)).where(
                 FixtureOddsLive.captured_at <= func.now()

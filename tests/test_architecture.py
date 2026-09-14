@@ -26,9 +26,12 @@ def test_only_lock_module_calls_try_advisory_lock() -> None:
 
 def test_api_does_not_import_football_client() -> None:
     source = Path("src/predictor/api/main.py").read_text(encoding="utf-8")
+    board = Path("src/predictor/services/live_board.py").read_text(encoding="utf-8")
     assert "FootballClient" not in source
     assert "httpx" not in source
     assert "pg_try_advisory_lock" not in source
+    assert "FootballClient" not in board
+    assert "httpx" not in board
 
 
 def test_catalog_ingest_does_not_call_fixtures() -> None:

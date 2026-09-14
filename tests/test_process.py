@@ -42,6 +42,28 @@ def test_health_ok(valid_env: None) -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_live_board_html_and_json(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_list(engine: object) -> list[object]:
+        del engine
+        return []
+
+    monkeypatch.setattr("predictor.api.main.list_live_matches", fake_list)
+    with TestClient(create_app()) as client:
+        html = client.get("/live")
+        root = client.get("/")
+        payload = client.get("/live.json")
+    assert html.status_code == 200
+    assert "text/html" in html.headers["content-type"]
+    assert "Mecze na żywo" in html.text
+    assert root.status_code == 200
+    body = payload.json()
+    assert payload.status_code == 200
+    assert body["count"] == 0
+    assert body["matches"] == []
+
+
 def test_metrics_unauthorized_without_token(valid_env: None) -> None:
     with TestClient(create_app()) as client:
         response = client.get("/metrics")
