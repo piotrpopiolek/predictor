@@ -21,6 +21,7 @@ from predictor.services.health import (
     operator_status,
     scrape_gauges,
     task_counts,
+    task_counts_by_endpoint,
 )
 from predictor.services.live_board import LiveMatch, list_live_matches, render_live_html
 from predictor.services.lock import fetch_holder_sqlalchemy
@@ -117,6 +118,7 @@ def create_app() -> FastAPI:
                 holder = await fetch_holder_sqlalchemy(conn)
                 await conn.execute(text("SELECT 1"))
             counts = await task_counts(engine)
+            queue_rows = await task_counts_by_endpoint(engine)
             gauges = await scrape_gauges(engine)
         except Exception:
             raise HTTPException(
@@ -145,6 +147,7 @@ def create_app() -> FastAPI:
             quota_used=used,
             quota_seconds_until_reset=seconds_until_utc_midnight(now),
             live_poll_interval_seconds=interval,
+            queue_counts=tuple(queue_rows),
         )
         return PlainTextResponse(
             body, media_type="text/plain; version=0.0.4; charset=utf-8"

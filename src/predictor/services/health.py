@@ -141,6 +141,20 @@ async def task_counts(engine: AsyncEngine) -> dict[str, int]:
         return {str(status): int(n) for status, n in rows.all()}
 
 
+async def task_counts_by_endpoint(
+    engine: AsyncEngine,
+) -> list[tuple[str, str, int]]:
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        rows = await session.execute(
+            select(EtlTask.endpoint, EtlTask.status, func.count())
+            .where(EtlTask.cursor_kind.is_(None))
+            .group_by(EtlTask.endpoint, EtlTask.status)
+        )
+        return [
+            (str(endpoint), str(status), int(n)) for endpoint, status, n in rows.all()
+        ]
+
+
 def live_poll_gauges(last_live: datetime | None, now: datetime) -> tuple[float, float]:
     """Unix time and age of the newest live snapshot that is not in the future.
 

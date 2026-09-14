@@ -171,6 +171,15 @@ def test_metrics_token_and_labels() -> None:
     assert "predictor_quota_used" in body
     assert "predictor_live_poll_interval_seconds" in body
     assert "predictor_quota_seconds_until_reset" in body
+    body_q = render_metrics(
+        environment="local",
+        lock_held=True,
+        task_counts={"pending": 2},
+        queue_counts=(("/teams", "pending", 5),),
+    )
+    assert "predictor_etl_queue" in body_q
+    assert 'endpoint="/teams"' in body_q
     assert "fixture_id" not in body
+    assert "fixture_id" not in body_q
     assert "task_id" not in body
     assert "run_id" not in body

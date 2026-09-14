@@ -7,6 +7,10 @@ import secrets
 from predictor.constants import ETL_STATUSES
 
 
+def _prom_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\n", " ").replace('"', '\\"')
+
+
 def metrics_token_ok(authorization: str | None, token: str) -> bool:
     if authorization is None or not authorization.startswith("Bearer "):
         return False
@@ -28,6 +32,7 @@ def render_metrics(
     quota_used: int = 0,
     quota_seconds_until_reset: float = 0,
     live_poll_interval_seconds: float = 60,
+    queue_counts: tuple[tuple[str, str, int], ...] = (),
 ) -> str:
     labels = f'service="status",environment="{environment}"'
     lines = [
@@ -97,4 +102,18 @@ def render_metrics(
     for status in sorted(ETL_STATUSES):
         count = task_counts.get(status, 0)
         lines.append(f'predictor_etl_tasks{{{labels},status="{status}"}} {count}')
+    lines.extend(
+        [
+            "# HELP predictor_etl_queue ETL tasks by endpoint and status (no cursors).",
+            "# TYPE predictor_etl_queue gauge",
+        ]
+    )
+    for endpoint, status, count in sorted(queue_counts):
+        if count <= 0 or not endpoint:
+            continue
+        ep = _prom_label(endpoint)
+        st = _prom_label(status)
+        lines.append(
+            f'predictor_etl_queue{{{labels},endpoint="{ep}",status="{st}"}} {count}'
+        )
     return "\n".join(lines) + "\n"

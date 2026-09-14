@@ -106,11 +106,28 @@ def test_provisioned_grafana_dashboards() -> None:
                 for t in p.get("targets", [])
             )
             assert percent.startswith("(predictor_quota_used / predictor_quota_plan)")
+        if data["uid"] == "predictor-etl-queue":
+            exprs = [
+                str(target.get("expr", ""))
+                for panel in data["panels"]
+                for target in panel.get("targets", [])
+            ]
+            joined = " ".join(exprs)
+            assert 'sum(predictor_etl_queue{status="pending"})' in joined
+            assert 'topk(15, predictor_etl_queue{status="pending"})' in joined
+            assert "predictor_oldest_pending_age_seconds" in joined
+            assert "predictor_writer_lock" in joined
+            assert (
+                'sum(deriv(predictor_etl_queue{status="pending"}[15m])) * 60'
+                in joined
+            )
+            assert "predictor_etl_tasks{" not in joined
     assert uids == {
         "predictor-infra",
         "predictor-api-live",
         "predictor-backfill",
         "predictor-quota",
+        "predictor-etl-queue",
     }
 
 

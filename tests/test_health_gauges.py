@@ -65,3 +65,23 @@ def test_render_metrics_includes_quota_seconds_until_reset() -> None:
     )
     assert "predictor_quota_seconds_until_reset" in body
     assert "14340" in body
+
+
+def test_render_metrics_includes_etl_queue() -> None:
+    body = render_metrics(
+        environment="local",
+        lock_held=True,
+        task_counts={"pending": 9},
+        queue_counts=(("/teams/statistics", "pending", 9),),
+    )
+    assert "predictor_etl_queue" in body
+    assert 'endpoint="/teams/statistics"' in body
+    assert "pending" in body
+    skipped = render_metrics(
+        environment="local",
+        lock_held=True,
+        task_counts={},
+        queue_counts=(("", "pending", 3), ("/odds", "pending", 0)),
+    )
+    assert 'endpoint=""' not in skipped
+    assert 'endpoint="/odds"' not in skipped
