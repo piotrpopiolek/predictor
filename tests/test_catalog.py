@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -10,6 +10,7 @@ from tenacity.wait import wait_base
 
 from predictor.client.errors import FootballHttpError, QuotaExhaustedError
 from predictor.client.football import FootballClient
+from predictor.constants import ODDS_MAPPING_RETRY_BACKOFF_SECONDS
 from predictor.logutil import configure_logging
 from predictor.models.etl import EtlTask
 from predictor.schemas.catalog import CountryItem
@@ -20,7 +21,7 @@ from predictor.schemas.settings import load_settings
 from predictor.services.ingest.drift import warn_model_extra
 from predictor.services.ingest.next_goal import is_next_goal_market, next_goal_matches
 from predictor.services.ingest.paging import fetch_all_pages
-from predictor.services.queue import needs_refresh
+from predictor.services.queue import mapping_needs_refresh, needs_refresh
 
 
 class WaitZero(wait_base):
@@ -176,6 +177,30 @@ def test_needs_refresh_is_daily_for_complete_dictionaries() -> None:
     assert needs_refresh(task, next_day) is True
     pending = EtlTask(endpoint="/countries", params={}, status="pending")
     assert needs_refresh(pending, now) is True
+
+
+def test_mapping_needs_refresh_skips_complete_until_next_utc_day() -> None:
+    now = datetime(2026, 9, 18, 13, 0, tzinfo=UTC)
+    task = EtlTask(endpoint="/odds/mapping", params={}, status="complete")
+    task.completed_at = now
+    assert mapping_needs_refresh(task, now) is False
+    next_day = datetime(2026, 9, 19, 0, 1, tzinfo=UTC)
+    assert mapping_needs_refresh(task, next_day) is True
+    pending = EtlTask(endpoint="/odds/mapping", params={}, status="pending")
+    assert mapping_needs_refresh(pending, now) is True
+
+
+def test_mapping_needs_refresh_backs_off_retryable_error() -> None:
+    failed_at = datetime(2026, 9, 18, 10, 45, tzinfo=UTC)
+    task = EtlTask(endpoint="/odds/mapping", params={}, status="retryable_error")
+    task.updated_at = failed_at
+    assert mapping_needs_refresh(task, failed_at) is False
+    assert (
+        mapping_needs_refresh(task, failed_at + timedelta(minutes=14, seconds=59))
+        is False
+    )
+    due = failed_at + timedelta(seconds=ODDS_MAPPING_RETRY_BACKOFF_SECONDS)
+    assert mapping_needs_refresh(task, due) is True
 
 
 def test_unknown_country_field_logs_contract_drift(

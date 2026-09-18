@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import socket
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select, update
@@ -17,6 +17,7 @@ from predictor.constants import (
     ETL_STATUSES,
     GLOBAL_ENDPOINT_ORDER,
     LOOKUP_WITHOUT_HTTP,
+    ODDS_MAPPING_RETRY_BACKOFF_SECONDS,
     STALE_GLOBAL_ENDPOINTS,
     TOP_PLAYER_ENDPOINTS,
 )
@@ -138,6 +139,18 @@ def needs_refresh(task: EtlTask, now: datetime) -> bool:
         "not_supported",
         "permanent_error",
     }
+
+
+def mapping_needs_refresh(task: EtlTask, now: datetime) -> bool:
+    if task.status == "retryable_error":
+        stamp = task.updated_at
+        if stamp is None:
+            return True
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=UTC)
+        wait = timedelta(seconds=ODDS_MAPPING_RETRY_BACKOFF_SECONDS)
+        return stamp.astimezone(UTC) + wait <= now.astimezone(UTC)
+    return needs_refresh(task, now)
 
 
 async def claim_next(session: AsyncSession) -> EtlTask | None:

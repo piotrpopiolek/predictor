@@ -91,6 +91,8 @@ services:
     profiles: ["observability"]
     restart: unless-stopped
     command: ["-config.file=/etc/tempo/tempo.yml"]
+    environment:
+      GOMEMLIMIT: 700MiB
     volumes:
       - ./deploy/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
       - tempo_data:/var/tempo
@@ -99,7 +101,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 384M
+          memory: 768M
 
   grafana:
     image: grafana/grafana:11.6.3

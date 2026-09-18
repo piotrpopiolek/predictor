@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -415,6 +415,80 @@ async def test_empty_odds_are_coverage_empty() -> None:
         assert any(p.startswith("/odds?") for p in paths)
         assert task is not None
         assert task.status == "coverage_empty"
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_complete_mapping_is_not_refetched_same_utc_day() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    paths: list[str] = []
+    client = _client(settings, httpx.MockTransport(_router(paths, mapping=[])))
+    try:
+        await _reset_w7(factory)
+        await _seed_fixture(factory)
+        async with factory() as session:
+            async with session.begin():
+                session.add(
+                    EtlTask(
+                        endpoint="/odds/mapping",
+                        params={},
+                        status="complete",
+                        completed_at=NOW,
+                        updated_at=NOW,
+                    )
+                )
+                await ensure_odds_task(session, FIXTURE_ID)
+        ingest = PrematchIngest(client, factory, now_fn=lambda: NOW, per_tick=4)
+        await ingest.refresh_pending()
+
+        assert not any(p.startswith("/odds/mapping") for p in paths)
+        assert any(p.startswith("/odds?") and "fixture=9101" in p for p in paths)
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mapping_retryable_error_waits_for_backoff() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    paths: list[str] = []
+    client = _client(settings, httpx.MockTransport(_router(paths, mapping=[])))
+    try:
+        await _reset_w7(factory)
+        async with factory() as session:
+            async with session.begin():
+                session.add(
+                    EtlTask(
+                        endpoint="/odds/mapping",
+                        params={},
+                        status="retryable_error",
+                        last_error="FootballHttpError",
+                        updated_at=NOW,
+                    )
+                )
+        early = PrematchIngest(
+            client,
+            factory,
+            now_fn=lambda: NOW + timedelta(minutes=1),
+            per_tick=4,
+        )
+        await early.refresh_pending()
+        assert not any(p.startswith("/odds/mapping") for p in paths)
+
+        due = PrematchIngest(
+            client,
+            factory,
+            now_fn=lambda: NOW + timedelta(minutes=15),
+            per_tick=4,
+        )
+        await due.refresh_pending()
+        assert any(p.startswith("/odds/mapping") for p in paths)
     finally:
         await client.aclose()
         await engine.dispose()

@@ -40,6 +40,7 @@ from predictor.services.queue import (
     complete_task,
     ensure_odds_task,
     get_or_create_endpoint_task,
+    mapping_needs_refresh,
 )
 
 
@@ -339,6 +340,8 @@ class PrematchIngest:
         async with self._session_factory() as session:
             async with session.begin():
                 task = await get_or_create_endpoint_task(session, "/odds/mapping")
+                if not mapping_needs_refresh(task, self._now()):
+                    return None
                 return int(task.id)
 
     async def _claim_h2h(self) -> tuple[int, str] | None:
