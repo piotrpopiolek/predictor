@@ -8,10 +8,10 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi import FastAPI, Form, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from predictor.logutil import configure_logging, log_startup
 from predictor.postgres import make_async_engine
@@ -27,10 +27,23 @@ from predictor.services.live_board import (
     LiveMatch,
     list_live_matches,
     list_next_goal_matches,
+    render_bets_html,
     render_live_html,
 )
 from predictor.services.lock import fetch_holder_sqlalchemy
 from predictor.services.metrics import metrics_token_ok, render_metrics
+from predictor.services.operator_bets import (
+    BetError,
+    bet_as_dict,
+    current_stake_label,
+    load_history_payload,
+    parse_odd,
+    place_bet,
+    settle_and_list_open,
+    settle_bet_manual,
+    settle_open_from_engine,
+    settle_open_tickets,
+)
 from predictor.services.quota import (
     live_poll_interval_gauge,
     seconds_until_utc_midnight,
@@ -88,6 +101,7 @@ def create_app() -> FastAPI:
     async def _live_matches() -> list[LiveMatch]:
         engine = cast(AsyncEngine, app.state.engine)
         try:
+            await settle_open_from_engine(engine)
             return await list_live_matches(engine)
         except Exception:
             raise HTTPException(
@@ -117,6 +131,7 @@ def create_app() -> FastAPI:
     async def _next_goal_board() -> list[tuple[LiveMatch, tuple[str, ...]]]:
         engine = cast(AsyncEngine, app.state.engine)
         try:
+            await settle_open_from_engine(engine)
             return await list_next_goal_matches(engine)
         except Exception:
             raise HTTPException(
@@ -125,8 +140,16 @@ def create_app() -> FastAPI:
 
     @app.get("/live/next-goal")
     async def live_next_goal() -> HTMLResponse:
+        engine = cast(AsyncEngine, app.state.engine)
         selected = await _next_goal_board()
         matches = [match for match, _reasons in selected]
+        try:
+            open_bets = await settle_and_list_open(engine)
+            stake = await current_stake_label(engine)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
         html = render_live_html(
             matches,
             generated_at=datetime.now(UTC),
@@ -136,20 +159,127 @@ def create_app() -> FastAPI:
                 "lub musi odrabiać w dwumeczu."
             ),
             active_nav="next_goal",
+            open_bets={fid: bet_as_dict(bet) for fid, bet in open_bets.items()},
+            current_stake=stake,
         )
         return HTMLResponse(html)
 
     @app.get("/live/next-goal.json")
     async def live_next_goal_json() -> dict[str, Any]:
+        engine = cast(AsyncEngine, app.state.engine)
         selected = await _next_goal_board()
+        try:
+            open_bets = await settle_and_list_open(engine)
+            stake = await current_stake_label(engine)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
         return {
             "generated_at": datetime.now(UTC).isoformat(),
             "count": len(selected),
+            "current_stake": stake,
             "matches": [
-                {**match.as_dict(), "next_goal_reasons": list(reasons)}
+                {
+                    **match.as_dict(),
+                    "next_goal_reasons": list(reasons),
+                    "open_bet": (
+                        None
+                        if match.fixture_id not in open_bets
+                        else bet_as_dict(open_bets[match.fixture_id])
+                    ),
+                }
                 for match, reasons in selected
             ],
         }
+
+    @app.get("/live/bets")
+    async def live_bets() -> HTMLResponse:
+        engine = cast(AsyncEngine, app.state.engine)
+        try:
+            payload = await load_history_payload(engine)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
+        html = render_bets_html(payload, generated_at=datetime.now(UTC))
+        return HTMLResponse(html)
+
+    @app.get("/live/bets.json")
+    async def live_bets_json() -> dict[str, Any]:
+        engine = cast(AsyncEngine, app.state.engine)
+        try:
+            return await load_history_payload(engine)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
+
+    @app.post("/live/bets", response_model=None)
+    async def place_live_bet(
+        request: Request,
+        fixture_id: int = Form(...),
+        odd: str = Form(...),
+    ) -> RedirectResponse | JSONResponse:
+        engine = cast(AsyncEngine, app.state.engine)
+        wants_json = "application/json" in (request.headers.get("accept") or "")
+        try:
+            odd_dec = parse_odd(odd)
+            selected = await list_next_goal_matches(engine)
+            match = next(
+                (m for m, _ in selected if m.fixture_id == fixture_id),
+                None,
+            )
+            if match is None:
+                raise BetError(404, "fixture_not_on_next_goal_board")
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                await settle_open_tickets(session)
+                bet = await place_bet(session, match=match, odd=odd_dec)
+                await session.commit()
+                payload = bet_as_dict(bet)
+        except BetError as exc:
+            if wants_json:
+                return JSONResponse(
+                    {"detail": exc.detail}, status_code=exc.code
+                )
+            raise HTTPException(status_code=exc.code, detail=exc.detail) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from exc
+        if wants_json:
+            return JSONResponse(payload, status_code=201)
+        return RedirectResponse(url="/live/next-goal", status_code=303)
+
+    @app.post("/live/bets/{bet_id}/settle", response_model=None)
+    async def settle_live_bet(
+        bet_id: int,
+        request: Request,
+        outcome: str = Form(...),
+    ) -> RedirectResponse | JSONResponse:
+        engine = cast(AsyncEngine, app.state.engine)
+        wants_json = "application/json" in (request.headers.get("accept") or "")
+        try:
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                bet = await settle_bet_manual(session, bet_id, outcome)
+                await session.commit()
+                payload = bet_as_dict(bet)
+        except BetError as exc:
+            if wants_json:
+                return JSONResponse(
+                    {"detail": exc.detail}, status_code=exc.code
+                )
+            raise HTTPException(status_code=exc.code, detail=exc.detail) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from exc
+        if wants_json:
+            return JSONResponse(payload)
+        referer = request.headers.get("referer") or "/live/bets"
+        return RedirectResponse(url=referer, status_code=303)
 
     @app.get("/metrics")
     async def metrics(

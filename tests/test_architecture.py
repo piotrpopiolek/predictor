@@ -119,7 +119,7 @@ def test_no_vendor_api_host_in_application() -> None:
 
 
 def test_alembic_head_helper_matches_w1() -> None:
-    assert current_alembic_head() == "0017_etl_state"
+    assert current_alembic_head() == "0019_operator_bets_no_side"
 
 
 def test_advisory_lock_parts_split_bigint() -> None:

@@ -49,7 +49,12 @@ def test_live_board_html_and_json(
         del engine
         return []
 
+    async def fake_settle(engine: object) -> int:
+        del engine
+        return 0
+
     monkeypatch.setattr("predictor.api.main.list_live_matches", fake_list)
+    monkeypatch.setattr("predictor.api.main.settle_open_from_engine", fake_settle)
     with TestClient(create_app()) as client:
         html = client.get("/live")
         root = client.get("/")
@@ -58,6 +63,7 @@ def test_live_board_html_and_json(
     assert "text/html" in html.headers["content-type"]
     assert "Mecze na żywo" in html.text
     assert 'href="/live/next-goal"' in html.text
+    assert 'href="/live/bets"' in html.text
     assert root.status_code == 200
     body = payload.json()
     assert payload.status_code == 200
@@ -72,7 +78,22 @@ def test_live_next_goal_html_and_json(
         del engine
         return []
 
+    async def fake_settle(engine: object) -> int:
+        del engine
+        return 0
+
+    async def fake_open(engine: object) -> dict[int, object]:
+        del engine
+        return {}
+
+    async def fake_stake(engine: object) -> str:
+        del engine
+        return "21.00"
+
     monkeypatch.setattr("predictor.api.main.list_next_goal_matches", fake_next)
+    monkeypatch.setattr("predictor.api.main.settle_open_from_engine", fake_settle)
+    monkeypatch.setattr("predictor.api.main.settle_and_list_open", fake_open)
+    monkeypatch.setattr("predictor.api.main.current_stake_label", fake_stake)
     with TestClient(create_app()) as client:
         html = client.get("/live/next-goal")
         payload = client.get("/live/next-goal.json")
@@ -84,6 +105,134 @@ def test_live_next_goal_html_and_json(
     assert payload.status_code == 200
     assert body["count"] == 0
     assert body["matches"] == []
+    assert body["current_stake"] == "21.00"
+
+
+def test_live_bets_html_and_json(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_history(engine: object) -> dict[str, object]:
+        del engine
+        return {
+            "generated_at": "2026-09-13T20:00:00+00:00",
+            "metrics": {
+                "n": 0,
+                "wins": 0,
+                "losses": 0,
+                "voids": 0,
+                "open_count": 0,
+                "hit_rate": None,
+                "saldo": "0.00",
+                "current_stake": "21.00",
+                "avg_odd": None,
+                "staked": "0.00",
+            },
+            "bets": [],
+        }
+
+    monkeypatch.setattr("predictor.api.main.load_history_payload", fake_history)
+    with TestClient(create_app()) as client:
+        html = client.get("/live/bets")
+        payload = client.get("/live/bets.json")
+    assert html.status_code == 200
+    assert "Zakłady next goal" in html.text
+    assert 'href="/live/bets" class="active"' in html.text
+    assert payload.status_code == 200
+    assert payload.json()["metrics"]["current_stake"] == "21.00"
+
+
+def test_place_and_settle_bet_json(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    match = SimpleNamespace(
+        fixture_id=42,
+        country="Test",
+        league="L",
+        home="H",
+        away="A",
+        goals_home=0,
+        goals_away=0,
+        elapsed=10,
+        status_short="1H",
+    )
+
+    async def fake_next_goal(engine: object) -> list[tuple[object, object]]:
+        del engine
+        return [(match, None)]
+
+    async def fake_settle_open(session: object) -> int:
+        del session
+        return 0
+
+    placed = SimpleNamespace(
+        id=7,
+        fixture_id=42,
+        odd=Decimal("1.700"),
+        stake=Decimal("21.00"),
+        status="open",
+        placed_at=datetime(2026, 3, 1, tzinfo=UTC),
+        settled_at=None,
+        league="Test · L",
+        home_name="H",
+        away_name="A",
+        goals_home=0,
+        goals_away=0,
+        payout_keep=Decimal("0.880"),
+    )
+
+    async def fake_place(session: object, **kwargs: object) -> object:
+        del session, kwargs
+        return placed
+
+    settled = SimpleNamespace(**{**placed.__dict__, "status": "won"})
+    settled.settled_at = datetime(2026, 3, 1, 1, tzinfo=UTC)
+
+    async def fake_settle(session: object, bet_id: int, outcome: str) -> object:
+        del session
+        assert bet_id == 7
+        assert outcome == "won"
+        return settled
+
+    class _SessionCM:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        async def __aenter__(self) -> object:
+            return AsyncMockSession()
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+    class AsyncMockSession:
+        async def commit(self) -> None:
+            return None
+
+    monkeypatch.setattr("predictor.api.main.list_next_goal_matches", fake_next_goal)
+    monkeypatch.setattr("predictor.api.main.settle_open_tickets", fake_settle_open)
+    monkeypatch.setattr("predictor.api.main.place_bet", fake_place)
+    monkeypatch.setattr("predictor.api.main.settle_bet_manual", fake_settle)
+    monkeypatch.setattr("predictor.api.main.AsyncSession", _SessionCM)
+
+    with TestClient(create_app()) as client:
+        place = client.post(
+            "/live/bets",
+            data={"fixture_id": "42", "odd": "1.70"},
+            headers={"Accept": "application/json"},
+        )
+        settle = client.post(
+            "/live/bets/7/settle",
+            data={"outcome": "won"},
+            headers={"Accept": "application/json"},
+        )
+    assert place.status_code == 201
+    assert place.json()["fixture_id"] == 42
+    assert "selection" not in place.json()
+    assert settle.status_code == 200
+    assert settle.json()["status"] == "won"
 
 
 def test_metrics_unauthorized_without_token(valid_env: None) -> None:

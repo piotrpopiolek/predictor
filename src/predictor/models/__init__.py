@@ -28,6 +28,7 @@ from predictor.models.fixtures import (
 )
 from predictor.models.injuries import Injury
 from predictor.models.odds import FixtureOdds, FixtureOddsLive, OddsFixtureMapping
+from predictor.models.operator_bets import OperatorBet
 from predictor.models.predictions import Prediction, PredictionH2H
 from predictor.models.seasonal import (
     PlayerCareerTeam,
@@ -61,6 +62,7 @@ __all__ = [
     "OddsBet",
     "OddsFixtureMapping",
     "OddsLiveBet",
+    "OperatorBet",
     "Player",
     "PlayerCareerTeam",
     "PlayerStatistic",

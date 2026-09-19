@@ -45,6 +45,7 @@ EXPECTED_TABLES = frozenset(
         "trophies",
         "etl_runs",
         "etl_tasks",
+        "operator_bets",
     }
 )
 
@@ -83,11 +84,11 @@ def test_migrated_schema_has_domain_and_etl_tables() -> None:
     assert "alembic_version" in names
 
 
-def test_alembic_head_is_etl_state() -> None:
+def test_alembic_head_is_operator_bets_no_side() -> None:
     with app_connect() as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     assert version is not None
-    assert version[0] == "0017_etl_state"
+    assert version[0] == "0019_operator_bets_no_side"
 
 
 def test_fixture_odds_live_pk_is_append_only() -> None:

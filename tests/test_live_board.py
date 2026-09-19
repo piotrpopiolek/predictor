@@ -429,6 +429,23 @@ def test_favorite_losing_skips_draw_and_penalties() -> None:
     assert is_favorite_losing(_fav_home(prematch=None)) is False
 
 
+def test_favorite_losing_uses_prediction_over_midmatch_live() -> None:
+    # Mid-match live makes the leader look like favorite; prediction says away.
+    match = _fav_home(
+        home_team_id=4317,
+        away_team_id=313,
+        goals_home=1,
+        goals_away=0,
+        prematch=PrematchOdds(
+            "1.222", "4.333", "41", "Fulltime Result", source="live"
+        ),
+        prediction_winner_team_id=313,
+        prediction_pct_home=10.0,
+        prediction_pct_away=45.0,
+    )
+    assert is_favorite_losing(match) is True
+
+
 def test_second_leg_and_tie_deficit() -> None:
     assert is_second_leg("2nd Leg") is True
     assert is_second_leg("Champions League - Semi-finals", leg=2) is True
@@ -468,5 +485,8 @@ def test_render_next_goal_nav_and_empty() -> None:
     assert "Następny gol" in html
     assert 'href="/live/next-goal" class="active"' in html
     assert 'href="/live"' in html
+    assert 'href="/live/bets"' in html
     assert "Brak meczów dla filtra." in html
     assert "Wszystkie" in html
+    assert "http-equiv" not in html
+    assert "formOpen" in html
