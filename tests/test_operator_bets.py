@@ -90,6 +90,7 @@ def test_resolve_auto_goal_will_happen() -> None:
             now_home=2,
             now_away=0,
             status_short="2H",
+            counting_goal=True,
             elapsed=70,
         )
         == "won"
@@ -104,6 +105,7 @@ def test_resolve_auto_goal_will_happen() -> None:
         )
         == "lost"
     )
+    # Mid-match score flicker without Goal events must not settle won.
     assert (
         resolve_auto_outcome(
             snap_home=0,
@@ -112,8 +114,20 @@ def test_resolve_auto_goal_will_happen() -> None:
             now_away=1,
             status_short="2H",
             elapsed=60,
+            has_goal_events=False,
         )
-        == "won"
+        is None
+    )
+    assert (
+        resolve_auto_outcome(
+            snap_home=0,
+            snap_away=1,
+            now_home=0,
+            now_away=1,
+            status_short="FT",
+            has_goal_events=True,
+        )
+        == "lost"
     )
     assert (
         resolve_auto_outcome(
@@ -302,7 +316,22 @@ def test_render_bets_history_metrics() -> None:
                 "saldo": "10.42",
                 "hit_overall": 100.0,
                 "hit_last10": 100.0,
-            }
+            },
+            {
+                "id": 2,
+                "fixture_id": 11,
+                "placed_at": "2026-03-01T14:00:00+00:00",
+                "league": "Test",
+                "home": "C",
+                "away": "D",
+                "odd": "1.600",
+                "stake": "21.10",
+                "status": "lost",
+                "pnl": "-21.10",
+                "saldo": "-10.68",
+                "hit_overall": 50.0,
+                "hit_last10": 50.0,
+            },
         ],
     }
     html = render_bets_html(
@@ -313,6 +342,12 @@ def test_render_bets_history_metrics() -> None:
     assert "Strona" not in html
     assert 'href="/live/bets" class="active"' in html
     assert "10,42" in html or "10.42" in html
+    assert 'class="charts"' in html
+    assert 'aria-label="Wykres salda, stawki i zmiany"' in html
+    assert 'aria-label="Wykres skuteczności"' in html
+    assert "Średnia zmiana" in html
+    assert "Hit (narastająco)" in html
+    assert "<polyline" in html
 
 
 def _match(fixture_id: int = 9001) -> LiveMatch:
@@ -391,7 +426,7 @@ async def test_settle_manual_409_and_void() -> None:
 
 
 @pytest.mark.asyncio
-async def test_settle_open_tickets_from_fixture_score() -> None:
+async def test_settle_open_tickets_waits_without_goal_events() -> None:
     bet = _bet(status="open", bet_id=10)
     bet.fixture_id = 100
     bet.goals_home = 0
@@ -419,9 +454,57 @@ async def test_settle_open_tickets_from_fixture_score() -> None:
     )
 
     settled = await settle_open_tickets(session)
-    assert settled == 1
+    assert settled == 0
+    assert bet.status == "open"
+
+
+@pytest.mark.asyncio
+async def test_settle_open_tickets_wins_on_counting_goal_event() -> None:
+    bet = _bet(status="open", bet_id=12)
+    bet.fixture_id = 102
+    bet.goals_home = 0
+    bet.goals_away = 1
+
+    open_result = MagicMock()
+    open_result.all.return_value = [bet]
+    fixture = SimpleNamespace(
+        id=102,
+        goals_home=1,
+        goals_away=1,
+        status_short="2H",
+        home_team_id=494,
+        away_team_id=490,
+        elapsed_minutes=70,
+    )
+    fixture_result = MagicMock()
+    fixture_result.all.return_value = [fixture]
+    events_result = MagicMock()
+    events_result.all.return_value = [
+        SimpleNamespace(
+            fixture_id=102,
+            event_type="Goal",
+            team_id=490,
+            detail="Normal Goal",
+            minute=54,
+            minute_extra=None,
+        ),
+        SimpleNamespace(
+            fixture_id=102,
+            event_type="Goal",
+            team_id=494,
+            detail="Normal Goal",
+            minute=68,
+            minute_extra=None,
+        ),
+    ]
+
+    session = AsyncMock()
+    session.scalars = AsyncMock(
+        side_effect=[open_result, fixture_result, events_result]
+    )
+
+    assert await settle_open_tickets(session) == 1
     assert bet.status == "won"
-    assert bet.settled_at is not None
 
 
 @pytest.mark.asyncio

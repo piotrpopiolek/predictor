@@ -2320,7 +2320,341 @@ _BETS_CSS = """
     align-items: center;
   }
   .bet-settle.inline { display: inline-flex; gap: 4px; }
+  .charts {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+    margin-top: 20px;
+  }
+  @media (min-width: 960px) {
+    .charts { grid-template-columns: 1fr 1fr; }
+  }
+  .chart-card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px 8px;
+  }
+  .chart-card h2 {
+    margin: 0 0 8px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .chart-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    margin: 0 0 8px;
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+  .chart-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .chart-legend i {
+    width: 12px;
+    height: 3px;
+    border-radius: 1px;
+    display: inline-block;
+  }
+  .chart-empty {
+    color: var(--muted);
+    font-size: 0.85rem;
+    padding: 24px 8px;
+    text-align: center;
+  }
+  .chart-card svg {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
 """
+
+
+def _fnum(raw: object) -> float | None:
+    if raw is None:
+        return None
+    try:
+        return float(str(raw).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _svg_polyline(
+    xs: list[float],
+    ys: list[float],
+    *,
+    color: str,
+    width: float = 1.6,
+    opacity: float = 1.0,
+) -> str:
+    if len(xs) < 2 or len(xs) != len(ys):
+        return ""
+    points = " ".join(f"{x:.2f},{y:.2f}" for x, y in zip(xs, ys, strict=True))
+    return (
+        f'<polyline fill="none" stroke="{color}" stroke-width="{width}" '
+        f'stroke-linejoin="round" stroke-linecap="round" '
+        f'opacity="{opacity}" points="{points}"/>'
+    )
+
+
+def _moving_average(values: list[float], window: int) -> list[float]:
+    if not values:
+        return []
+    w = max(1, min(window, len(values)))
+    out: list[float] = []
+    running = 0.0
+    for i, value in enumerate(values):
+        running += value
+        if i >= w:
+            running -= values[i - w]
+            out.append(running / w)
+        else:
+            out.append(running / (i + 1))
+    return out
+
+
+def _chart_layout(
+    series: list[list[float]],
+    *,
+    width: int = 640,
+    height: int = 260,
+    pad_l: float = 44,
+    pad_r: float = 12,
+    pad_t: float = 12,
+    pad_b: float = 28,
+) -> tuple[list[list[tuple[float, float]]], float, float, float, float]:
+    flat = [v for row in series for v in row]
+    if not flat:
+        return [], 0.0, 1.0, pad_l, pad_t
+    y_min = min(flat)
+    y_max = max(flat)
+    if abs(y_max - y_min) < 1e-9:
+        y_min -= 1.0
+        y_max += 1.0
+    # pad 8%
+    span = y_max - y_min
+    y_min -= span * 0.08
+    y_max += span * 0.08
+    n = max(len(row) for row in series)
+    plot_w = width - pad_l - pad_r
+    plot_h = height - pad_t - pad_b
+
+    def x_at(i: int) -> float:
+        if n <= 1:
+            return pad_l + plot_w / 2
+        return pad_l + plot_w * (i / (n - 1))
+
+    def y_at(v: float) -> float:
+        return pad_t + plot_h * (1.0 - (v - y_min) / (y_max - y_min))
+
+    plotted: list[list[tuple[float, float]]] = []
+    for row in series:
+        plotted.append([(x_at(i), y_at(v)) for i, v in enumerate(row)])
+    return plotted, y_min, y_max, pad_l, pad_t
+
+
+def _y_grid_svg(
+    y_min: float,
+    y_max: float,
+    *,
+    width: int,
+    height: int,
+    pad_l: float,
+    pad_r: float,
+    pad_t: float,
+    pad_b: float,
+    ticks: int = 5,
+    as_pct: bool = False,
+) -> str:
+    parts: list[str] = []
+    plot_h = height - pad_t - pad_b
+    plot_w = width - pad_l - pad_r
+    for i in range(ticks):
+        t = i / (ticks - 1) if ticks > 1 else 0.0
+        value = y_max - t * (y_max - y_min)
+        y = pad_t + plot_h * t
+        label = f"{value:.0f}%" if as_pct else f"{value:.0f}"
+        parts.append(
+            f'<line x1="{pad_l:.1f}" y1="{y:.1f}" x2="{pad_l + plot_w:.1f}" '
+            f'y2="{y:.1f}" stroke="#30363d" stroke-width="1"/>'
+        )
+        parts.append(
+            f'<text x="{pad_l - 6:.1f}" y="{y + 3:.1f}" text-anchor="end" '
+            f'fill="#8b949e" font-size="10">{label}</text>'
+        )
+    # zero line when in range
+    if y_min < 0 < y_max and not as_pct:
+        y0 = pad_t + plot_h * (1.0 - (0 - y_min) / (y_max - y_min))
+        parts.append(
+            f'<line x1="{pad_l:.1f}" y1="{y0:.1f}" x2="{pad_l + plot_w:.1f}" '
+            f'y2="{y0:.1f}" stroke="#484f58" stroke-width="1.2"/>'
+        )
+    return "".join(parts)
+
+
+def _bets_chart_series(bets: list[dict[str, Any]]) -> list[dict[str, float]]:
+    """Chronological points for charts (skip open for pnl/hit progress)."""
+    ordered = sorted(
+        bets,
+        key=lambda row: (str(row.get("placed_at") or ""), int(row.get("id") or 0)),
+    )
+    points: list[dict[str, float]] = []
+    for bet in ordered:
+        status = str(bet.get("status") or "")
+        stake = _fnum(bet.get("stake"))
+        if stake is None:
+            continue
+        pnl = _fnum(bet.get("pnl")) or 0.0
+        saldo = _fnum(bet.get("saldo"))
+        hit = _fnum(bet.get("hit_overall"))
+        if status == "open":
+            # Keep stake path; saldo/hit stay at last known via forward fill below.
+            points.append(
+                {
+                    "stake": stake,
+                    "pnl": 0.0,
+                    "saldo": points[-1]["saldo"] if points else 0.0,
+                    "hit": points[-1]["hit"] if points else 0.0,
+                    "decided": 0.0,
+                }
+            )
+            continue
+        points.append(
+            {
+                "stake": stake,
+                "pnl": pnl,
+                "saldo": 0.0 if saldo is None else saldo,
+                "hit": 0.0 if hit is None else hit,
+                "decided": 1.0 if status in {"won", "lost"} else 0.0,
+            }
+        )
+    return points
+
+
+def render_bets_saldo_chart(bets: list[dict[str, Any]]) -> str:
+    points = _bets_chart_series(bets)
+    if len(points) < 2:
+        return (
+            '<section class="chart-card"><h2>Saldo</h2>'
+            '<p class="chart-empty">Za mało typów na wykres (min. 2).</p></section>'
+        )
+    saldo = [p["saldo"] for p in points]
+    stake = [p["stake"] for p in points]
+    pnl = [p["pnl"] for p in points]
+    stake_avg_val = sum(stake) / len(stake)
+    stake_avg = [stake_avg_val] * len(stake)
+    trend = _moving_average(saldo, window=min(10, len(saldo)))
+
+    width, height = 640, 280
+    pad_l, pad_r, pad_t, pad_b = 48.0, 14.0, 14.0, 30.0
+    plotted, y_min, y_max, _, _ = _chart_layout(
+        [saldo, trend, stake, stake_avg, pnl],
+        width=width,
+        height=height,
+        pad_l=pad_l,
+        pad_r=pad_r,
+        pad_t=pad_t,
+        pad_b=pad_b,
+    )
+    grid = _y_grid_svg(
+        y_min,
+        y_max,
+        width=width,
+        height=height,
+        pad_l=pad_l,
+        pad_r=pad_r,
+        pad_t=pad_t,
+        pad_b=pad_b,
+    )
+    colors = ("#58a6ff", "#79c0ff", "#f85149", "#d4a72c", "#3fb950")
+    widths = (2.2, 1.6, 1.5, 1.3, 1.2)
+    opacities = (1.0, 0.75, 1.0, 0.9, 0.85)
+    lines = []
+    for pts, color, w, op in zip(plotted, colors, widths, opacities, strict=True):
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        lines.append(_svg_polyline(xs, ys, color=color, width=w, opacity=op))
+    legend = (
+        '<div class="chart-legend">'
+        '<span><i style="background:#58a6ff"></i>Saldo</span>'
+        '<span><i style="background:#79c0ff"></i>Trend</span>'
+        '<span><i style="background:#f85149"></i>Stawka</span>'
+        '<span><i style="background:#d4a72c"></i>Śr. stawka</span>'
+        '<span><i style="background:#3fb950"></i>Średnia zmiana</span>'
+        "</div>"
+    )
+    return (
+        f'<section class="chart-card"><h2>Saldo</h2>{legend}'
+        f'<svg viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="Wykres salda, stawki i zmiany">'
+        f"{grid}{''.join(lines)}</svg></section>"
+    )
+
+
+def render_bets_hit_chart(bets: list[dict[str, Any]]) -> str:
+    points = [p for p in _bets_chart_series(bets) if p["decided"] > 0]
+    if len(points) < 2:
+        return (
+            '<section class="chart-card"><h2>Skuteczność</h2>'
+            '<p class="chart-empty">Za mało rozliczonych typów na wykres (min. 2).</p>'
+            "</section>"
+        )
+    hit = [p["hit"] for p in points]
+    hit_avg_val = hit[-1]
+    hit_avg = [hit_avg_val] * len(hit)
+    width, height = 640, 280
+    pad_l, pad_r, pad_t, pad_b = 48.0, 14.0, 14.0, 30.0
+    # Force 0–100 scale with padding
+    series_for_scale = [hit, hit_avg, [0.0], [100.0]]
+    plotted, y_min, y_max, _, _ = _chart_layout(
+        series_for_scale,
+        width=width,
+        height=height,
+        pad_l=pad_l,
+        pad_r=pad_r,
+        pad_t=pad_t,
+        pad_b=pad_b,
+    )
+    grid = _y_grid_svg(
+        y_min,
+        y_max,
+        width=width,
+        height=height,
+        pad_l=pad_l,
+        pad_r=pad_r,
+        pad_t=pad_t,
+        pad_b=pad_b,
+        as_pct=True,
+    )
+    hit_line = _svg_polyline(
+        [p[0] for p in plotted[0]],
+        [p[1] for p in plotted[0]],
+        color="#a371f7",
+        width=2.2,
+    )
+    avg_line = _svg_polyline(
+        [p[0] for p in plotted[1]],
+        [p[1] for p in plotted[1]],
+        color="#d2a8ff",
+        width=1.4,
+        opacity=0.8,
+    )
+    legend = (
+        '<div class="chart-legend">'
+        '<span><i style="background:#a371f7"></i>Hit (narastająco)</span>'
+        '<span><i style="background:#d2a8ff"></i>Bieżąca skuteczność</span>'
+        "</div>"
+    )
+    return (
+        f'<section class="chart-card"><h2>Skuteczność</h2>{legend}'
+        f'<svg viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="Wykres skuteczności">'
+        f"{grid}{hit_line}{avg_line}</svg></section>"
+    )
 
 
 def render_bets_html(
@@ -2386,6 +2720,12 @@ def render_bets_html(
             + "".join(items)
             + "</ul></section>"
         )
+    charts = (
+        f'<section class="charts">'
+        f"{render_bets_saldo_chart(bets)}"
+        f"{render_bets_hit_chart(bets)}"
+        f"</section>"
+    )
     return f"""<!DOCTYPE html>
 <html lang="pl">
 <head>
@@ -2440,6 +2780,7 @@ def render_bets_html(
       </tbody>
     </table>
   </div>
+  {charts}
 </main>
 {_REFRESH_SCRIPT}
 </body>

@@ -187,10 +187,11 @@ def resolve_auto_outcome(
     if not score_changed:
         return None
     if has_goal_events:
-        # Events loaded but none past snapshot yet.
+        # Events loaded but none past snapshot yet (or only pre-snapshot goals).
         return None
-    # Live score moved without event timing → goal scored.
-    return "won"
+    # Score moved mid-match without event rows — wait for events or FT.
+    # Trusting live score alone caused false wins on API flickers.
+    return None
 
 
 async def settle_open_tickets(session: AsyncSession) -> int:
