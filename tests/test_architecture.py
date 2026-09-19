@@ -62,7 +62,10 @@ def test_enrichment_uses_id_not_ids_batch() -> None:
     assert "refresh_pending" in worker
     assert "PrematchIngest" in worker
     assert "GlobalIngest" in worker
+    assert "priority_three" in worker
     assert "priority_eight" in worker
+    assert "refresh_urgent" in worker
+    assert worker.index("refresh_next_goal_snapshots") < worker.index("refresh_urgent")
     assert worker.index("prematch.refresh_pending") < worker.index(
         "global_ingest.refresh_pending"
     )

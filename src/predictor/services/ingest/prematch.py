@@ -17,7 +17,7 @@ from predictor.client.errors import (
     RetryableHttpError,
 )
 from predictor.client.football import FootballClient
-from predictor.constants import PREMATCH_PER_TICK
+from predictor.constants import PREMATCH_PER_TICK, URGENT_PREMATCH_PER_TICK
 from predictor.logutil import log_json
 from predictor.models.catalog import LeagueSeason
 from predictor.models.etl import EtlTask
@@ -37,6 +37,8 @@ from predictor.services.queue import (
     claim_h2h_task,
     claim_odds_task,
     claim_predictions_task,
+    claim_urgent_odds_task,
+    claim_urgent_predictions_task,
     complete_task,
     ensure_odds_task,
     get_or_create_endpoint_task,
@@ -82,6 +84,19 @@ class PrematchIngest:
             if await self._one_predictions():
                 continue
             if await self._one_odds():
+                continue
+            break
+
+    async def refresh_urgent(self) -> None:
+        """Drain odds then predictions for fixtures within the kickoff horizon (P3)."""
+        if not self._quota_left():
+            return
+        for _ in range(URGENT_PREMATCH_PER_TICK):
+            if not self._quota_left():
+                return
+            if await self._one_odds(urgent=True):
+                continue
+            if await self._one_predictions(urgent=True):
                 continue
             break
 
@@ -187,8 +202,8 @@ class PrematchIngest:
             await self._fail(task_id, "retryable_error", "persist_failed")
         return True
 
-    async def _one_predictions(self) -> bool:
-        task_id = await self._claim_predictions_id()
+    async def _one_predictions(self, *, urgent: bool = False) -> bool:
+        task_id = await self._claim_predictions_id(urgent=urgent)
         if task_id is None:
             return False
         loaded = await self._load_task_fixture(task_id)
@@ -265,8 +280,8 @@ class PrematchIngest:
             await self._fail(task_id, "retryable_error", type(exc).__name__)
         return True
 
-    async def _one_odds(self) -> bool:
-        task_id = await self._claim_odds_id()
+    async def _one_odds(self, *, urgent: bool = False) -> bool:
+        task_id = await self._claim_odds_id(urgent=urgent)
         if task_id is None:
             return False
         loaded = await self._load_task_fixture(task_id)
@@ -358,16 +373,24 @@ class PrematchIngest:
                     return None
                 return int(task.id), raw.strip()
 
-    async def _claim_predictions_id(self) -> int | None:
+    async def _claim_predictions_id(self, *, urgent: bool = False) -> int | None:
         async with self._session_factory() as session:
             async with session.begin():
-                task = await claim_predictions_task(session)
+                if urgent:
+                    task = await claim_urgent_predictions_task(
+                        session, now=self._now()
+                    )
+                else:
+                    task = await claim_predictions_task(session)
                 return None if task is None else int(task.id)
 
-    async def _claim_odds_id(self) -> int | None:
+    async def _claim_odds_id(self, *, urgent: bool = False) -> int | None:
         async with self._session_factory() as session:
             async with session.begin():
-                task = await claim_odds_task(session)
+                if urgent:
+                    task = await claim_urgent_odds_task(session, now=self._now())
+                else:
+                    task = await claim_odds_task(session)
                 return None if task is None else int(task.id)
 
     async def _load_task_fixture(self, task_id: int) -> _FixtureRef | None:

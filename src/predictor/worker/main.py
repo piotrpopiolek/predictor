@@ -84,6 +84,10 @@ async def run_locked_loop(
         prematch = PrematchIngest(client, session_factory)
         global_ingest = GlobalIngest(client, session_factory)
 
+        async def priority_three() -> None:
+            await live.refresh_next_goal_snapshots()
+            await prematch.refresh_urgent()
+
         async def priority_eight() -> None:
             await prematch.refresh_pending()
             await global_ingest.refresh_pending()
@@ -95,7 +99,7 @@ async def run_locked_loop(
             handlers={
                 1: catalog.refresh_priority_one,
                 2: live.refresh_live_fixtures,
-                3: live.refresh_next_goal_snapshots,
+                3: priority_three,
                 4: enrichment.refresh_finalization,
                 5: fixtures.refresh_forward,
                 6: enrichment.refresh_pending,

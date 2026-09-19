@@ -179,13 +179,15 @@ def test_needs_refresh_is_daily_for_complete_dictionaries() -> None:
     assert needs_refresh(pending, now) is True
 
 
-def test_mapping_needs_refresh_skips_complete_until_next_utc_day() -> None:
+def test_mapping_needs_refresh_skips_complete_until_two_hours() -> None:
     now = datetime(2026, 9, 18, 13, 0, tzinfo=UTC)
     task = EtlTask(endpoint="/odds/mapping", params={}, status="complete")
     task.completed_at = now
     assert mapping_needs_refresh(task, now) is False
-    next_day = datetime(2026, 9, 19, 0, 1, tzinfo=UTC)
-    assert mapping_needs_refresh(task, next_day) is True
+    almost = now + timedelta(hours=1, minutes=59)
+    assert mapping_needs_refresh(task, almost) is False
+    due = now + timedelta(hours=2)
+    assert mapping_needs_refresh(task, due) is True
     pending = EtlTask(endpoint="/odds/mapping", params={}, status="pending")
     assert mapping_needs_refresh(pending, now) is True
 

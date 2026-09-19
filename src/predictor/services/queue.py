@@ -15,11 +15,14 @@ from predictor.constants import (
     DICTIONARY_ENDPOINTS,
     ENRICHABLE_FIXTURE_STATUSES,
     ETL_STATUSES,
+    FINISHED_FIXTURE_STATUSES,
     GLOBAL_ENDPOINT_ORDER,
     LOOKUP_WITHOUT_HTTP,
+    ODDS_MAPPING_REFRESH_SECONDS,
     ODDS_MAPPING_RETRY_BACKOFF_SECONDS,
     STALE_GLOBAL_ENDPOINTS,
     TOP_PLAYER_ENDPOINTS,
+    URGENT_PREMATCH_HORIZON_HOURS,
 )
 from predictor.models.etl import EtlRun, EtlTask
 from predictor.models.fixtures import Fixture
@@ -150,6 +153,12 @@ def mapping_needs_refresh(task: EtlTask, now: datetime) -> bool:
             stamp = stamp.replace(tzinfo=UTC)
         wait = timedelta(seconds=ODDS_MAPPING_RETRY_BACKOFF_SECONDS)
         return stamp.astimezone(UTC) + wait <= now.astimezone(UTC)
+    if task.status == "complete" and task.completed_at is not None:
+        completed = task.completed_at
+        if completed.tzinfo is None:
+            completed = completed.replace(tzinfo=UTC)
+        wait = timedelta(seconds=ODDS_MAPPING_REFRESH_SECONDS)
+        return completed.astimezone(UTC) + wait <= now.astimezone(UTC)
     return needs_refresh(task, now)
 
 
@@ -476,6 +485,7 @@ async def enqueue_fixture_followups(
             await ensure_enrichment_task(session, fixture_id)
             await ensure_h2h_task(session, home_id, away_id)
             await ensure_predictions_task(session, fixture_id)
+            await ensure_odds_task(session, fixture_id)
             league_id = row.get("league")
             season = row.get("season")
             if league_id is not None and season is not None:
@@ -487,7 +497,9 @@ async def enqueue_fixture_followups(
                 )
     else:
         for raw_id in extra.get("fixture_ids", []):
-            await ensure_enrichment_task(session, int(raw_id))
+            fixture_id = int(raw_id)
+            await ensure_enrichment_task(session, fixture_id)
+            await ensure_odds_task(session, fixture_id)
     for pair in extra.get("league_seasons", []):
         await ensure_rounds_task(session, int(pair["league"]), int(pair["season"]))
         await ensure_injuries_task(session, int(pair["league"]), int(pair["season"]))
@@ -509,6 +521,7 @@ async def ensure_prematch_for_fixture_ids(
         await ensure_enrichment_task(session, int(fixture_id))
         await ensure_h2h_task(session, int(home_id), int(away_id))
         await ensure_predictions_task(session, int(fixture_id))
+        await ensure_odds_task(session, int(fixture_id))
 
 
 def h2h_param(home_id: int, away_id: int) -> str:
@@ -595,32 +608,61 @@ async def claim_h2h_task(session: AsyncSession) -> EtlTask | None:
 
 async def claim_predictions_task(session: AsyncSession) -> EtlTask | None:
     _require_transaction(session, "claim predictions")
-    stmt = (
-        select(EtlTask)
-        .where(EtlTask.endpoint == "/predictions")
-        .where(EtlTask.fixture_id.is_not(None))
-        .where(EtlTask.cursor_kind.is_(None))
-        .where(EtlTask.status.in_(("pending", "retryable_error")))
-        .order_by(EtlTask.id)
-        .with_for_update(skip_locked=True)
-        .limit(1)
-    )
-    task = await session.scalar(stmt)
-    if task is None:
-        return None
-    return _mark_claimed(task)
+    return await _claim_fixture_endpoint(session, "/predictions", urgent=False)
 
 
 async def claim_odds_task(session: AsyncSession) -> EtlTask | None:
     _require_transaction(session, "claim odds")
+    return await _claim_fixture_endpoint(session, "/odds", urgent=False)
+
+
+async def claim_urgent_predictions_task(
+    session: AsyncSession, *, now: datetime | None = None
+) -> EtlTask | None:
+    _require_transaction(session, "claim urgent predictions")
+    return await _claim_fixture_endpoint(
+        session, "/predictions", urgent=True, now=now
+    )
+
+
+async def claim_urgent_odds_task(
+    session: AsyncSession, *, now: datetime | None = None
+) -> EtlTask | None:
+    _require_transaction(session, "claim urgent odds")
+    return await _claim_fixture_endpoint(session, "/odds", urgent=True, now=now)
+
+
+async def _claim_fixture_endpoint(
+    session: AsyncSession,
+    endpoint: str,
+    *,
+    urgent: bool,
+    now: datetime | None = None,
+) -> EtlTask | None:
+    stamp = now or datetime.now(UTC)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
     stmt = (
         select(EtlTask)
-        .where(EtlTask.endpoint == "/odds")
+        .join(Fixture, Fixture.id == EtlTask.fixture_id)
+        .where(EtlTask.endpoint == endpoint)
         .where(EtlTask.fixture_id.is_not(None))
         .where(EtlTask.cursor_kind.is_(None))
         .where(EtlTask.status.in_(("pending", "retryable_error")))
-        .order_by(EtlTask.id)
-        .with_for_update(skip_locked=True)
+    )
+    if urgent:
+        horizon = stamp + timedelta(hours=URGENT_PREMATCH_HORIZON_HOURS)
+        stmt = (
+            stmt.where(Fixture.date.is_not(None))
+            .where(Fixture.date <= horizon)
+            .where(
+                (Fixture.status_short.is_(None))
+                | (~Fixture.status_short.in_(tuple(FINISHED_FIXTURE_STATUSES)))
+            )
+        )
+    stmt = (
+        stmt.order_by(Fixture.date.asc().nulls_last(), EtlTask.id.asc())
+        .with_for_update(skip_locked=True, of=EtlTask)
         .limit(1)
     )
     task = await session.scalar(stmt)
