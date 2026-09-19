@@ -12,9 +12,11 @@ from predictor.services.live_board import (
     LiveStats,
     NextGoalOdds,
     PrematchOdds,
+    TeamGoalForm,
     clock_label,
     event_kind,
     format_odd,
+    goal_clock_minute,
     is_fulltime_1x2_market,
     is_match_winner_market,
     market_is_next_goal,
@@ -25,9 +27,11 @@ from predictor.services.live_board import (
     pick_venue,
     render_live_html,
     safe_http_url,
+    scoring_team_id,
     select_live_1x2,
     select_next_goal_odds,
     select_prematch_odds,
+    summarize_team_goal_form,
 )
 
 _SAMPLE = LiveMatch(
@@ -86,6 +90,26 @@ def test_event_kind_maps_api_football_details() -> None:
     assert event_kind("Card", "Second Yellow") == "red"
     assert event_kind("Card", "Yellow Card") is None
     assert event_kind("subst", "Substitution 1") is None
+
+
+def test_goal_form_uses_scored_goals_and_clock_minutes() -> None:
+    assert goal_clock_minute(45, 2) == 47
+    assert scoring_team_id(10, 10, 20, "goal") == 10
+    assert scoring_team_id(10, 10, 20, "own_goal") == 20
+    assert scoring_team_id(20, 10, 20, "own_goal") == 10
+    assert scoring_team_id(10, 10, 20, None) is None
+    form = summarize_team_goal_form([2, 1, 0, 3, 2], [12, 45, 47])
+    assert form is not None
+    assert form.matches == 5
+    assert form.avg_goals == 1.6
+    assert form.avg_minute == (12 + 45 + 47) / 3
+    assert form.minute_label == "35'"
+    assert summarize_team_goal_form([None, None], []) is None
+    blank = summarize_team_goal_form([0, 0], [])
+    assert blank is not None
+    assert blank.avg_goals == 0
+    assert blank.avg_minute is None
+    assert blank.minute_label is None
 
 
 def test_next_goal_target_uses_score_and_period() -> None:
@@ -274,6 +298,8 @@ def test_render_match_facts_from_database_fields() -> None:
                     market="Match Winner",
                     bookmaker="Bet365",
                 ),
+                form_home=TeamGoalForm(5, 1.6, 38),
+                form_away=TeamGoalForm(3, 0.8, 61),
             )
         ],
         generated_at=datetime(2026, 9, 13, 20, 0, tzinfo=UTC),
@@ -295,6 +321,11 @@ def test_render_match_facts_from_database_fields() -> None:
     assert "1.73" in html
     assert "1.83" in html
     assert "Brak" in html
+    assert "Ostatnie 5" in html
+    assert "1.6 gola" in html
+    assert escape("38'") in html
+    assert "0.8 gola" in html
+    assert "3 m." in html
     assert "HT 1–0" in html
     assert "1H" not in html
 
@@ -308,6 +339,7 @@ def test_render_skips_missing_enrichment() -> None:
     assert "Następna bramka" not in html
     assert "Przed meczem" not in html
     assert "Pos." not in html
+    assert "Ostatnie 5" not in html
     assert "Regular Season - 4" in html
 
 
@@ -323,9 +355,16 @@ def test_live_match_json_includes_board_fields() -> None:
             "1.8", "4.3", "2.9", "Which team will score the 2nd goal?"
         ),
         prematch=PrematchOdds("1.73", "3.5", "5", "Match Winner", "Bet365"),
+        form_home=TeamGoalForm(5, 1.6, 38.4),
     ).as_dict()
     assert payload["clock"] == "12'"
     assert payload["next_goal"]["home"] == "1.8"
     assert payload["prematch"]["draw"] == "3.5"
     assert payload["prematch"]["source"] == "prematch"
     assert payload["scorers"] == []
+    assert payload["form_home"] == {
+        "matches": 5,
+        "avg_goals": 1.6,
+        "avg_minute": 38.4,
+    }
+    assert payload["form_away"] is None

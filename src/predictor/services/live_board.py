@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,10 +12,11 @@ from html import escape
 from itertools import groupby
 from typing import Any
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, select, tuple_, union_all
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import aliased
 
+from predictor.constants import FINISHED_FIXTURE_STATUSES
 from predictor.models.catalog import Bookmaker, League, OddsBet, OddsLiveBet, Player
 from predictor.models.children import FixtureEvent, FixtureLineup, FixtureStatistic
 from predictor.models.etl import EtlTask
@@ -26,6 +28,7 @@ from predictor.services.ingest.next_goal import (
 )
 
 REFRESH_SECONDS = 15
+FORM_LAST_MATCHES = 5
 _GOAL_MARKET = re.compile(
     r"^which team will score the (\d+)(?:st|nd|rd|th) goal" r"( in extra time)?\??$"
 )
@@ -117,6 +120,28 @@ class PrematchOdds:
 
 
 @dataclass(frozen=True, slots=True)
+class TeamGoalForm:
+    matches: int
+    avg_goals: float
+    avg_minute: float | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "matches": self.matches,
+            "avg_goals": round(self.avg_goals, 2),
+            "avg_minute": (
+                None if self.avg_minute is None else round(self.avg_minute, 1)
+            ),
+        }
+
+    @property
+    def minute_label(self) -> str | None:
+        if self.avg_minute is None:
+            return None
+        return f"{int(round(self.avg_minute))}'"
+
+
+@dataclass(frozen=True, slots=True)
 class LiveStats:
     possession_home: str | None = None
     possession_away: str | None = None
@@ -191,6 +216,8 @@ class LiveMatch:
     stats: LiveStats | None = None
     prematch: PrematchOdds | None = None
     next_goal: NextGoalOdds | None = None
+    form_home: TeamGoalForm | None = None
+    form_away: TeamGoalForm | None = None
 
     @property
     def clock(self) -> str:
@@ -233,6 +260,8 @@ class LiveMatch:
             "stats": None if self.stats is None else self.stats.as_dict(),
             "prematch": None if self.prematch is None else self.prematch.as_dict(),
             "next_goal": (None if self.next_goal is None else self.next_goal.as_dict()),
+            "form_home": None if self.form_home is None else self.form_home.as_dict(),
+            "form_away": None if self.form_away is None else self.form_away.as_dict(),
         }
 
 
@@ -311,6 +340,44 @@ def event_kind(event_type: str, detail: str | None) -> str | None:
     if kind == "Card" and det in {"red card", "second yellow"}:
         return "red"
     return None
+
+
+def goal_clock_minute(minute: int, extra: int | None) -> int:
+    return int(minute) + int(extra or 0)
+
+
+def scoring_team_id(
+    event_team_id: int,
+    home_id: int,
+    away_id: int,
+    kind: str | None,
+) -> int | None:
+    if kind is None:
+        return None
+    if kind == "own_goal":
+        if event_team_id == home_id:
+            return away_id
+        if event_team_id == away_id:
+            return home_id
+        return None
+    return event_team_id
+
+
+def summarize_team_goal_form(
+    goals_for: Sequence[int | None],
+    minutes: Sequence[int],
+) -> TeamGoalForm | None:
+    scored = [int(value) for value in goals_for if value is not None]
+    if not scored:
+        return None
+    avg_minute = None
+    if minutes:
+        avg_minute = sum(minutes) / len(minutes)
+    return TeamGoalForm(
+        matches=len(scored),
+        avg_goals=sum(scored) / len(scored),
+        avg_minute=avg_minute,
+    )
 
 
 def next_goal_target(
@@ -651,6 +718,8 @@ async def list_live_matches(engine: AsyncEngine) -> list[LiveMatch]:
                 stats=extra["stats"],
                 prematch=extra["prematch"],
                 next_goal=extra["next_goal"],
+                form_home=extra["form_home"],
+                form_away=extra["form_away"],
             )
         )
     return matches
@@ -666,6 +735,8 @@ def _empty_extras() -> dict[str, Any]:
         "stats": None,
         "prematch": None,
         "next_goal": None,
+        "form_home": None,
+        "form_away": None,
     }
 
 
@@ -682,6 +753,7 @@ async def _load_extras(
     await _fill_lineups(session, ids, extras)
     await _fill_prematch(session, ids, extras)
     await _fill_next_goal(session, rows, extras)
+    await _fill_goal_form(session, ids, teams, extras)
     return extras
 
 
@@ -741,6 +813,115 @@ def _team_side(team_id: int, home_id: int, away_id: int) -> str | None:
     if team_id == away_id:
         return "away"
     return None
+
+
+def _side_appearances(
+    team_ids: list[int],
+    live_ids: list[int],
+    team_col: Any,
+    goals_col: Any,
+) -> Any:
+    rn = func.row_number().over(
+        partition_by=team_col,
+        order_by=(Fixture.date.desc().nulls_last(), Fixture.id.desc()),
+    )
+    inner = (
+        select(
+            Fixture.id.label("fixture_id"),
+            team_col.label("team_id"),
+            goals_col.label("goals_for"),
+            Fixture.home_team_id.label("home_team_id"),
+            Fixture.away_team_id.label("away_team_id"),
+            Fixture.date.label("kickoff"),
+            rn.label("rn"),
+        )
+        .where(team_col.in_(team_ids))
+        .where(Fixture.status_short.in_(tuple(FINISHED_FIXTURE_STATUSES)))
+    )
+    if live_ids:
+        inner = inner.where(Fixture.id.not_in(live_ids))
+    sub = inner.subquery()
+    return select(
+        sub.c.fixture_id,
+        sub.c.team_id,
+        sub.c.goals_for,
+        sub.c.home_team_id,
+        sub.c.away_team_id,
+        sub.c.kickoff,
+    ).where(sub.c.rn <= FORM_LAST_MATCHES)
+
+
+def _appearance_sort_key(row: Any) -> tuple[int, float, int]:
+    kickoff = row.kickoff
+    if kickoff is None:
+        return (1, 0.0, -int(row.fixture_id))
+    return (0, -kickoff.timestamp(), -int(row.fixture_id))
+
+
+async def _fill_goal_form(
+    session: AsyncSession,
+    ids: list[int],
+    teams: dict[int, tuple[int, int]],
+    extras: dict[int, dict[str, Any]],
+) -> None:
+    team_ids = sorted({tid for pair in teams.values() for tid in pair})
+    if not team_ids:
+        return
+    stmt = union_all(
+        _side_appearances(team_ids, ids, Fixture.home_team_id, Fixture.goals_home),
+        _side_appearances(team_ids, ids, Fixture.away_team_id, Fixture.goals_away),
+    )
+    appearances: dict[int, list[Any]] = defaultdict(list)
+    fixture_sides: dict[int, tuple[int, int]] = {}
+    for row in (await session.execute(stmt)).all():
+        appearances[int(row.team_id)].append(row)
+        fixture_sides[int(row.fixture_id)] = (
+            int(row.home_team_id),
+            int(row.away_team_id),
+        )
+    for rows in appearances.values():
+        rows.sort(key=_appearance_sort_key)
+        del rows[FORM_LAST_MATCHES:]
+    wanted_by_team = {
+        team_id: {int(row.fixture_id) for row in rows}
+        for team_id, rows in appearances.items()
+    }
+    form_ids = sorted({fid for fids in wanted_by_team.values() for fid in fids})
+    minutes_by_team: dict[int, list[int]] = defaultdict(list)
+    if form_ids:
+        events = (
+            select(
+                FixtureEvent.fixture_id,
+                FixtureEvent.team_id,
+                FixtureEvent.detail,
+                FixtureEvent.minute,
+                FixtureEvent.minute_extra,
+            )
+            .where(FixtureEvent.fixture_id.in_(form_ids))
+            .where(FixtureEvent.event_type == "Goal")
+        )
+        for row in (await session.execute(events)).all():
+            fixture_id = int(row.fixture_id)
+            sides = fixture_sides.get(fixture_id)
+            if sides is None:
+                continue
+            kind = event_kind("Goal", row.detail)
+            scorer = scoring_team_id(int(row.team_id), sides[0], sides[1], kind)
+            if scorer is None or fixture_id not in wanted_by_team.get(scorer, set()):
+                continue
+            minutes_by_team[scorer].append(
+                goal_clock_minute(int(row.minute), row.minute_extra)
+            )
+    forms = {
+        team_id: summarize_team_goal_form(
+            [row.goals_for for row in rows],
+            minutes_by_team.get(team_id, ()),
+        )
+        for team_id, rows in appearances.items()
+    }
+    for fixture_id, (home_id, away_id) in teams.items():
+        extras[fixture_id]["form_home"] = forms.get(home_id)
+        extras[fixture_id]["form_away"] = forms.get(away_id)
 
 
 async def _fill_stats(
@@ -1083,6 +1264,34 @@ def _stats_line(match: LiveMatch) -> str:
     return f'<p class="stats">{" · ".join(bits)}</p>'
 
 
+def _form_cell(form: TeamGoalForm | None) -> str:
+    if form is None:
+        return "—"
+    bits = [escape(f"{form.avg_goals:.1f} gola")]
+    if form.minute_label is not None:
+        bits.append(escape(form.minute_label))
+    if form.matches != FORM_LAST_MATCHES:
+        bits.append(escape(f"{form.matches} m."))
+    return " · ".join(bits)
+
+
+def _form_line(match: LiveMatch) -> str:
+    if match.form_home is None and match.form_away is None:
+        return ""
+    title = escape(
+        f"Średnia goli strzelonych i minuta gola z ostatnich {FORM_LAST_MATCHES} "
+        "zakończonych meczów",
+        quote=True,
+    )
+    return (
+        f'<div class="form" title="{title}">'
+        f'<div class="form-col home">{_form_cell(match.form_home)}</div>'
+        f'<div class="form-gap">Ostatnie {FORM_LAST_MATCHES}</div>'
+        f'<div class="form-col away">{_form_cell(match.form_away)}</div>'
+        "</div>"
+    )
+
+
 def _score_text(value: str | None) -> str:
     return "—" if value is None else value
 
@@ -1185,9 +1394,10 @@ def _match_card(match: LiveMatch) -> str:
       </div>
     </div>
   </div>
-  {scorers}
+    {scorers}
   {_facts(match)}
   {_stats_line(match)}
+  {_form_line(match)}
   {_prematch_line(match)}
   {_next_goal_line(match)}
 </article>
@@ -1390,6 +1600,22 @@ def render_live_html(matches: list[LiveMatch], *, generated_at: datetime) -> str
     color: var(--muted);
     font-size: 0.78rem;
   }}
+  .form {{
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 12px;
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 0.78rem;
+  }}
+  .form-col.away {{ text-align: right; }}
+  .form-gap {{
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.68rem;
+    font-weight: 650;
+    align-self: center;
+  }}
   .next-goal {{
     display: flex;
     flex-wrap: wrap;
@@ -1415,6 +1641,8 @@ def render_live_html(matches: list[LiveMatch], *, generated_at: datetime) -> str
     .team, .team.away {{ flex-direction: column; }}
     .name, .team.away .name {{ white-space: normal; flex-direction: row; }}
     .scorer-col.away {{ text-align: center; }}
+    .form {{ grid-template-columns: 1fr; text-align: center; }}
+    .form-col.away {{ text-align: center; }}
     .next-goal {{ justify-content: center; }}
   }}
 </style>
