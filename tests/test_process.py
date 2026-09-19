@@ -57,7 +57,29 @@ def test_live_board_html_and_json(
     assert html.status_code == 200
     assert "text/html" in html.headers["content-type"]
     assert "Mecze na żywo" in html.text
+    assert 'href="/live/next-goal"' in html.text
     assert root.status_code == 200
+    body = payload.json()
+    assert payload.status_code == 200
+    assert body["count"] == 0
+    assert body["matches"] == []
+
+
+def test_live_next_goal_html_and_json(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_next(engine: object) -> list[object]:
+        del engine
+        return []
+
+    monkeypatch.setattr("predictor.api.main.list_next_goal_matches", fake_next)
+    with TestClient(create_app()) as client:
+        html = client.get("/live/next-goal")
+        payload = client.get("/live/next-goal.json")
+    assert html.status_code == 200
+    assert "Następny gol" in html.text
+    assert 'href="/live/next-goal" class="active"' in html.text
+    assert "faworyt przegrywa" in html.text
     body = payload.json()
     assert payload.status_code == 200
     assert body["count"] == 0

@@ -23,7 +23,12 @@ from predictor.services.health import (
     task_counts,
     task_counts_by_endpoint,
 )
-from predictor.services.live_board import LiveMatch, list_live_matches, render_live_html
+from predictor.services.live_board import (
+    LiveMatch,
+    list_live_matches,
+    list_next_goal_matches,
+    render_live_html,
+)
 from predictor.services.lock import fetch_holder_sqlalchemy
 from predictor.services.metrics import metrics_token_ok, render_metrics
 from predictor.services.quota import (
@@ -93,7 +98,11 @@ def create_app() -> FastAPI:
     @app.get("/live")
     async def live() -> HTMLResponse:
         matches = await _live_matches()
-        html = render_live_html(matches, generated_at=datetime.now(UTC))
+        html = render_live_html(
+            matches,
+            generated_at=datetime.now(UTC),
+            active_nav="all",
+        )
         return HTMLResponse(html)
 
     @app.get("/live.json")
@@ -103,6 +112,43 @@ def create_app() -> FastAPI:
             "generated_at": datetime.now(UTC).isoformat(),
             "count": len(matches),
             "matches": [item.as_dict() for item in matches],
+        }
+
+    async def _next_goal_board() -> list[tuple[LiveMatch, tuple[str, ...]]]:
+        engine = cast(AsyncEngine, app.state.engine)
+        try:
+            return await list_next_goal_matches(engine)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
+
+    @app.get("/live/next-goal")
+    async def live_next_goal() -> HTMLResponse:
+        selected = await _next_goal_board()
+        matches = [match for match, _reasons in selected]
+        html = render_live_html(
+            matches,
+            generated_at=datetime.now(UTC),
+            title="Następny gol",
+            empty=(
+                "Brak meczów, w których faworyt przegrywa "
+                "lub musi odrabiać w dwumeczu."
+            ),
+            active_nav="next_goal",
+        )
+        return HTMLResponse(html)
+
+    @app.get("/live/next-goal.json")
+    async def live_next_goal_json() -> dict[str, Any]:
+        selected = await _next_goal_board()
+        return {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "count": len(selected),
+            "matches": [
+                {**match.as_dict(), "next_goal_reasons": list(reasons)}
+                for match, reasons in selected
+            ],
         }
 
     @app.get("/metrics")

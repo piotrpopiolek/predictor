@@ -7,6 +7,7 @@ from html import escape
 from typing import Any
 
 from predictor.services.live_board import (
+    FirstLegScore,
     LiveMatch,
     LiveScorer,
     LiveStats,
@@ -15,10 +16,14 @@ from predictor.services.live_board import (
     TeamGoalForm,
     clock_label,
     event_kind,
+    favorite_side,
     format_odd,
     goal_clock_minute,
+    is_favorite_losing,
     is_fulltime_1x2_market,
     is_match_winner_market,
+    is_second_leg,
+    is_tie_deficit,
     market_is_next_goal,
     match_winner_side,
     next_goal_target,
@@ -29,6 +34,7 @@ from predictor.services.live_board import (
     safe_http_url,
     scoring_team_id,
     select_live_1x2,
+    select_next_goal_matches,
     select_next_goal_odds,
     select_prematch_odds,
     summarize_team_goal_form,
@@ -368,3 +374,77 @@ def test_live_match_json_includes_board_fields() -> None:
         "avg_minute": 38.4,
     }
     assert payload["form_away"] is None
+
+
+def _fav_home(**overrides: Any) -> LiveMatch:
+    base = {
+        "home_team_id": 10,
+        "away_team_id": 20,
+        "league_id": 39,
+        "prematch": PrematchOdds("1.50", "4.0", "6.0", "Match Winner", "Bet365"),
+        "goals_home": 0,
+        "goals_away": 1,
+        "status_short": "2H",
+        "elapsed": 60,
+    }
+    base.update(overrides)
+    return _match(**base)
+
+
+def test_favorite_side_requires_strictly_shorter_price() -> None:
+    assert favorite_side(PrematchOdds("1.5", "4", "6", "Match Winner")) == "home"
+    assert favorite_side(PrematchOdds("5", "4", "1.8", "Match Winner")) == "away"
+    assert favorite_side(PrematchOdds("2.0", "1.5", "3.0", "Match Winner")) is None
+    assert favorite_side(PrematchOdds("2.0", "3.5", "2.0", "Match Winner")) is None
+    assert favorite_side(None) is None
+
+
+def test_favorite_losing_skips_draw_and_penalties() -> None:
+    assert is_favorite_losing(_fav_home()) is True
+    assert is_favorite_losing(_fav_home(goals_home=1, goals_away=1)) is False
+    assert is_favorite_losing(_fav_home(goals_home=2, goals_away=1)) is False
+    assert is_favorite_losing(_fav_home(status_short="PEN")) is False
+    assert is_favorite_losing(_fav_home(prematch=None)) is False
+
+
+def test_second_leg_and_tie_deficit() -> None:
+    assert is_second_leg("2nd Leg") is True
+    assert is_second_leg("Champions League - Semi-finals", leg=2) is True
+    assert is_second_leg("Regular Season - 4") is False
+    first = FirstLegScore(home_team_id=20, away_team_id=10, goals_home=1, goals_away=0)
+    # First leg 20 beat 10 by 1; live 0-0 → home favorite (10) trails aggregate 0-1
+    live = _fav_home(round="2nd Leg", goals_home=0, goals_away=0)
+    assert is_tie_deficit(live, first) is True
+    assert is_tie_deficit(live, None) is False
+    # Aggregate level after live equalizer for favorite away goals
+    level = _fav_home(round="2nd Leg", goals_home=1, goals_away=0)
+    assert is_tie_deficit(level, first) is False
+
+
+def test_select_next_goal_matches_or_logic() -> None:
+    losing = _fav_home(fixture_id=1)
+    draw = _fav_home(fixture_id=2, goals_home=0, goals_away=0)
+    tie_live = _fav_home(fixture_id=3, round="Second Leg", goals_home=0, goals_away=0)
+    first_legs = {
+        3: FirstLegScore(home_team_id=20, away_team_id=10, goals_home=1, goals_away=0)
+    }
+    selected = select_next_goal_matches([losing, draw, tie_live], first_legs)
+    by_id = {match.fixture_id: reasons for match, reasons in selected}
+    assert by_id[1] == ("favorite_losing",)
+    assert 2 not in by_id
+    assert by_id[3] == ("tie_deficit",)
+
+
+def test_render_next_goal_nav_and_empty() -> None:
+    html = render_live_html(
+        [],
+        generated_at=datetime(2026, 9, 13, 20, 0, tzinfo=UTC),
+        title="Następny gol",
+        empty="Brak meczów dla filtra.",
+        active_nav="next_goal",
+    )
+    assert "Następny gol" in html
+    assert 'href="/live/next-goal" class="active"' in html
+    assert 'href="/live"' in html
+    assert "Brak meczów dla filtra." in html
+    assert "Wszystkie" in html

@@ -7,7 +7,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from html import escape
 from itertools import groupby
 from typing import Any
@@ -36,6 +36,13 @@ _HT_STATUSES = frozenset({"HT", "2H", "ET", "BT", "P", "AET", "PEN", "FT"})
 _ET_STATUSES = frozenset({"ET", "BT", "AET", "PEN"})
 _PEN_STATUSES = frozenset({"P", "PEN"})
 _EXTRA_LIVE = frozenset({"ET", "BT"})
+_SECOND_LEG_MARKERS = (
+    "2nd leg",
+    "second leg",
+    "2nd-leg",
+    "leg 2",
+    "leg2",
+)
 _STAT_POSSESSION = "Ball Possession"
 _STAT_SHOTS_ON = "Shots on Goal"
 _STAT_SHOTS = "Total Shots"
@@ -181,6 +188,14 @@ class LiveStats:
 
 
 @dataclass(frozen=True, slots=True)
+class FirstLegScore:
+    home_team_id: int
+    away_team_id: int
+    goals_home: int
+    goals_away: int
+
+
+@dataclass(frozen=True, slots=True)
 class LiveMatch:
     fixture_id: int
     country: str
@@ -198,6 +213,10 @@ class LiveMatch:
     extra: int | None
     home_team_id: int = 0
     away_team_id: int = 0
+    league_id: int = 0
+    season: int = 0
+    kickoff: datetime | None = None
+    leg: int | None = None
     league_logo: str | None = None
     venue: str | None = None
     venue_city: str | None = None
@@ -587,6 +606,122 @@ def select_live_1x2(
     )
 
 
+def _parse_odd(raw: str | None) -> Decimal | None:
+    if raw is None:
+        return None
+    try:
+        return Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def favorite_side(odds: PrematchOdds | None) -> str | None:
+    """Side with a strictly shorter 1X2 price; draw-shortest or tied → None."""
+    if odds is None:
+        return None
+    home = _parse_odd(odds.home)
+    away = _parse_odd(odds.away)
+    if home is None or away is None:
+        return None
+    draw = _parse_odd(odds.draw)
+    if home < away and (draw is None or home < draw):
+        return "home"
+    if away < home and (draw is None or away < draw):
+        return "away"
+    return None
+
+
+def is_favorite_losing(match: LiveMatch) -> bool:
+    if match.status_short in _PEN_STATUSES:
+        return False
+    side = favorite_side(match.prematch)
+    if side is None or match.goals_home is None or match.goals_away is None:
+        return False
+    if side == "home":
+        return match.goals_home < match.goals_away
+    return match.goals_away < match.goals_home
+
+
+def is_second_leg(round_name: str | None, leg: int | None = None) -> bool:
+    if leg == 2:
+        return True
+    folded = (round_name or "").casefold()
+    return any(marker in folded for marker in _SECOND_LEG_MARKERS)
+
+
+def _goals_for_team(
+    team_id: int,
+    home_id: int,
+    away_id: int,
+    goals_home: int | None,
+    goals_away: int | None,
+) -> int | None:
+    if goals_home is None or goals_away is None:
+        return None
+    if team_id == home_id:
+        return int(goals_home)
+    if team_id == away_id:
+        return int(goals_away)
+    return None
+
+
+def is_tie_deficit(match: LiveMatch, first_leg: FirstLegScore | None) -> bool:
+    if match.status_short in _PEN_STATUSES:
+        return False
+    if not is_second_leg(match.round, match.leg):
+        return False
+    if first_leg is None:
+        return False
+    side = favorite_side(match.prematch)
+    if side is None or match.goals_home is None or match.goals_away is None:
+        return False
+    fav_id = match.home_team_id if side == "home" else match.away_team_id
+    opp_id = match.away_team_id if side == "home" else match.home_team_id
+    live_fav = match.goals_home if side == "home" else match.goals_away
+    live_opp = match.goals_away if side == "home" else match.goals_home
+    first_fav = _goals_for_team(
+        fav_id,
+        first_leg.home_team_id,
+        first_leg.away_team_id,
+        first_leg.goals_home,
+        first_leg.goals_away,
+    )
+    first_opp = _goals_for_team(
+        opp_id,
+        first_leg.home_team_id,
+        first_leg.away_team_id,
+        first_leg.goals_home,
+        first_leg.goals_away,
+    )
+    if first_fav is None or first_opp is None:
+        return False
+    return (int(live_fav) + first_fav) < (int(live_opp) + first_opp)
+
+
+def next_goal_reasons(
+    match: LiveMatch, first_leg: FirstLegScore | None = None
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if is_favorite_losing(match):
+        reasons.append("favorite_losing")
+    if is_tie_deficit(match, first_leg):
+        reasons.append("tie_deficit")
+    return tuple(reasons)
+
+
+def select_next_goal_matches(
+    matches: Sequence[LiveMatch],
+    first_legs: dict[int, FirstLegScore] | None = None,
+) -> list[tuple[LiveMatch, tuple[str, ...]]]:
+    legs = first_legs or {}
+    selected: list[tuple[LiveMatch, tuple[str, ...]]] = []
+    for match in matches:
+        reasons = next_goal_reasons(match, legs.get(match.fixture_id))
+        if reasons:
+            selected.append((match, reasons))
+    return selected
+
+
 def _blank_to_none(raw: str | None) -> str | None:
     text = (raw or "").strip()
     return text if text else None
@@ -661,6 +796,10 @@ async def list_live_matches(engine: AsyncEngine) -> list[LiveMatch]:
                 Fixture.goals_away_extratime,
                 Fixture.goals_home_penalty,
                 Fixture.goals_away_penalty,
+                Fixture.league_id,
+                Fixture.season,
+                Fixture.date,
+                Fixture.leg,
             )
             .join(League, League.id == Fixture.league_id)
             .join(home, home.id == Fixture.home_team_id)
@@ -710,6 +849,10 @@ async def list_live_matches(engine: AsyncEngine) -> list[LiveMatch]:
                 et_away=row[26],
                 pen_home=row[27],
                 pen_away=row[28],
+                league_id=int(row[29]),
+                season=int(row[30]),
+                kickoff=row[31],
+                leg=row[32],
                 home_reds=extra["home_reds"],
                 away_reds=extra["away_reds"],
                 home_formation=extra["home_formation"],
@@ -723,6 +866,95 @@ async def list_live_matches(engine: AsyncEngine) -> list[LiveMatch]:
             )
         )
     return matches
+
+
+async def load_first_legs(
+    engine: AsyncEngine, matches: Sequence[LiveMatch]
+) -> dict[int, FirstLegScore]:
+    candidates = [
+        match
+        for match in matches
+        if is_second_leg(match.round, match.leg)
+        and match.home_team_id
+        and match.away_team_id
+        and match.league_id
+    ]
+    if not candidates:
+        return {}
+    live_ids = [match.fixture_id for match in candidates]
+    team_pairs = {
+        (min(m.home_team_id, m.away_team_id), max(m.home_team_id, m.away_team_id))
+        for m in candidates
+    }
+    league_ids = sorted({m.league_id for m in candidates})
+    pair_filter = tuple_(
+        func.least(Fixture.home_team_id, Fixture.away_team_id),
+        func.greatest(Fixture.home_team_id, Fixture.away_team_id),
+    )
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        stmt = (
+            select(
+                Fixture.id,
+                Fixture.league_id,
+                Fixture.home_team_id,
+                Fixture.away_team_id,
+                Fixture.goals_home,
+                Fixture.goals_away,
+                Fixture.goals_home_fulltime,
+                Fixture.goals_away_fulltime,
+                Fixture.date,
+            )
+            .where(Fixture.league_id.in_(league_ids))
+            .where(Fixture.status_short.in_(tuple(FINISHED_FIXTURE_STATUSES)))
+            .where(Fixture.id.not_in(live_ids))
+            .where(pair_filter.in_(list(team_pairs)))
+            .order_by(Fixture.date.desc().nulls_last(), Fixture.id.desc())
+        )
+        rows = (await session.execute(stmt)).all()
+
+    def _score(row: Any) -> FirstLegScore | None:
+        goals_home = row[6] if row[6] is not None else row[4]
+        goals_away = row[7] if row[7] is not None else row[5]
+        if goals_home is None or goals_away is None:
+            return None
+        return FirstLegScore(
+            home_team_id=int(row[2]),
+            away_team_id=int(row[3]),
+            goals_home=int(goals_home),
+            goals_away=int(goals_away),
+        )
+
+    result: dict[int, FirstLegScore] = {}
+    for match in candidates:
+        for row in rows:
+            if int(row[1]) != match.league_id:
+                continue
+            if {int(row[2]), int(row[3])} != {
+                match.home_team_id,
+                match.away_team_id,
+            }:
+                continue
+            kickoff = row[8]
+            if (
+                match.kickoff is not None
+                and kickoff is not None
+                and kickoff >= match.kickoff
+            ):
+                continue
+            scored = _score(row)
+            if scored is None:
+                continue
+            result[match.fixture_id] = scored
+            break
+    return result
+
+
+async def list_next_goal_matches(
+    engine: AsyncEngine,
+) -> list[tuple[LiveMatch, tuple[str, ...]]]:
+    matches = await list_live_matches(engine)
+    first_legs = await load_first_legs(engine, matches)
+    return select_next_goal_matches(matches, first_legs)
 
 
 def _empty_extras() -> dict[str, Any]:
@@ -1404,7 +1636,14 @@ def _match_card(match: LiveMatch) -> str:
 """
 
 
-def render_live_html(matches: list[LiveMatch], *, generated_at: datetime) -> str:
+def render_live_html(
+    matches: list[LiveMatch],
+    *,
+    generated_at: datetime,
+    title: str = "Mecze na żywo",
+    empty: str = "Żaden mecz nie jest teraz w grze.",
+    active_nav: str = "all",
+) -> str:
     count = len(matches)
     sections: list[str] = []
     for (country, league), rows in groupby(
@@ -1421,16 +1660,18 @@ def render_live_html(matches: list[LiveMatch], *, generated_at: datetime) -> str
 """)
     body = "".join(sections)
     if not body:
-        body = '<p class="empty">Żaden mecz nie jest teraz w grze.</p>'
+        body = f'<p class="empty">{escape(empty)}</p>'
     when = escape(generated_at.strftime("%H:%M:%S UTC"))
     noun = _match_noun(count)
+    nav = _live_nav(active_nav)
+    page_title = escape(title)
     return f"""<!DOCTYPE html>
 <html lang="pl">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="{REFRESH_SECONDS}">
-<title>Mecze na żywo</title>
+<title>{page_title}</title>
 <style>
   :root {{
     --bg: #0d1117;
@@ -1478,6 +1719,30 @@ def render_live_html(matches: list[LiveMatch], *, generated_at: datetime) -> str
     border-radius: 50%;
     background: var(--live);
     box-shadow: 0 0 0 4px rgba(63, 185, 80, 0.25);
+  }}
+  .header-meta {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    align-items: baseline;
+  }}
+  .nav {{
+    display: flex;
+    gap: 8px;
+    font-size: 0.85rem;
+  }}
+  .nav a {{
+    color: var(--muted);
+    text-decoration: none;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+  }}
+  .nav a:hover {{ color: var(--text); }}
+  .nav a.active {{
+    color: var(--text);
+    border-color: var(--line);
+    background: var(--card);
   }}
   .sub {{ color: var(--muted); font-size: 0.9rem; }}
   main {{ max-width: 1040px; margin: 0 auto; padding: 16px 20px 40px; }}
@@ -1649,8 +1914,11 @@ def render_live_html(matches: list[LiveMatch], *, generated_at: datetime) -> str
 </head>
 <body>
 <header>
-  <h1><span class="dot" aria-hidden="true"></span> Mecze na żywo</h1>
-  <p class="sub">{count} {noun} · odświeżanie co {REFRESH_SECONDS} s · {when}</p>
+  <h1><span class="dot" aria-hidden="true"></span> {page_title}</h1>
+  <div class="header-meta">
+    {nav}
+    <p class="sub">{count} {noun} · odświeżanie co {REFRESH_SECONDS} s · {when}</p>
+  </div>
 </header>
 <main>
 {body}
@@ -1658,3 +1926,15 @@ def render_live_html(matches: list[LiveMatch], *, generated_at: datetime) -> str
 </body>
 </html>
 """
+
+
+def _live_nav(active_nav: str) -> str:
+    items = (
+        ("all", "/live", "Wszystkie"),
+        ("next_goal", "/live/next-goal", "Następny gol"),
+    )
+    links: list[str] = []
+    for key, href, label in items:
+        cls = ' class="active"' if key == active_nav else ""
+        links.append(f'<a href="{href}"{cls}>{escape(label)}</a>')
+    return f'<nav class="nav" aria-label="Widok live">{"".join(links)}</nav>'
