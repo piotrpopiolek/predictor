@@ -15,6 +15,7 @@ from predictor.services.live_board import (
     PrematchOdds,
     TeamGoalForm,
     clock_label,
+    clock_sort_key,
     event_kind,
     favorite_side,
     format_odd,
@@ -37,6 +38,7 @@ from predictor.services.live_board import (
     select_next_goal_matches,
     select_next_goal_odds,
     select_prematch_odds,
+    sort_matches_by_clock,
     summarize_team_goal_form,
 )
 
@@ -247,7 +249,9 @@ def test_render_empty_state_and_grouping() -> None:
     assert "Żaden mecz nie jest teraz w grze" in empty
     html = render_live_html(
         [
-            _match(fixture_id=1, league="Premier League"),
+            _match(
+                fixture_id=1, league="Premier League", elapsed=12, status_short="1H"
+            ),
             _match(
                 fixture_id=2,
                 country="Spain",
@@ -265,7 +269,22 @@ def test_render_empty_state_and_grouping() -> None:
     assert "England · Premier League" in html
     assert "Spain · La Liga" in html
     assert "2 mecze" in html
-    assert html.index("Premier League") < html.index("La Liga")
+    # HT (~45') before 1H 12'
+    assert html.index("La Liga") < html.index("Premier League")
+
+
+def test_sort_matches_by_clock_puts_later_minutes_first() -> None:
+    early = _match(fixture_id=1, elapsed=17, status_short="1H", home="Early")
+    mid = _match(fixture_id=2, elapsed=45, status_short="HT", home="Half")
+    late = _match(fixture_id=3, elapsed=63, status_short="2H", home="Late")
+    ordered = sort_matches_by_clock([early, late, mid])
+    assert [m.home for m in ordered] == ["Late", "Half", "Early"]
+    assert clock_sort_key(late) > clock_sort_key(mid) > clock_sort_key(early)
+    html = render_live_html(
+        [early, late, mid],
+        generated_at=datetime(2026, 9, 13, 20, 0, tzinfo=UTC),
+    )
+    assert html.index("Late") < html.index("Half") < html.index("Early")
 
 
 def test_render_match_facts_from_database_fields() -> None:
@@ -401,6 +420,9 @@ def test_favorite_side_requires_strictly_shorter_price() -> None:
 
 def test_favorite_losing_skips_draw_and_penalties() -> None:
     assert is_favorite_losing(_fav_home()) is True
+    assert is_favorite_losing(_fav_home(goals_home=1, goals_away=2)) is True
+    assert is_favorite_losing(_fav_home(goals_home=0, goals_away=2)) is False
+    assert is_favorite_losing(_fav_home(goals_home=0, goals_away=3)) is False
     assert is_favorite_losing(_fav_home(goals_home=1, goals_away=1)) is False
     assert is_favorite_losing(_fav_home(goals_home=2, goals_away=1)) is False
     assert is_favorite_losing(_fav_home(status_short="PEN")) is False

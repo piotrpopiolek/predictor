@@ -294,6 +294,30 @@ def clock_label(status_short: str, elapsed: int | None, extra: int | None) -> st
     return f"{elapsed}'"
 
 
+def clock_sort_key(match: LiveMatch) -> tuple[int, int, int]:
+    """Higher tuple sorts first (more match time elapsed)."""
+    status = match.status_short
+    extra = int(match.extra or 0)
+    elapsed = match.elapsed
+    if status in _PEN_STATUSES:
+        minute = 130 + (elapsed or 0)
+    elif status in {"AET", "FT"}:
+        minute = 120 if status == "AET" else 90
+    elif status in _EXTRA_LIVE:
+        minute = 90 + (elapsed or 0) + extra
+    elif status == "HT":
+        minute = 45 if elapsed is None else int(elapsed)
+    elif elapsed is not None:
+        minute = int(elapsed) + extra
+    else:
+        minute = 0
+    return (minute, extra, int(match.fixture_id))
+
+
+def sort_matches_by_clock(matches: Sequence[LiveMatch]) -> list[LiveMatch]:
+    return sorted(matches, key=clock_sort_key, reverse=True)
+
+
 def safe_http_url(url: str | None) -> str | None:
     if url is None:
         return None
@@ -638,8 +662,8 @@ def is_favorite_losing(match: LiveMatch) -> bool:
     if side is None or match.goals_home is None or match.goals_away is None:
         return False
     if side == "home":
-        return match.goals_home < match.goals_away
-    return match.goals_away < match.goals_home
+        return match.goals_away - match.goals_home == 1
+    return match.goals_home - match.goals_away == 1
 
 
 def is_second_leg(round_name: str | None, leg: int | None = None) -> bool:
@@ -695,7 +719,7 @@ def is_tie_deficit(match: LiveMatch, first_leg: FirstLegScore | None) -> bool:
     )
     if first_fav is None or first_opp is None:
         return False
-    return (int(live_fav) + first_fav) < (int(live_opp) + first_opp)
+    return (int(live_opp) + first_opp) - (int(live_fav) + first_fav) == 1
 
 
 def next_goal_reasons(
@@ -719,6 +743,7 @@ def select_next_goal_matches(
         reasons = next_goal_reasons(match, legs.get(match.fixture_id))
         if reasons:
             selected.append((match, reasons))
+    selected.sort(key=lambda item: clock_sort_key(item[0]), reverse=True)
     return selected
 
 
@@ -865,7 +890,7 @@ async def list_live_matches(engine: AsyncEngine) -> list[LiveMatch]:
                 form_away=extra["form_away"],
             )
         )
-    return matches
+    return sort_matches_by_clock(matches)
 
 
 async def load_first_legs(
@@ -1644,10 +1669,11 @@ def render_live_html(
     empty: str = "Żaden mecz nie jest teraz w grze.",
     active_nav: str = "all",
 ) -> str:
-    count = len(matches)
+    ordered = sort_matches_by_clock(matches)
+    count = len(ordered)
     sections: list[str] = []
     for (country, league), rows in groupby(
-        matches, key=lambda item: (item.country, item.league)
+        ordered, key=lambda item: (item.country, item.league)
     ):
         group = list(rows)
         logo = _img(group[0].league_logo, league, class_name="league-logo")
