@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Literal
 
 from sqlalchemy import func, select
@@ -197,7 +197,9 @@ async def settle_open_tickets(session: AsyncSession) -> int:
     """Settle open tickets from fixture score/status/events. Returns count settled."""
     open_rows = (
         await session.scalars(
-            select(OperatorBet).where(OperatorBet.status == "open").order_by(OperatorBet.id)
+            select(OperatorBet)
+            .where(OperatorBet.status == "open")
+            .order_by(OperatorBet.id)
         )
     ).all()
     if not open_rows:
@@ -336,7 +338,9 @@ class BetHistoryRow:
             "id": self.id,
             "fixture_id": self.fixture_id,
             "placed_at": self.placed_at.isoformat(),
-            "settled_at": None if self.settled_at is None else self.settled_at.isoformat(),
+            "settled_at": (
+                None if self.settled_at is None else self.settled_at.isoformat()
+            ),
             "league": self.league,
             "home": self.home,
             "away": self.away,

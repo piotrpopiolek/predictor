@@ -1422,7 +1422,8 @@ async def _fill_predictions(
         Prediction.pct_home,
         Prediction.pct_away,
     ).where(Prediction.fixture_id.in_(ids))
-    for fixture_id, winner_id, pct_home, pct_away in (await session.execute(stmt)).all():
+    rows = (await session.execute(stmt)).all()
+    for fixture_id, winner_id, pct_home, pct_away in rows:
         extras[int(fixture_id)]["prediction_winner_team_id"] = (
             None if winner_id is None else int(winner_id)
         )
@@ -2077,10 +2078,14 @@ def _bet_block(
     stake_label = escape(current_stake or "21.00")
     return f"""
   <div class="bet-actions">
-    <button type="button" class="bet-toggle" aria-expanded="false">Zagraj następny gol</button>
+    <button type="button" class="bet-toggle" aria-expanded="false">
+      Zagraj następny gol
+    </button>
     <form class="bet-form" method="post" action="/live/bets" hidden>
       <input type="hidden" name="fixture_id" value="{match.fixture_id}">
-      <p class="bet-market">Następny gol · <strong>padnie</strong> (bez względu kto strzeli)</p>
+      <p class="bet-market">
+        Następny gol · <strong>padnie</strong> (bez względu kto strzeli)
+      </p>
       <label class="bet-odd">Kurs
         <input type="text" name="odd" inputmode="decimal" placeholder="1.65" required
           pattern="[0-9]+([.,][0-9]+)?" autocomplete="off">
@@ -2104,8 +2109,9 @@ _REFRESH_SCRIPT = f"""
     for (var i = 0; i < forms.length; i++) {{
       if (!forms[i].hidden) return true;
     }}
-    if (document.activeElement && document.activeElement.matches("input, textarea, select, button")) {{
-      return document.activeElement.closest(".bet-form, .bet-settle") != null;
+    var ae = document.activeElement;
+    if (ae && ae.matches("input, textarea, select, button")) {{
+      return ae.closest(".bet-form, .bet-settle") != null;
     }}
     return false;
   }}
@@ -2403,10 +2409,21 @@ def render_bets_html(
   <section class="metrics">
     <div><strong>{_pl_num(metrics.get('saldo'))}</strong><span>Saldo</span></div>
     <div><strong>{hit}</strong><span>Skuteczność</span></div>
-    <div><strong>{_pl_num(metrics.get('current_stake'))}</strong><span>Bieżąca stawka</span></div>
+    <div>
+      <strong>{_pl_num(metrics.get('current_stake'))}</strong>
+      <span>Bieżąca stawka</span>
+    </div>
     <div><strong>{_pl_num(metrics.get('avg_odd'))}</strong><span>Śr. kurs</span></div>
-    <div><strong>{escape(str(metrics.get('wins', 0)))}/{escape(str(metrics.get('losses', 0)))}</strong><span>W/P</span></div>
-    <div><strong>{escape(str(metrics.get('open_count', 0)))}</strong><span>Otwarte</span></div>
+    <div>
+      <strong>
+        {escape(str(metrics.get('wins', 0)))}/{escape(str(metrics.get('losses', 0)))}
+      </strong>
+      <span>W/P</span>
+    </div>
+    <div>
+      <strong>{escape(str(metrics.get('open_count', 0)))}</strong>
+      <span>Otwarte</span>
+    </div>
   </section>
   {settle_open}
   <div class="table-wrap">

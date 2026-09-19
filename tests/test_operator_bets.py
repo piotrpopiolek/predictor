@@ -11,9 +11,9 @@ import pytest
 
 from predictor.services.live_board import LiveMatch, render_bets_html, render_live_html
 from predictor.services.operator_bets import (
-    BetError,
-    START_STAKE,
     STAKE_STEP,
+    START_STAKE,
+    BetError,
     build_history,
     current_stake,
     goal_counts_for_next_goal,

@@ -21,7 +21,7 @@ dependencies = [
     "pydantic==2.13.5",
     "pydantic-settings==2.15.0",
     "psycopg[binary]==3.3.5",
-    "python-multipart==0.0.22",
+    "python-multipart==0.0.31",
     "sqlalchemy==2.0.52",
     "tenacity==9.1.4",
     "uvicorn==0.52.4",
