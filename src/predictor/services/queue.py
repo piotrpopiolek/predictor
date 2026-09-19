@@ -620,9 +620,7 @@ async def claim_urgent_predictions_task(
     session: AsyncSession, *, now: datetime | None = None
 ) -> EtlTask | None:
     _require_transaction(session, "claim urgent predictions")
-    return await _claim_fixture_endpoint(
-        session, "/predictions", urgent=True, now=now
-    )
+    return await _claim_fixture_endpoint(session, "/predictions", urgent=True, now=now)
 
 
 async def claim_urgent_odds_task(

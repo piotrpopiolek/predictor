@@ -377,9 +377,7 @@ class PrematchIngest:
         async with self._session_factory() as session:
             async with session.begin():
                 if urgent:
-                    task = await claim_urgent_predictions_task(
-                        session, now=self._now()
-                    )
+                    task = await claim_urgent_predictions_task(session, now=self._now())
                 else:
                     task = await claim_predictions_task(session)
                 return None if task is None else int(task.id)
