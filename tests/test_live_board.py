@@ -436,9 +436,7 @@ def test_favorite_losing_uses_prediction_over_midmatch_live() -> None:
         away_team_id=313,
         goals_home=1,
         goals_away=0,
-        prematch=PrematchOdds(
-            "1.222", "4.333", "41", "Fulltime Result", source="live"
-        ),
+        prematch=PrematchOdds("1.222", "4.333", "41", "Fulltime Result", source="live"),
         prediction_winner_team_id=313,
         prediction_pct_home=10.0,
         prediction_pct_away=45.0,

@@ -244,16 +244,12 @@ def create_app() -> FastAPI:
                 payload = bet_as_dict(bet)
         except BetError as exc:
             if wants_json:
-                return JSONResponse(
-                    {"detail": exc.detail}, status_code=exc.code
-                )
+                return JSONResponse({"detail": exc.detail}, status_code=exc.code)
             raise HTTPException(status_code=exc.code, detail=exc.detail) from exc
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from exc
+            raise HTTPException(status_code=503, detail="postgres_unavailable") from exc
         if wants_json:
             return JSONResponse(payload, status_code=201)
         return RedirectResponse(url="/live/next-goal", status_code=303)
@@ -273,14 +269,10 @@ def create_app() -> FastAPI:
                 payload = bet_as_dict(bet)
         except BetError as exc:
             if wants_json:
-                return JSONResponse(
-                    {"detail": exc.detail}, status_code=exc.code
-                )
+                return JSONResponse({"detail": exc.detail}, status_code=exc.code)
             raise HTTPException(status_code=exc.code, detail=exc.detail) from exc
         except Exception as exc:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from exc
+            raise HTTPException(status_code=503, detail="postgres_unavailable") from exc
         if wants_json:
             return JSONResponse(payload)
         referer = request.headers.get("referer") or "/live/bets"
