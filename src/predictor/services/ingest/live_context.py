@@ -243,9 +243,7 @@ class LiveContextIngest:
             if not spend.left() or fetched >= limit:
                 break
             visited += 1
-            task_status, params, match_status = state.get(
-                fixture_id, (None, {}, None)
-            )
+            task_status, params, match_status = state.get(fixture_id, (None, {}, None))
             if not detail_refresh_due(
                 task_status=task_status,
                 params=params,

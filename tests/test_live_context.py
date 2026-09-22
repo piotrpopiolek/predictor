@@ -38,12 +38,8 @@ class WaitZero(wait_base):
 
 
 def test_context_call_budget_caps_detail_and_oneshots() -> None:
-    assert (
-        context_call_budget(detail_calls=40, oneshot_calls=12, hard_cap=80) == 52
-    )
-    assert (
-        context_call_budget(detail_calls=40, oneshot_calls=12, hard_cap=30) == 30
-    )
+    assert context_call_budget(detail_calls=40, oneshot_calls=12, hard_cap=80) == 52
+    assert context_call_budget(detail_calls=40, oneshot_calls=12, hard_cap=30) == 30
 
 
 def test_detail_refresh_waits_five_minutes_then_closes_once() -> None:
