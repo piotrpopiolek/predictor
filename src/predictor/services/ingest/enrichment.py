@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
@@ -45,7 +45,9 @@ from predictor.services.queue import (
     claim_enrichment_task,
     claim_half_stats_task,
     claim_injuries_task,
+    claim_live_param_task,
     complete_task,
+    empty_retry_status,
     ensure_half_stats_task,
     get_cursor_task,
 )
@@ -301,6 +303,16 @@ class EnrichmentIngest:
                 )
                 await self._fail(task_id, "retryable_error", "persist_failed")
 
+    async def ingest_one_scoped(self, pairs: Sequence[tuple[int, int]]) -> bool:
+        if not pairs or not self._quota_left():
+            return False
+        claimed = await self._claim_scoped_injuries(pairs)
+        if claimed is None:
+            return False
+        task_id, league_id, season = claimed
+        await self._process_injuries(task_id, league_id, season, retry_empty=True)
+        return True
+
     async def _drain_injuries(self) -> None:
         for _ in range(self._per_tick):
             if not self._quota_left():
@@ -309,8 +321,29 @@ class EnrichmentIngest:
             if claimed is None:
                 return
             task_id, league_id, season = claimed
-            coverage = await self._coverage(league_id, season)
-            if not _allowed(coverage["injuries"]):
+            if not await self._process_injuries(task_id, league_id, season):
+                return
+
+    async def _process_injuries(
+        self,
+        task_id: int,
+        league_id: int,
+        season: int,
+        *,
+        retry_empty: bool = False,
+    ) -> bool:
+        coverage = await self._coverage(league_id, season)
+        if not _allowed(coverage["injuries"]):
+            if retry_empty:
+                await self._retry_or_empty(
+                    task_id,
+                    {
+                        "league": league_id,
+                        "season": season,
+                        "reason": "coverage_false",
+                    },
+                )
+            else:
                 await self._finish(
                     task_id,
                     "coverage_empty",
@@ -320,48 +353,109 @@ class EnrichmentIngest:
                         "reason": "coverage_false",
                     },
                 )
-                continue
-            try:
-                items, current, total = await fetch_all_pages(
-                    self._client,
+            return True
+        try:
+            items, current, total = await fetch_all_pages(
+                self._client,
+                "/injuries",
+                params={"league": league_id, "season": season},
+            )
+        except AuthBlockedError:
+            raise
+        except QuotaExhaustedError:
+            await self._fail(task_id, "retryable_error", "quota_exhausted")
+            return False
+        except (RetryableHttpError, FootballHttpError) as exc:
+            await self._fail(task_id, "retryable_error", type(exc).__name__)
+            return False
+        parsed = _parse_injuries(items)
+        if not parsed and retry_empty:
+            await self._retry_or_empty(
+                task_id,
+                {"league": league_id, "season": season, "reason": "empty"},
+                paging_current=current,
+                paging_total=total,
+            )
+            return True
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    task = await session.get(EtlTask, task_id)
+                    if task is None:
+                        return True
+                    count = await persist_injuries(session, parsed)
+                    params = dict(task.params)
+                    params["count"] = count
+                    status = "coverage_empty" if count == 0 else "complete"
+                    await complete_task(
+                        session,
+                        task,
+                        status,
+                        paging_current=current,
+                        paging_total=total,
+                        params=params,
+                    )
+        except Exception:
+            log_json(
+                logging.ERROR,
+                service="worker",
+                event="injuries_persist_failed",
+                endpoint="/injuries",
+            )
+            await self._fail(task_id, "retryable_error", "persist_failed")
+        return True
+
+    async def _claim_scoped_injuries(
+        self, pairs: Sequence[tuple[int, int]]
+    ) -> tuple[int, int, int] | None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                task = await claim_live_param_task(
+                    session,
                     "/injuries",
-                    params={"league": league_id, "season": season},
+                    [
+                        {"league": league_id, "season": season}
+                        for league_id, season in pairs
+                    ],
+                    now=self._now(),
                 )
-            except AuthBlockedError:
-                raise
-            except QuotaExhaustedError:
-                await self._fail(task_id, "retryable_error", "quota_exhausted")
-                return
-            except (RetryableHttpError, FootballHttpError) as exc:
-                await self._fail(task_id, "retryable_error", type(exc).__name__)
-                return
-            parsed = _parse_injuries(items)
-            try:
-                async with self._session_factory() as session:
-                    async with session.begin():
-                        task = await session.get(EtlTask, task_id)
-                        if task is None:
-                            return
-                        count = await persist_injuries(session, parsed)
-                        params = dict(task.params)
-                        params["count"] = count
-                        status = "coverage_empty" if count == 0 else "complete"
-                        await complete_task(
-                            session,
-                            task,
-                            status,
-                            paging_current=current,
-                            paging_total=total,
-                            params=params,
-                        )
-            except Exception:
-                log_json(
-                    logging.ERROR,
-                    service="worker",
-                    event="injuries_persist_failed",
-                    endpoint="/injuries",
+                if task is None:
+                    return None
+                league_id = task.params.get("league")
+                season = task.params.get("season")
+                if league_id is None or season is None:
+                    await complete_task(
+                        session, task, "permanent_error", error="bad_injuries_params"
+                    )
+                    return None
+                return int(task.id), int(league_id), int(season)
+
+    async def _retry_or_empty(
+        self,
+        task_id: int,
+        params: dict[str, Any],
+        *,
+        paging_current: int | None = None,
+        paging_total: int | None = None,
+    ) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return
+                merged = dict(task.params)
+                merged.update(params)
+                status, merged = empty_retry_status(merged, now=self._now())
+                error = "empty_retry" if status == "retryable_error" else None
+                await complete_task(
+                    session,
+                    task,
+                    status,
+                    error=error,
+                    params=merged,
+                    paging_current=paging_current,
+                    paging_total=paging_total,
                 )
-                await self._fail(task_id, "retryable_error", "persist_failed")
 
     async def _claim_half_id(self) -> tuple[int | None, int | None]:
         async with self._session_factory() as session:

@@ -52,6 +52,7 @@ class LiveIngest:
         self._target_seconds = target_seconds
         self._now = now_fn or (lambda: datetime.now(UTC))
         self.last_live_fixture_ids: list[int] = []
+        self.finishing_fixture_ids: list[int] = []
 
     def _quota_left(self) -> bool:
         snapshot = self._client.quota
@@ -88,12 +89,19 @@ class LiveIngest:
                     fixture_ids = [int(fid) for fid in extra.get("fixture_ids", [])]
                     await enqueue_fixture_followups(session, extra)
                     params = dict(task.params)
+                    previous = _int_ids(params.get("fixture_ids"))
+                    finishing = set(_int_ids(params.get("finishing_ids")))
+                    current_ids = set(fixture_ids)
+                    finishing |= set(previous) - current_ids
+                    finishing -= current_ids
+                    finishing_ids = sorted(finishing)
                     params.update(
                         {
                             "live": "all",
                             "count": extra.get("count", 0),
                             "skipped": extra.get("skipped", 0),
                             "fixture_ids": fixture_ids,
+                            "finishing_ids": finishing_ids,
                         }
                     )
                     await complete_task(
@@ -105,6 +113,7 @@ class LiveIngest:
                         params=params,
                     )
                     self.last_live_fixture_ids = fixture_ids
+                    self.finishing_fixture_ids = finishing_ids
         except Exception:
             log_json(
                 logging.ERROR,
@@ -258,6 +267,18 @@ class LiveIngest:
                 if task is None:
                     return
                 await complete_task(session, task, status, error=error)
+
+
+def _int_ids(raw: object) -> list[int]:
+    if not isinstance(raw, list):
+        return []
+    out: list[int] = []
+    for item in raw:
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _parse_odds_live(raw: list[Any]) -> list[OddsLiveItem]:

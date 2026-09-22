@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 import socket
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from predictor.constants import (
@@ -17,6 +18,8 @@ from predictor.constants import (
     ETL_STATUSES,
     FINISHED_FIXTURE_STATUSES,
     GLOBAL_ENDPOINT_ORDER,
+    LIVE_CONTEXT_EMPTY_BACKOFF_SECONDS,
+    LIVE_CONTEXT_MAX_EMPTY_ATTEMPTS,
     LOOKUP_WITHOUT_HTTP,
     ODDS_MAPPING_REFRESH_SECONDS,
     ODDS_MAPPING_RETRY_BACKOFF_SECONDS,
@@ -33,6 +36,34 @@ from predictor.telemetry import start_span
 TERMINAL_STATUSES = frozenset(
     {"complete", "coverage_empty", "not_supported", "permanent_error"}
 )
+
+
+def empty_retry_status(
+    params: dict[str, Any],
+    *,
+    now: datetime,
+    max_attempts: int = LIVE_CONTEXT_MAX_EMPTY_ATTEMPTS,
+    backoff_seconds: int = LIVE_CONTEXT_EMPTY_BACKOFF_SECONDS,
+) -> tuple[str, dict[str, Any]]:
+    """Retry an empty/coverage-false fetch, then stop as coverage_empty."""
+    merged = dict(params)
+    attempts = int(merged.get("empty_attempts") or 0) + 1
+    merged["empty_attempts"] = attempts
+    if attempts >= max_attempts:
+        merged.pop("next_attempt_at", None)
+        return "coverage_empty", merged
+    due = now.astimezone(UTC) + timedelta(seconds=backoff_seconds)
+    merged["next_attempt_at"] = due.isoformat()
+    return "retryable_error", merged
+
+
+def _due_clause(now: datetime) -> Any:
+    stamp = now.astimezone(UTC).isoformat()
+    return or_(
+        EtlTask.status == "pending",
+        ~EtlTask.params.has_key("next_attempt_at"),
+        EtlTask.params["next_attempt_at"].as_string() <= stamp,
+    )
 
 
 def _require_transaction(session: AsyncSession, action: str) -> None:
@@ -324,6 +355,7 @@ async def claim_rounds_task(session: AsyncSession) -> EtlTask | None:
         select(EtlTask)
         .where(EtlTask.endpoint == "/fixtures/rounds")
         .where(EtlTask.status.in_(("pending", "retryable_error")))
+        .where(_due_clause(datetime.now(UTC)))
         .where(EtlTask.cursor_kind.is_(None))
         .order_by(EtlTask.id)
         .with_for_update(skip_locked=True)
@@ -399,6 +431,7 @@ async def claim_enrichment_task(session: AsyncSession) -> EtlTask | None:
         .where(EtlTask.fixture_id.is_not(None))
         .where(EtlTask.cursor_kind.is_(None))
         .where(EtlTask.status.in_(("pending", "retryable_error")))
+        .where(_due_clause(datetime.now(UTC)))
         .where(Fixture.status_short.in_(tuple(ENRICHABLE_FIXTURE_STATUSES)))
         .order_by(EtlTask.id)
         .with_for_update(skip_locked=True, of=EtlTask)
@@ -416,6 +449,7 @@ async def claim_half_stats_task(session: AsyncSession) -> EtlTask | None:
         select(EtlTask)
         .where(EtlTask.endpoint == "/fixtures/statistics")
         .where(EtlTask.status.in_(("pending", "retryable_error")))
+        .where(_due_clause(datetime.now(UTC)))
         .where(EtlTask.cursor_kind.is_(None))
         .order_by(EtlTask.id)
         .with_for_update(skip_locked=True)
@@ -433,6 +467,7 @@ async def claim_injuries_task(session: AsyncSession) -> EtlTask | None:
         select(EtlTask)
         .where(EtlTask.endpoint == "/injuries")
         .where(EtlTask.status.in_(("pending", "retryable_error")))
+        .where(_due_clause(datetime.now(UTC)))
         .where(EtlTask.cursor_kind.is_(None))
         .order_by(EtlTask.id)
         .with_for_update(skip_locked=True)
@@ -566,6 +601,205 @@ async def ensure_predictions_task(session: AsyncSession, fixture_id: int) -> Non
         )
 
 
+async def ensure_live_followups(
+    session: AsyncSession, fixture_ids: Sequence[int]
+) -> None:
+    """Enqueue context tasks for the given fixtures (idempotent)."""
+    _require_transaction(session, "ensure live followups")
+    ids = list(dict.fromkeys(int(fid) for fid in fixture_ids))
+    if not ids:
+        return
+    rows = (
+        await session.execute(
+            select(
+                Fixture.id,
+                Fixture.home_team_id,
+                Fixture.away_team_id,
+                Fixture.league_id,
+                Fixture.season,
+            ).where(Fixture.id.in_(ids))
+        )
+    ).all()
+    discovered: list[dict[str, int]] = []
+    seasons: list[dict[str, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for fixture_id, home_id, away_id, league_id, season in rows:
+        discovered.append(
+            {
+                "id": int(fixture_id),
+                "home": int(home_id),
+                "away": int(away_id),
+                "league": int(league_id),
+                "season": int(season),
+            }
+        )
+        key = (int(league_id), int(season))
+        if key not in seen:
+            seen.add(key)
+            seasons.append({"league": key[0], "season": key[1]})
+    if discovered:
+        await enqueue_fixture_followups(
+            session, {"discovered": discovered, "league_seasons": seasons}
+        )
+
+
+async def reopen_live_detail_task(session: AsyncSession, fixture_id: int) -> None:
+    """Make /fixtures?id= claimable again so a live match can refresh this tick."""
+    _require_transaction(session, "reopen live detail")
+    task = await session.scalar(
+        select(EtlTask)
+        .where(EtlTask.endpoint == "/fixtures")
+        .where(EtlTask.fixture_id == fixture_id)
+        .where(EtlTask.cursor_kind.is_(None))
+        .order_by(EtlTask.id)
+        .limit(1)
+    )
+    if task is None:
+        await ensure_enrichment_task(session, fixture_id)
+        return
+    if task.status in {"pending", "retryable_error", "in_progress"}:
+        return
+    task.status = "pending"
+    task.completed_at = None
+    task.last_error = None
+    task.updated_at = datetime.now(UTC)
+
+
+async def claim_live_fixture_task(
+    session: AsyncSession,
+    endpoint: str,
+    fixture_ids: Sequence[int],
+    *,
+    now: datetime | None = None,
+) -> EtlTask | None:
+    """Claim one open task whose fixture is in the live/finishing set."""
+    _require_transaction(session, "claim live fixture task")
+    ids = list(dict.fromkeys(int(fid) for fid in fixture_ids))
+    if not ids:
+        return None
+    stamp = now or datetime.now(UTC)
+    stmt = (
+        select(EtlTask)
+        .where(EtlTask.endpoint == endpoint)
+        .where(EtlTask.fixture_id.in_(ids))
+        .where(EtlTask.cursor_kind.is_(None))
+        .where(EtlTask.status.in_(("pending", "retryable_error")))
+        .where(_due_clause(stamp))
+        .order_by(EtlTask.id)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    task = await session.scalar(stmt)
+    if task is None:
+        return None
+    return _mark_claimed(task)
+
+
+async def claim_live_param_task(
+    session: AsyncSession,
+    endpoint: str,
+    param_sets: Sequence[dict[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> EtlTask | None:
+    _require_transaction(session, "claim live param task")
+    if not param_sets:
+        return None
+    stamp = now or datetime.now(UTC)
+    clauses = [EtlTask.params.contains(params) for params in param_sets]
+    stmt = (
+        select(EtlTask)
+        .where(EtlTask.endpoint == endpoint)
+        .where(EtlTask.cursor_kind.is_(None))
+        .where(EtlTask.status.in_(("pending", "retryable_error")))
+        .where(_due_clause(stamp))
+        .where(or_(*clauses))
+        .order_by(EtlTask.id)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    task = await session.scalar(stmt)
+    if task is None:
+        return None
+    return _mark_claimed(task)
+
+
+async def claim_live_global_task(
+    session: AsyncSession,
+    needles: Sequence[tuple[str, dict[str, Any]]],
+    *,
+    now: datetime | None = None,
+) -> EtlTask | None:
+    _require_transaction(session, "claim live global")
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for endpoint, params in needles:
+        grouped.setdefault(endpoint, []).append(params)
+    for endpoint in GLOBAL_ENDPOINT_ORDER:
+        params_list = grouped.get(endpoint)
+        if not params_list:
+            continue
+        task = await claim_live_param_task(session, endpoint, params_list, now=now)
+        if task is not None:
+            return task
+    return None
+
+
+async def unfinished_context_fixture_ids(
+    session: AsyncSession, fixture_ids: Sequence[int]
+) -> list[int]:
+    """Fixtures that still have an open odds, predictions, or H2H task."""
+    ids = list(dict.fromkeys(int(fid) for fid in fixture_ids))
+    if not ids:
+        return []
+    rows = (
+        await session.execute(
+            select(Fixture.id, Fixture.home_team_id, Fixture.away_team_id).where(
+                Fixture.id.in_(ids)
+            )
+        )
+    ).all()
+    teams = {
+        int(fixture_id): (int(home_id), int(away_id))
+        for fixture_id, home_id, away_id in rows
+    }
+    open_status = ("pending", "retryable_error", "in_progress")
+    open_fixtures = set(
+        await session.scalars(
+            select(EtlTask.fixture_id).where(
+                EtlTask.fixture_id.in_(ids),
+                EtlTask.endpoint.in_(("/odds", "/predictions")),
+                EtlTask.cursor_kind.is_(None),
+                EtlTask.status.in_(open_status),
+            )
+        )
+    )
+    keys = [h2h_param(home_id, away_id) for home_id, away_id in teams.values()]
+    open_h2h: set[str] = set()
+    if keys:
+        h2h_rows = (
+            await session.scalars(
+                select(EtlTask).where(
+                    EtlTask.endpoint == "/fixtures/headtohead",
+                    EtlTask.cursor_kind.is_(None),
+                    EtlTask.status.in_(open_status),
+                    or_(*[EtlTask.params.contains({"h2h": key}) for key in keys]),
+                )
+            )
+        ).all()
+        for task in h2h_rows:
+            raw = task.params.get("h2h") if task.params else None
+            if isinstance(raw, str):
+                open_h2h.add(raw)
+    still: list[int] = []
+    for fixture_id in ids:
+        pair = teams.get(fixture_id)
+        if pair is None:
+            continue
+        if fixture_id in open_fixtures or h2h_param(*pair) in open_h2h:
+            still.append(fixture_id)
+    return still
+
+
 async def ensure_odds_task(session: AsyncSession, fixture_id: int) -> None:
     _require_transaction(session, "ensure odds")
     existing = await session.scalar(
@@ -585,11 +819,15 @@ async def ensure_odds_task(session: AsyncSession, fixture_id: int) -> None:
         )
 
 
-async def _claim_endpoint(session: AsyncSession, endpoint: str) -> EtlTask | None:
+async def _claim_endpoint(
+    session: AsyncSession, endpoint: str, *, now: datetime | None = None
+) -> EtlTask | None:
+    stamp = now or datetime.now(UTC)
     stmt = (
         select(EtlTask)
         .where(EtlTask.endpoint == endpoint)
         .where(EtlTask.status.in_(("pending", "retryable_error")))
+        .where(_due_clause(stamp))
         .where(EtlTask.cursor_kind.is_(None))
         .order_by(EtlTask.id)
         .with_for_update(skip_locked=True)
@@ -647,6 +885,7 @@ async def _claim_fixture_endpoint(
         .where(EtlTask.fixture_id.is_not(None))
         .where(EtlTask.cursor_kind.is_(None))
         .where(EtlTask.status.in_(("pending", "retryable_error")))
+        .where(_due_clause(stamp))
     )
     if urgent:
         horizon = stamp + timedelta(hours=URGENT_PREMATCH_HORIZON_HOURS)

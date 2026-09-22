@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import httpx
@@ -89,9 +89,10 @@ async def test_scheduler_quota_exhausted_does_not_spin_http(valid_env: None) -> 
 
 @pytest.mark.asyncio
 async def test_priority_order_matches_fr023() -> None:
-    assert [slot.priority for slot in PRIORITY_ORDER] == list(range(1, 9))
+    assert [slot.priority for slot in PRIORITY_ORDER] == list(range(1, 10))
     assert PRIORITY_ORDER[0].name == "quota_and_live_dictionaries"
-    assert PRIORITY_ORDER[2].name == "next_goal_snapshots"
+    assert PRIORITY_ORDER[2].name == "live_context"
+    assert PRIORITY_ORDER[3].name == "odds_live"
     assert PRIORITY_ORDER[-1].name == "global_entities"
 
 
@@ -151,3 +152,43 @@ async def test_scheduler_logs_when_live_interval_must_stretch(
         await scheduler._tick(asyncio.Event())
     assert "live_freshness_missed" in caplog.text
     assert scheduler.live_interval_seconds == 1800.0
+
+
+@pytest.mark.asyncio
+async def test_odds_live_waits_when_context_uses_the_tick(valid_env: None) -> None:
+    called: list[int] = []
+    start = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
+    late = {"on": False}
+
+    def now() -> datetime:
+        if late["on"]:
+            return start + timedelta(seconds=120)
+        return start
+
+    async def context() -> None:
+        called.append(3)
+        late["on"] = True
+
+    async def odds_live() -> None:
+        called.append(4)
+
+    class _Client:
+        async def get_status(self) -> QuotaSnapshot:
+            return QuotaSnapshot(
+                current=10,
+                limit_day=7500,
+                remaining=7000,
+                fetched_at=start,
+                source="api",
+            )
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        cast(Any, _Client()),
+        _unused_factory(),
+        handlers={3: context, 4: odds_live},
+        now_fn=now,
+    )
+    await scheduler._tick(asyncio.Event())
+    assert called == [3]

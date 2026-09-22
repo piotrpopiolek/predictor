@@ -20,6 +20,7 @@ from predictor.services.ingest import (
     EnrichmentIngest,
     FixtureIngest,
     GlobalIngest,
+    LiveContextIngest,
     LiveIngest,
     PrematchIngest,
 )
@@ -83,12 +84,25 @@ async def run_locked_loop(
         enrichment = EnrichmentIngest(client, session_factory)
         prematch = PrematchIngest(client, session_factory)
         global_ingest = GlobalIngest(client, session_factory)
+        live_context = LiveContextIngest(
+            session_factory,
+            enrichment=enrichment,
+            prematch=prematch,
+            global_ingest=global_ingest,
+            fixtures=fixtures,
+            target_seconds=settings.live_poll_target_seconds,
+        )
 
         async def priority_three() -> None:
-            await live.refresh_next_goal_snapshots()
-            await prematch.refresh_urgent()
+            live.finishing_fixture_ids = await live_context.refresh(
+                live.last_live_fixture_ids,
+                finishing_ids=live.finishing_fixture_ids,
+            )
 
-        async def priority_eight() -> None:
+        async def priority_four() -> None:
+            await live.refresh_next_goal_snapshots()
+
+        async def priority_nine() -> None:
             await prematch.refresh_pending()
             await global_ingest.refresh_pending()
 
@@ -100,11 +114,12 @@ async def run_locked_loop(
                 1: catalog.refresh_priority_one,
                 2: live.refresh_live_fixtures,
                 3: priority_three,
-                4: enrichment.refresh_finalization,
-                5: fixtures.refresh_forward,
-                6: enrichment.refresh_pending,
-                7: fixtures.refresh_backfill,
-                8: priority_eight,
+                4: priority_four,
+                5: enrichment.refresh_finalization,
+                6: fixtures.refresh_forward,
+                7: enrichment.refresh_pending,
+                8: fixtures.refresh_backfill,
+                9: priority_nine,
             },
         )
         await scheduler.run(stop)

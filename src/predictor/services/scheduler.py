@@ -39,12 +39,13 @@ class PrioritySlot(NamedTuple):
 PRIORITY_ORDER: tuple[PrioritySlot, ...] = (
     PrioritySlot(1, "quota_and_live_dictionaries"),
     PrioritySlot(2, "live_fixtures"),
-    PrioritySlot(3, "next_goal_snapshots"),
-    PrioritySlot(4, "finalization"),
-    PrioritySlot(5, "forward_sync"),
-    PrioritySlot(6, "enrichment"),
-    PrioritySlot(7, "backfill"),
-    PrioritySlot(8, "global_entities"),
+    PrioritySlot(3, "live_context"),
+    PrioritySlot(4, "odds_live"),
+    PrioritySlot(5, "finalization"),
+    PrioritySlot(6, "forward_sync"),
+    PrioritySlot(7, "enrichment"),
+    PrioritySlot(8, "backfill"),
+    PrioritySlot(9, "global_entities"),
 )
 
 STATUS_REFRESH_SECONDS = 3600.0
@@ -134,6 +135,8 @@ class Scheduler:
                     slot.priority, quota, self._settings.quota_safety_buffer_percent
                 ):
                     continue
+                # P1–P3 always (dictionaries, live scores, live context).
+                # P4+ (odds/live, then residual) stop once the tick hits target.
                 if slot.priority >= 4:
                     elapsed = (self._now() - tick_start).total_seconds()
                     if elapsed >= target:

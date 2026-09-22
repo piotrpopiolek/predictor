@@ -14,13 +14,21 @@ HTTP_MAX_CONNECTIONS = 10
 HTTP_MAX_KEEPALIVE_CONNECTIONS = 5
 HTTP_RETRY_ATTEMPTS = 5
 
-# Priorities 1–3 (quota/live dictionaries, live fixtures, next-goal) may spend
-# the configured safety buffer. Forward/backfill/enrichment/global may not.
-LIVE_QUOTA_PRIORITIES = frozenset({1, 2, 3})
+# Priorities 1–4 (dictionaries, live fixtures, live context, odds/live) may
+# spend the safety buffer. Residual work from priority 5 up may not.
+# quota_allows also keeps LIVE_REQUESTS_PER_TICK for the next live=all cycle.
+LIVE_QUOTA_PRIORITIES = frozenset({1, 2, 3, 4})
 
-# Forecast for FR-019: one /fixtures?live=all plus one /odds/live per tick
-# (extra pages are not reserved; quota_exhausted stops mid-page).
+# Forecast reserved for the next /fixtures?live=all cycle. /odds/live is extra
+# and is dropped first when the tick or the quota is tight.
 LIVE_REQUESTS_PER_TICK = 2
+
+# P3 live-context budget after /fixtures?live=all. Stop at the call cap or at
+# this fraction of live_poll_target_seconds, whichever comes first.
+LIVE_CONTEXT_MAX_CALLS_PER_TICK = 16
+LIVE_CONTEXT_TIME_FRACTION = 0.85
+LIVE_CONTEXT_EMPTY_BACKOFF_SECONDS = 5 * 60
+LIVE_CONTEXT_MAX_EMPTY_ATTEMPTS = 5
 
 CURSOR_KINDS = ("forward", "backfill", "enrichment")
 

@@ -1,4 +1,9 @@
-"""Quota budget: live priorities may use the 5% buffer; the rest may not."""
+"""Quota budget: live priorities may use the 5% buffer; the rest may not.
+
+Priorities 1–2 always run while any quota remains. Priorities 3–4 (live
+context and /odds/live) may use the buffer, but not the last
+LIVE_REQUESTS_PER_TICK calls — those stay reserved for the next live=all poll.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +26,11 @@ from predictor.models.etl import EtlTask
 
 def quota_allows(priority: int, snapshot: QuotaSnapshot, buffer_percent: float) -> bool:
     if snapshot.remaining <= 0:
+        return False
+    # Keep the next live score poll funded.
+    if priority <= 2:
+        return True
+    if snapshot.remaining <= LIVE_REQUESTS_PER_TICK:
         return False
     if priority in LIVE_QUOTA_PRIORITIES:
         return True

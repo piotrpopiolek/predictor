@@ -20,8 +20,9 @@ def test_live_priorities_may_use_buffer() -> None:
     assert quota_allows(1, snap, 5.0) is True
     assert quota_allows(2, snap, 5.0) is True
     assert quota_allows(3, snap, 5.0) is True
+    assert quota_allows(4, snap, 5.0) is True
     assert quota_allows(5, snap, 5.0) is False
-    assert quota_allows(8, snap, 5.0) is False
+    assert quota_allows(9, snap, 5.0) is False
 
 
 def test_non_live_allowed_above_buffer_floor() -> None:
@@ -38,8 +39,16 @@ def test_non_live_allowed_above_buffer_floor() -> None:
 
 def test_remaining_zero_blocks_all() -> None:
     snap = QuotaSnapshot(current=100, limit_day=100, remaining=0, source="api")
-    for priority in range(1, 9):
+    for priority in range(1, 10):
         assert quota_allows(priority, snap, 5.0) is False
+
+
+def test_last_live_requests_stay_reserved_for_score_poll() -> None:
+    snap = QuotaSnapshot(current=7498, limit_day=7500, remaining=2, source="api")
+    assert quota_allows(1, snap, 5.0) is True
+    assert quota_allows(2, snap, 5.0) is True
+    assert quota_allows(3, snap, 5.0) is False
+    assert quota_allows(4, snap, 5.0) is False
 
 
 def test_seconds_until_utc_midnight() -> None:

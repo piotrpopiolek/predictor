@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
@@ -35,11 +35,14 @@ from predictor.services.ingest.persist_odds import (
 from predictor.services.ingest.persist_predictions import persist_predictions
 from predictor.services.queue import (
     claim_h2h_task,
+    claim_live_fixture_task,
+    claim_live_param_task,
     claim_odds_task,
     claim_predictions_task,
     claim_urgent_odds_task,
     claim_urgent_predictions_task,
     complete_task,
+    empty_retry_status,
     ensure_odds_task,
     get_or_create_endpoint_task,
     mapping_needs_refresh,
@@ -150,8 +153,15 @@ class PrematchIngest:
             )
             await self._fail(task_id, "retryable_error", "persist_failed")
 
-    async def _one_h2h(self) -> bool:
-        claimed = await self._claim_h2h()
+    async def _one_h2h(
+        self,
+        *,
+        h2h_keys: Sequence[str] | None = None,
+        retry_empty: bool = False,
+    ) -> bool:
+        if h2h_keys is not None and not h2h_keys:
+            return False
+        claimed = await self._claim_h2h(h2h_keys=h2h_keys)
         if claimed is None:
             return False
         task_id, h2h = claimed
@@ -168,6 +178,9 @@ class PrematchIngest:
             await self._fail(task_id, "retryable_error", type(exc).__name__)
             return True
         parsed = parse_fixtures(items)
+        if not parsed and retry_empty:
+            await self._retry_or_empty(task_id, {"h2h": h2h, "reason": "empty"})
+            return True
         try:
             async with self._session_factory() as session:
                 async with session.begin():
@@ -202,8 +215,18 @@ class PrematchIngest:
             await self._fail(task_id, "retryable_error", "persist_failed")
         return True
 
-    async def _one_predictions(self, *, urgent: bool = False) -> bool:
-        task_id = await self._claim_predictions_id(urgent=urgent)
+    async def _one_predictions(
+        self,
+        *,
+        urgent: bool = False,
+        fixture_ids: Sequence[int] | None = None,
+        retry_empty: bool = False,
+    ) -> bool:
+        if fixture_ids is not None and not fixture_ids:
+            return False
+        task_id = await self._claim_predictions_id(
+            urgent=urgent, fixture_ids=fixture_ids
+        )
         if task_id is None:
             return False
         loaded = await self._load_task_fixture(task_id)
@@ -213,11 +236,16 @@ class PrematchIngest:
         if not await self._coverage_allowed(
             loaded.league_id, loaded.season, "predictions"
         ):
-            await self._finish(
-                task_id,
-                "coverage_empty",
-                params={"fixture": loaded.id, "reason": "coverage_false"},
-            )
+            if retry_empty:
+                await self._retry_or_empty(
+                    task_id, {"fixture": loaded.id, "reason": "coverage_false"}
+                )
+            else:
+                await self._finish(
+                    task_id,
+                    "coverage_empty",
+                    params={"fixture": loaded.id, "reason": "coverage_false"},
+                )
             return True
         try:
             items, current, total = await fetch_all_pages(
@@ -232,13 +260,21 @@ class PrematchIngest:
             await self._fail(task_id, "retryable_error", type(exc).__name__)
             return True
         if not items:
-            await self._finish(
-                task_id,
-                "coverage_empty",
-                params={"fixture": loaded.id},
-                paging_current=current,
-                paging_total=total,
-            )
+            if retry_empty:
+                await self._retry_or_empty(
+                    task_id,
+                    {"fixture": loaded.id, "reason": "empty"},
+                    paging_current=current,
+                    paging_total=total,
+                )
+            else:
+                await self._finish(
+                    task_id,
+                    "coverage_empty",
+                    params={"fixture": loaded.id},
+                    paging_current=current,
+                    paging_total=total,
+                )
             return True
         parsed = _parse_predictions(items)
         if not parsed:
@@ -280,8 +316,16 @@ class PrematchIngest:
             await self._fail(task_id, "retryable_error", type(exc).__name__)
         return True
 
-    async def _one_odds(self, *, urgent: bool = False) -> bool:
-        task_id = await self._claim_odds_id(urgent=urgent)
+    async def _one_odds(
+        self,
+        *,
+        urgent: bool = False,
+        fixture_ids: Sequence[int] | None = None,
+        retry_empty: bool = False,
+    ) -> bool:
+        if fixture_ids is not None and not fixture_ids:
+            return False
+        task_id = await self._claim_odds_id(urgent=urgent, fixture_ids=fixture_ids)
         if task_id is None:
             return False
         loaded = await self._load_task_fixture(task_id)
@@ -289,11 +333,16 @@ class PrematchIngest:
             await self._fail(task_id, "permanent_error", "missing_fixture")
             return True
         if not await self._coverage_allowed(loaded.league_id, loaded.season, "odds"):
-            await self._finish(
-                task_id,
-                "coverage_empty",
-                params={"fixture": loaded.id, "reason": "coverage_false"},
-            )
+            if retry_empty:
+                await self._retry_or_empty(
+                    task_id, {"fixture": loaded.id, "reason": "coverage_false"}
+                )
+            else:
+                await self._finish(
+                    task_id,
+                    "coverage_empty",
+                    params={"fixture": loaded.id, "reason": "coverage_false"},
+                )
             return True
         try:
             items, current, total = await fetch_all_pages(
@@ -308,13 +357,21 @@ class PrematchIngest:
             await self._fail(task_id, "retryable_error", type(exc).__name__)
             return True
         if not items:
-            await self._finish(
-                task_id,
-                "coverage_empty",
-                params={"fixture": loaded.id},
-                paging_current=current,
-                paging_total=total,
-            )
+            if retry_empty:
+                await self._retry_or_empty(
+                    task_id,
+                    {"fixture": loaded.id, "reason": "empty"},
+                    paging_current=current,
+                    paging_total=total,
+                )
+            else:
+                await self._finish(
+                    task_id,
+                    "coverage_empty",
+                    params={"fixture": loaded.id},
+                    paging_current=current,
+                    paging_total=total,
+                )
             return True
         parsed = _parse_odds(items)
         try:
@@ -359,10 +416,20 @@ class PrematchIngest:
                     return None
                 return int(task.id)
 
-    async def _claim_h2h(self) -> tuple[int, str] | None:
+    async def _claim_h2h(
+        self, *, h2h_keys: Sequence[str] | None = None
+    ) -> tuple[int, str] | None:
         async with self._session_factory() as session:
             async with session.begin():
-                task = await claim_h2h_task(session)
+                if h2h_keys is None:
+                    task = await claim_h2h_task(session)
+                else:
+                    task = await claim_live_param_task(
+                        session,
+                        "/fixtures/headtohead",
+                        [{"h2h": key} for key in h2h_keys],
+                        now=self._now(),
+                    )
                 if task is None:
                     return None
                 raw = task.params.get("h2h") if task.params else None
@@ -373,23 +440,68 @@ class PrematchIngest:
                     return None
                 return int(task.id), raw.strip()
 
-    async def _claim_predictions_id(self, *, urgent: bool = False) -> int | None:
+    async def _claim_predictions_id(
+        self,
+        *,
+        urgent: bool = False,
+        fixture_ids: Sequence[int] | None = None,
+    ) -> int | None:
         async with self._session_factory() as session:
             async with session.begin():
-                if urgent:
+                if fixture_ids is not None:
+                    task = await claim_live_fixture_task(
+                        session, "/predictions", fixture_ids, now=self._now()
+                    )
+                elif urgent:
                     task = await claim_urgent_predictions_task(session, now=self._now())
                 else:
                     task = await claim_predictions_task(session)
                 return None if task is None else int(task.id)
 
-    async def _claim_odds_id(self, *, urgent: bool = False) -> int | None:
+    async def _claim_odds_id(
+        self,
+        *,
+        urgent: bool = False,
+        fixture_ids: Sequence[int] | None = None,
+    ) -> int | None:
         async with self._session_factory() as session:
             async with session.begin():
-                if urgent:
+                if fixture_ids is not None:
+                    task = await claim_live_fixture_task(
+                        session, "/odds", fixture_ids, now=self._now()
+                    )
+                elif urgent:
                     task = await claim_urgent_odds_task(session, now=self._now())
                 else:
                     task = await claim_odds_task(session)
                 return None if task is None else int(task.id)
+
+    async def _retry_or_empty(
+        self,
+        task_id: int,
+        params: dict[str, Any],
+        *,
+        paging_current: int | None = None,
+        paging_total: int | None = None,
+    ) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return
+                merged = dict(task.params)
+                merged.update(params)
+                status, merged = empty_retry_status(merged, now=self._now())
+                error = "empty_retry" if status == "retryable_error" else None
+                await complete_task(
+                    session,
+                    task,
+                    status,
+                    error=error,
+                    params=merged,
+                    paging_current=paging_current,
+                    paging_total=paging_total,
+                )
 
     async def _load_task_fixture(self, task_id: int) -> _FixtureRef | None:
         async with self._session_factory() as session:

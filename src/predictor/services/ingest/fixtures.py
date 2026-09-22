@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -28,6 +28,7 @@ from predictor.services.ingest.persist_fixtures import (
     upsert_league_rounds,
 )
 from predictor.services.queue import (
+    claim_live_param_task,
     claim_rounds_task,
     complete_task,
     enqueue_fixture_followups,
@@ -84,6 +85,46 @@ class FixtureIngest:
         async with self._session_factory() as session:
             async with session.begin():
                 return await day_is_complete(session, day)
+
+    async def ingest_one_scoped_rounds(self, pairs: Sequence[tuple[int, int]]) -> bool:
+        if not pairs or not self._quota_left():
+            return False
+        task_id, league_id, season = await self._claim_scoped_rounds(pairs)
+        if task_id is None or league_id is None or season is None:
+            return False
+        await self._ingest_rounds(task_id, league_id, season)
+        return True
+
+    async def _claim_scoped_rounds(
+        self, pairs: Sequence[tuple[int, int]]
+    ) -> tuple[int | None, int | None, int | None]:
+        async with self._session_factory() as session:
+            async with session.begin():
+                task = await claim_live_param_task(
+                    session,
+                    "/fixtures/rounds",
+                    [
+                        {"league": league_id, "season": season}
+                        for league_id, season in pairs
+                    ],
+                    now=self._now(),
+                )
+                if task is None:
+                    return None, None, None
+                league_id = task.params.get("league")
+                season = task.params.get("season")
+                if league_id is None or season is None:
+                    await complete_task(
+                        session, task, "permanent_error", error="bad_rounds_params"
+                    )
+                    return None, None, None
+                try:
+                    return int(task.id), int(league_id), int(season)
+                except (TypeError, ValueError):
+                    await complete_task(
+                        session, task, "permanent_error", error="bad_rounds_params"
+                    )
+                    return None, None, None
 
     async def refresh_rounds_pending(self) -> None:
         for _ in range(_ROUNDS_PER_TICK):

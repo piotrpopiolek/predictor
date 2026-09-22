@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -61,7 +61,9 @@ from predictor.services.ingest.persist_seasonal import (
 )
 from predictor.services.queue import (
     claim_global_task,
+    claim_live_global_task,
     complete_task,
+    empty_retry_status,
     enqueue_coach_catalog,
     enqueue_global_for_match,
     enqueue_player_catalog,
@@ -123,8 +125,22 @@ class GlobalIngest:
             async with session.begin():
                 await skip_reconstructable_lookups(session)
 
-    async def _one_task(self) -> bool:
-        task_id = await self._claim_id()
+    async def ingest_one_scoped(
+        self, needles: Sequence[tuple[str, dict[str, Any]]]
+    ) -> bool:
+        if not needles or not self._quota_left():
+            return False
+        task_id = await self._claim_scoped_id(needles)
+        if task_id is None:
+            return False
+        await self._one_task(task_id=task_id, retry_empty=True)
+        return True
+
+    async def _one_task(
+        self, *, task_id: int | None = None, retry_empty: bool = False
+    ) -> bool:
+        if task_id is None:
+            task_id = await self._claim_id()
         if task_id is None:
             return False
         loaded = await self._load_task(task_id)
@@ -138,11 +154,16 @@ class GlobalIngest:
             )
             return True
         if await self._coverage_blocked(endpoint, params):
-            await self._finish(
-                task_id,
-                "coverage_empty",
-                params={**params, "reason": "coverage_false"},
-            )
+            if retry_empty:
+                await self._retry_or_empty(
+                    task_id, {**params, "reason": "coverage_false"}
+                )
+            else:
+                await self._finish(
+                    task_id,
+                    "coverage_empty",
+                    params={**params, "reason": "coverage_false"},
+                )
             return True
         query = _http_params(endpoint, params)
         if query is None:
@@ -161,13 +182,21 @@ class GlobalIngest:
             await self._fail(task_id, "retryable_error", type(exc).__name__)
             return True
         if not items:
-            await self._finish(
-                task_id,
-                "coverage_empty",
-                params=params,
-                paging_current=current,
-                paging_total=total,
-            )
+            if retry_empty:
+                await self._retry_or_empty(
+                    task_id,
+                    {**params, "reason": "empty"},
+                    paging_current=current,
+                    paging_total=total,
+                )
+            else:
+                await self._finish(
+                    task_id,
+                    "coverage_empty",
+                    params=params,
+                    paging_current=current,
+                    paging_total=total,
+                )
             return True
         try:
             async with self._session_factory() as session:
@@ -299,6 +328,41 @@ class GlobalIngest:
             async with session.begin():
                 task = await claim_global_task(session)
                 return None if task is None else int(task.id)
+
+    async def _claim_scoped_id(
+        self, needles: Sequence[tuple[str, dict[str, Any]]]
+    ) -> int | None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                task = await claim_live_global_task(session, needles, now=self._now())
+                return None if task is None else int(task.id)
+
+    async def _retry_or_empty(
+        self,
+        task_id: int,
+        params: dict[str, Any],
+        *,
+        paging_current: int | None = None,
+        paging_total: int | None = None,
+    ) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return
+                merged = dict(task.params)
+                merged.update(params)
+                status, merged = empty_retry_status(merged, now=self._now())
+                error = "empty_retry" if status == "retryable_error" else None
+                await complete_task(
+                    session,
+                    task,
+                    status,
+                    error=error,
+                    params=merged,
+                    paging_current=paging_current,
+                    paging_total=paging_total,
+                )
 
     async def _load_task(self, task_id: int) -> tuple[int, str, dict[str, Any]] | None:
         async with self._session_factory() as session:
