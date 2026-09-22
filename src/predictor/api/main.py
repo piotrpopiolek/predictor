@@ -36,6 +36,11 @@ from predictor.services.live_board import (
     render_live_html,
 )
 from predictor.services.lock import fetch_holder_sqlalchemy
+from predictor.services.match_detail import (
+    load_match_detail,
+    render_match_html,
+    render_match_missing,
+)
 from predictor.services.metrics import metrics_token_ok, render_metrics
 from predictor.services.operator_bets import (
     BetError,
@@ -197,6 +202,19 @@ def create_app() -> FastAPI:
                 for match, reasons in selected
             ],
         }
+
+    @app.get("/live/match/{fixture_id}", response_model=None)
+    async def live_match(fixture_id: int) -> HTMLResponse:
+        engine = cast(AsyncEngine, app.state.engine)
+        try:
+            detail = await load_match_detail(engine, fixture_id)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
+        if detail is None:
+            return HTMLResponse(render_match_missing(), status_code=404)
+        return HTMLResponse(render_match_html(detail, generated_at=datetime.now(UTC)))
 
     @app.get("/live/bets")
     async def live_bets() -> HTMLResponse:

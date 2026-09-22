@@ -823,63 +823,55 @@ async def load_live_all_fixture_ids(session: AsyncSession) -> list[int]:
     return parse_live_fixture_ids(task.params)
 
 
-async def list_live_matches(engine: AsyncEngine) -> list[LiveMatch]:
+def _board_stmt() -> Any:
     home = aliased(Team)
     away = aliased(Team)
-    async with AsyncSession(engine, expire_on_commit=False) as session:
-        live_ids = await load_live_all_fixture_ids(session)
-        if not live_ids:
-            return []
-        stmt = (
-            select(
-                Fixture.id,
-                League.country_name,
-                League.name,
-                Fixture.round,
-                home.name,
-                away.name,
-                home.logo,
-                away.logo,
-                Fixture.goals_home,
-                Fixture.goals_away,
-                Fixture.status_short,
-                Fixture.status_long,
-                Fixture.elapsed_minutes,
-                Fixture.extra_minutes,
-                Fixture.home_team_id,
-                Fixture.away_team_id,
-                League.logo,
-                Fixture.venue_id,
-                Fixture.venue_name,
-                Fixture.venue_city,
-                Venue.name,
-                Venue.city,
-                Fixture.referee,
-                Fixture.goals_home_halftime,
-                Fixture.goals_away_halftime,
-                Fixture.goals_home_extratime,
-                Fixture.goals_away_extratime,
-                Fixture.goals_home_penalty,
-                Fixture.goals_away_penalty,
-                Fixture.league_id,
-                Fixture.season,
-                Fixture.date,
-                Fixture.leg,
-            )
-            .join(League, League.id == Fixture.league_id)
-            .join(home, home.id == Fixture.home_team_id)
-            .join(away, away.id == Fixture.away_team_id)
-            .outerjoin(Venue, Venue.id == Fixture.venue_id)
-            .where(Fixture.id.in_(live_ids))
-            .order_by(
-                League.country_name.asc().nulls_last(),
-                League.name.asc().nulls_last(),
-                Fixture.elapsed_minutes.desc().nulls_last(),
-                Fixture.id,
-            )
+    return (
+        select(
+            Fixture.id,
+            League.country_name,
+            League.name,
+            Fixture.round,
+            home.name,
+            away.name,
+            home.logo,
+            away.logo,
+            Fixture.goals_home,
+            Fixture.goals_away,
+            Fixture.status_short,
+            Fixture.status_long,
+            Fixture.elapsed_minutes,
+            Fixture.extra_minutes,
+            Fixture.home_team_id,
+            Fixture.away_team_id,
+            League.logo,
+            Fixture.venue_id,
+            Fixture.venue_name,
+            Fixture.venue_city,
+            Venue.name,
+            Venue.city,
+            Fixture.referee,
+            Fixture.goals_home_halftime,
+            Fixture.goals_away_halftime,
+            Fixture.goals_home_extratime,
+            Fixture.goals_away_extratime,
+            Fixture.goals_home_penalty,
+            Fixture.goals_away_penalty,
+            Fixture.league_id,
+            Fixture.season,
+            Fixture.date,
+            Fixture.leg,
         )
-        rows = (await session.execute(stmt)).all()
-        extras = await _load_extras(session, rows)
+        .join(League, League.id == Fixture.league_id)
+        .join(home, home.id == Fixture.home_team_id)
+        .join(away, away.id == Fixture.away_team_id)
+        .outerjoin(Venue, Venue.id == Fixture.venue_id)
+    )
+
+
+def _assemble_matches(
+    rows: Sequence[Any], extras: dict[int, dict[str, Any]]
+) -> list[LiveMatch]:
     matches: list[LiveMatch] = []
     for row in rows:
         fixture_id = int(row[0])
@@ -933,7 +925,39 @@ async def list_live_matches(engine: AsyncEngine) -> list[LiveMatch]:
                 prediction_pct_away=extra["prediction_pct_away"],
             )
         )
-    return sort_matches_by_clock(matches)
+    return matches
+
+
+async def list_live_matches(engine: AsyncEngine) -> list[LiveMatch]:
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        live_ids = await load_live_all_fixture_ids(session)
+        if not live_ids:
+            return []
+        stmt = (
+            _board_stmt()
+            .where(Fixture.id.in_(live_ids))
+            .order_by(
+                League.country_name.asc().nulls_last(),
+                League.name.asc().nulls_last(),
+                Fixture.elapsed_minutes.desc().nulls_last(),
+                Fixture.id,
+            )
+        )
+        rows = (await session.execute(stmt)).all()
+        extras = await _load_extras(session, rows)
+    return sort_matches_by_clock(_assemble_matches(rows, extras))
+
+
+async def load_fixture_match(engine: AsyncEngine, fixture_id: int) -> LiveMatch | None:
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        rows = (
+            await session.execute(_board_stmt().where(Fixture.id == fixture_id))
+        ).all()
+        if not rows:
+            return None
+        extras = await _load_extras(session, rows)
+    assembled = _assemble_matches(rows, extras)
+    return assembled[0] if assembled else None
 
 
 async def load_first_legs(
@@ -1809,6 +1833,12 @@ _LIVE_CSS = """
     border-bottom: 1px solid var(--line);
   }
   .match:last-child { border-bottom: 0; }
+  .match-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+  }
+  .match-link:hover { background: rgba(255, 255, 255, 0.03); }
   .headline {
     display: grid;
     grid-template-columns: 1fr auto 1fr;
@@ -2023,6 +2053,7 @@ def _match_card(
         bet_block = _bet_block(match, open_bet=open_bet, current_stake=current_stake)
     return f"""
 <article class="match" data-fixture-id="{match.fixture_id}">
+  <a class="match-link" href="/live/match/{match.fixture_id}">
   <div class="headline">
     <div class="team home">
       {_img(match.home_logo, match.home)}
@@ -2050,6 +2081,7 @@ def _match_card(
   {_form_line(match)}
   {_prematch_line(match)}
   {_next_goal_line(match)}
+  </a>
   {bet_block}
 </article>
 """
