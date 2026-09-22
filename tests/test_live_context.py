@@ -20,6 +20,8 @@ from predictor.services.ingest.global_entities import GlobalIngest
 from predictor.services.ingest.live_context import (
     LiveContextIngest,
     context_budget_left,
+    context_call_budget,
+    detail_refresh_due,
 )
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.ingest.prematch import PrematchIngest
@@ -33,6 +35,67 @@ FID_OTHER = 93022
 class WaitZero(wait_base):
     def __call__(self, retry_state: RetryCallState) -> float:
         return 0.0
+
+
+def test_context_call_budget_caps_detail_and_oneshots() -> None:
+    assert (
+        context_call_budget(detail_calls=40, oneshot_calls=12, hard_cap=80) == 52
+    )
+    assert (
+        context_call_budget(detail_calls=40, oneshot_calls=12, hard_cap=30) == 30
+    )
+
+
+def test_detail_refresh_waits_five_minutes_then_closes_once() -> None:
+    now = datetime(2026, 9, 22, 18, 0, tzinfo=UTC)
+    fresh = {"last_live_detail_at": now.isoformat()}
+    assert (
+        detail_refresh_due(
+            task_status="complete",
+            params=fresh,
+            match_status="1H",
+            now=now,
+        )
+        is False
+    )
+    assert (
+        detail_refresh_due(
+            task_status="complete",
+            params=fresh,
+            match_status="1H",
+            now=now + timedelta(minutes=4),
+        )
+        is False
+    )
+    assert (
+        detail_refresh_due(
+            task_status="complete",
+            params=fresh,
+            match_status="1H",
+            now=now + timedelta(minutes=5),
+        )
+        is True
+    )
+    assert (
+        detail_refresh_due(
+            task_status="complete",
+            params=fresh,
+            match_status="FT",
+            now=now,
+        )
+        is True
+    )
+    closed = {**fresh, "final_detail_at": now.isoformat()}
+    assert (
+        detail_refresh_due(
+            task_status="complete",
+            params=closed,
+            match_status="FT",
+            now=now + timedelta(minutes=30),
+            final=True,
+        )
+        is False
+    )
 
 
 def test_context_budget_stops_on_calls_time_and_quota() -> None:
@@ -146,7 +209,7 @@ async def test_live_context_prefers_live_fixture_and_retries_empty_odds() -> Non
             global_ingest=GlobalIngest(client, factory, now_fn=lambda: NOW),
             fixtures=FixtureIngest(client, factory, now_fn=lambda: NOW),
             target_seconds=60,
-            max_calls=1,
+            max_calls=2,
             now_fn=lambda: NOW,
         )
         await context.refresh([FID_LIVE])

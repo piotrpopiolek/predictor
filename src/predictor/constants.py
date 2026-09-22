@@ -23,9 +23,16 @@ LIVE_QUOTA_PRIORITIES = frozenset({1, 2, 3, 4})
 # and is dropped first when the tick or the quota is tight.
 LIVE_REQUESTS_PER_TICK = 2
 
-# P3 live-context budget after /fixtures?live=all. Stop at the call cap or at
-# this fraction of live_poll_target_seconds, whichever comes first.
-LIVE_CONTEXT_MAX_CALLS_PER_TICK = 16
+# P3 live-context budget after /fixtures?live=all.
+# Detail (/fixtures?id=) repeats every 5 minutes for events and match stats.
+# One-shots (odds, predictions, H2H, squads, season stats) run once, a few per tick.
+LIVE_DETAIL_REFRESH_SECONDS = 5 * 60
+LIVE_CONTEXT_DETAIL_CALLS = 40
+LIVE_CONTEXT_FINAL_CALLS = 8
+LIVE_CONTEXT_ONESHOT_CALLS = 12
+LIVE_CONTEXT_MAX_CALLS_PER_TICK = (
+    LIVE_CONTEXT_DETAIL_CALLS + LIVE_CONTEXT_FINAL_CALLS + LIVE_CONTEXT_ONESHOT_CALLS
+)
 LIVE_CONTEXT_TIME_FRACTION = 0.85
 LIVE_CONTEXT_EMPTY_BACKOFF_SECONDS = 5 * 60
 LIVE_CONTEXT_MAX_EMPTY_ATTEMPTS = 5
