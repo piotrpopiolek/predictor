@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import aliased
 
+from predictor.constants import FINISHED_FIXTURE_STATUSES, IN_PLAY_FIXTURE_STATUSES
 from predictor.models.catalog import Player
 from predictor.models.children import (
     FixtureEvent,
@@ -19,6 +20,7 @@ from predictor.models.children import (
 )
 from predictor.models.fixtures import Fixture, Team
 from predictor.models.predictions import Prediction, PredictionH2H
+from predictor.models.seasonal import Standing
 from predictor.services.live_board import (
     REFRESH_SECONDS,
     LiveMatch,
@@ -124,6 +126,56 @@ class DetailH2H:
 
 
 @dataclass(frozen=True, slots=True)
+class StandingSlot:
+    team_id: int
+    name: str
+    points: int
+    played: int
+    gf: int
+    ga: int
+    api_rank: int
+
+    @property
+    def gd(self) -> int:
+        return self.gf - self.ga
+
+
+@dataclass(frozen=True, slots=True)
+class RankedSlot:
+    slot: StandingSlot
+    rank: int
+    delta: int
+
+
+@dataclass(frozen=True, slots=True)
+class SplitPreview:
+    """Where the two clubs land after one point split."""
+
+    label: str
+    home_rank: int
+    away_rank: int
+    home_points: int
+    away_points: int
+    home_delta: int
+    away_delta: int
+    active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GroupTable:
+    """Group table before this match, plus the table after its points."""
+
+    group: str
+    before: tuple[RankedSlot, ...]
+    projected: tuple[RankedSlot, ...] | None
+    splits: tuple[SplitPreview, ...]
+    heading: str | None
+    split: str | None
+    moves: str | None
+    captured: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class MatchDetail:
     match: LiveMatch
     events: tuple[DetailEvent, ...]
@@ -138,6 +190,7 @@ class MatchDetail:
     pct_draw: str | None
     comparison: tuple[tuple[str, str, str], ...]
     h2h: tuple[DetailH2H, ...]
+    table: GroupTable | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -180,6 +233,7 @@ async def load_match_detail(engine: AsyncEngine, fixture_id: int) -> MatchDetail
         home_xi, away_xi, home_bench, away_bench = await _lineup(session, match)
         prediction = await session.get(Prediction, fixture_id)
         h2h = await _h2h(session, fixture_id)
+        table = await _group_table(session, match)
     advice = None
     expected_home = None
     expected_away = None
@@ -205,6 +259,373 @@ async def load_match_detail(engine: AsyncEngine, fixture_id: int) -> MatchDetail
         pct_draw=pct_draw,
         comparison=comparison,
         h2h=tuple(h2h),
+        table=table,
+    )
+
+
+def points_split(home_goals: int, away_goals: int) -> tuple[int, int]:
+    """League points from a score: 3/0, 1/1, or 0/3."""
+    if home_goals > away_goals:
+        return 3, 0
+    if home_goals < away_goals:
+        return 0, 3
+    return 1, 1
+
+
+def rank_slots(
+    slots: tuple[StandingSlot, ...] | list[StandingSlot],
+) -> tuple[RankedSlot, ...]:
+    ordered = sorted(
+        slots,
+        key=lambda slot: (
+            -slot.points,
+            -slot.gd,
+            -slot.gf,
+            slot.api_rank,
+            slot.team_id,
+        ),
+    )
+    return tuple(
+        RankedSlot(slot=slot, rank=index, delta=0)
+        for index, slot in enumerate(ordered, start=1)
+    )
+
+
+def _shifted(
+    slot: StandingSlot,
+    *,
+    points: int,
+    gf: int,
+    ga: int,
+    played: int,
+) -> StandingSlot:
+    return StandingSlot(
+        team_id=slot.team_id,
+        name=slot.name,
+        points=slot.points + points,
+        played=slot.played + played,
+        gf=slot.gf + gf,
+        ga=slot.ga + ga,
+        api_rank=slot.api_rank,
+    )
+
+
+def apply_score(
+    slots: tuple[StandingSlot, ...] | list[StandingSlot],
+    *,
+    home_id: int,
+    away_id: int,
+    home_goals: int,
+    away_goals: int,
+    sign: int = 1,
+) -> list[StandingSlot]:
+    """Add (sign=1) or remove (sign=-1) this match from every group row."""
+    home_points, away_points = points_split(home_goals, away_goals)
+    shifted: list[StandingSlot] = []
+    for slot in slots:
+        if slot.team_id == home_id:
+            shifted.append(
+                _shifted(
+                    slot,
+                    points=sign * home_points,
+                    gf=sign * home_goals,
+                    ga=sign * away_goals,
+                    played=sign,
+                )
+            )
+        elif slot.team_id == away_id:
+            shifted.append(
+                _shifted(
+                    slot,
+                    points=sign * away_points,
+                    gf=sign * away_goals,
+                    ga=sign * home_goals,
+                    played=sign,
+                )
+            )
+        else:
+            shifted.append(slot)
+    return shifted
+
+
+def _with_deltas(
+    before: tuple[RankedSlot, ...], after: tuple[RankedSlot, ...]
+) -> tuple[RankedSlot, ...]:
+    base = {row.slot.team_id: row.rank for row in before}
+    return tuple(
+        RankedSlot(
+            slot=row.slot,
+            rank=row.rank,
+            delta=base.get(row.slot.team_id, row.rank) - row.rank,
+        )
+        for row in after
+    )
+
+
+def _split_text(home: str, away: str, home_goals: int, away_goals: int) -> str:
+    home_points, away_points = points_split(home_goals, away_goals)
+    if home_points == away_points:
+        return "Remis, po 1 punkcie"
+    if home_points == 3:
+        return f"{home} +3, {away} +0"
+    return f"{away} +3, {home} +0"
+
+
+def point_splits(
+    rows: list[StandingSlot],
+    *,
+    home_id: int,
+    away_id: int,
+    home_name: str,
+    away_name: str,
+    home_goals: int | None,
+    away_goals: int | None,
+) -> tuple[SplitPreview, ...]:
+    """Three outcomes from the pre-match table. The live score fills its own case."""
+    before = {row.slot.team_id: row.rank for row in rank_slots(rows)}
+    specs = (
+        (f"Wygrana {home_name}", 1, 0),
+        ("Remis", 0, 0),
+        (f"Wygrana {away_name}", 0, 1),
+    )
+    current: int | None = None
+    if home_goals is not None and away_goals is not None:
+        if home_goals > away_goals:
+            current = 0
+        elif home_goals == away_goals:
+            current = 1
+        else:
+            current = 2
+    previews: list[SplitPreview] = []
+    for index, (label, sample_home, sample_away) in enumerate(specs):
+        goals_home = sample_home
+        goals_away = sample_away
+        active = current == index
+        if active and home_goals is not None and away_goals is not None:
+            goals_home = home_goals
+            goals_away = away_goals
+            label = f"{label} {home_goals}–{away_goals}"
+        ranked = {
+            row.slot.team_id: row
+            for row in rank_slots(
+                apply_score(
+                    rows,
+                    home_id=home_id,
+                    away_id=away_id,
+                    home_goals=goals_home,
+                    away_goals=goals_away,
+                )
+            )
+        }
+        home = ranked[home_id]
+        away = ranked[away_id]
+        previews.append(
+            SplitPreview(
+                label=label,
+                home_rank=home.rank,
+                away_rank=away.rank,
+                home_points=home.slot.points,
+                away_points=away.slot.points,
+                home_delta=before[home_id] - home.rank,
+                away_delta=before[away_id] - away.rank,
+                active=active,
+            )
+        )
+    return tuple(previews)
+
+
+def _moves(projected: tuple[RankedSlot, ...]) -> str:
+    parts: list[str] = []
+    for row in projected:
+        if row.delta > 0:
+            parts.append(f"{row.slot.name} awansuje na {row.rank}.")
+        elif row.delta < 0:
+            parts.append(f"{row.slot.name} spada na {row.rank}.")
+    if not parts:
+        return "Miejsca się nie zmieniają."
+    return " ".join(parts)
+
+
+def build_group_table(
+    *,
+    group: str,
+    rows: list[StandingSlot],
+    home_id: int,
+    away_id: int,
+    home_name: str,
+    away_name: str,
+    home_goals: int | None,
+    away_goals: int | None,
+    status_short: str,
+    included: bool,
+    captured: str | None,
+) -> GroupTable:
+    """Before-match table, and the same group after this match's points."""
+    scored = home_goals is not None and away_goals is not None
+    live = status_short in IN_PLAY_FIXTURE_STATUSES
+    finished = status_short in FINISHED_FIXTURE_STATUSES
+    project = scored and (live or finished)
+    baseline = rows
+    if project and included:
+        assert home_goals is not None and away_goals is not None
+        baseline = apply_score(
+            rows,
+            home_id=home_id,
+            away_id=away_id,
+            home_goals=home_goals,
+            away_goals=away_goals,
+            sign=-1,
+        )
+        before = rank_slots(baseline)
+        projected = _with_deltas(before, rank_slots(rows))
+    elif project:
+        assert home_goals is not None and away_goals is not None
+        before = rank_slots(rows)
+        projected = _with_deltas(
+            before,
+            rank_slots(
+                apply_score(
+                    rows,
+                    home_id=home_id,
+                    away_id=away_id,
+                    home_goals=home_goals,
+                    away_goals=away_goals,
+                )
+            ),
+        )
+    else:
+        before = rank_slots(rows)
+        projected = None
+    splits = point_splits(
+        baseline,
+        home_id=home_id,
+        away_id=away_id,
+        home_name=home_name,
+        away_name=away_name,
+        home_goals=home_goals if project else None,
+        away_goals=away_goals if project else None,
+    )
+    if projected is None or home_goals is None or away_goals is None:
+        return GroupTable(
+            group=group,
+            before=before,
+            projected=None,
+            splits=splits,
+            heading=None,
+            split=None,
+            moves=None,
+            captured=captured,
+        )
+    heading = (
+        f"Przy wyniku {home_goals}–{away_goals}"
+        if live
+        else f"Po wyniku {home_goals}–{away_goals}"
+    )
+    return GroupTable(
+        group=group,
+        before=before,
+        projected=projected,
+        splits=splits,
+        heading=heading,
+        split=_split_text(home_name, away_name, home_goals, away_goals),
+        moves=_moves(projected),
+        captured=captured,
+    )
+
+
+def _snapshot_includes_match(
+    *,
+    status_short: str,
+    home_played: int,
+    away_played: int,
+    other_finished: dict[int, int],
+    home_id: int,
+    away_id: int,
+) -> bool:
+    """True when a finished match is already inside the stored table."""
+    if status_short not in FINISHED_FIXTURE_STATUSES:
+        return False
+    return home_played >= other_finished.get(home_id, 0) + 1 and away_played >= (
+        other_finished.get(away_id, 0) + 1
+    )
+
+
+async def _group_table(session: AsyncSession, match: LiveMatch) -> GroupTable | None:
+    rows = (
+        await session.execute(
+            select(Standing, Team.name)
+            .join(Team, Team.id == Standing.team_id)
+            .where(Standing.league_id == match.league_id)
+            .where(Standing.season == match.season)
+        )
+    ).all()
+    if not rows:
+        return None
+    by_group: dict[str, list[StandingSlot]] = {}
+    captured_at: datetime | None = None
+    for standing, name in rows:
+        by_group.setdefault(standing.group_name or "", []).append(
+            StandingSlot(
+                team_id=int(standing.team_id),
+                name=_blank(name) or "—",
+                points=int(standing.points or 0),
+                played=int(standing.played or 0),
+                gf=int(standing.goals_for or 0),
+                ga=int(standing.goals_against or 0),
+                api_rank=int(standing.rank),
+            )
+        )
+        updated = standing.api_update
+        if isinstance(updated, datetime) and (
+            captured_at is None or updated > captured_at
+        ):
+            captured_at = updated
+    chosen: tuple[str, list[StandingSlot]] | None = None
+    for group_name, slots in by_group.items():
+        ids = {slot.team_id for slot in slots}
+        if match.home_team_id in ids and match.away_team_id in ids:
+            chosen = (group_name, slots)
+            break
+    if chosen is None:
+        return None
+    group_name, slots = chosen
+    played = {slot.team_id: slot.played for slot in slots}
+    others = (
+        await session.execute(
+            select(Fixture.home_team_id, Fixture.away_team_id).where(
+                Fixture.league_id == match.league_id,
+                Fixture.season == match.season,
+                Fixture.status_short.in_(FINISHED_FIXTURE_STATUSES),
+                Fixture.id != match.fixture_id,
+            )
+        )
+    ).all()
+    finished: dict[int, int] = {}
+    for home_id, away_id in others:
+        finished[int(home_id)] = finished.get(int(home_id), 0) + 1
+        finished[int(away_id)] = finished.get(int(away_id), 0) + 1
+    captured = None
+    if captured_at is not None:
+        captured = captured_at.strftime("%d.%m %H:%M UTC")
+    return build_group_table(
+        group=group_name,
+        rows=slots,
+        home_id=match.home_team_id,
+        away_id=match.away_team_id,
+        home_name=match.home,
+        away_name=match.away,
+        home_goals=match.goals_home,
+        away_goals=match.goals_away,
+        status_short=match.status_short,
+        included=_snapshot_includes_match(
+            status_short=match.status_short,
+            home_played=played.get(match.home_team_id, 0),
+            away_played=played.get(match.away_team_id, 0),
+            other_finished=finished,
+            home_id=match.home_team_id,
+            away_id=match.away_team_id,
+        ),
+        captured=captured,
     )
 
 
@@ -485,6 +906,7 @@ def _body(detail: MatchDetail, generated_at: datetime) -> str:
   {chips}
   {periods}
 </section>
+{_table_card(detail)}
 <div class="grid">
   {_events_card(detail)}
   {_stats_card(detail)}
@@ -642,6 +1064,124 @@ def _bench(players: tuple[DetailPlayer, ...]) -> str:
         for player in players
     )
     return f"<p class='bench'><span>Ławka</span> {names}</p>"
+
+
+def _table_card(detail: MatchDetail) -> str:
+    table = detail.table
+    if table is None:
+        return (
+            '<section class="card"><h2>Tabela</h2>'
+            '<p class="muted">Brak tabeli dla tej pary.</p></section>'
+        )
+    match = detail.match
+    caption = escape(table.group) if table.group else "Grupa"
+    if table.captured:
+        caption = f"{caption} · stan z {escape(table.captured)}"
+    live = ""
+    if table.projected is not None and table.heading:
+        note = ""
+        if table.split:
+            note += f'<p class="split">{escape(table.split)}</p>'
+        if table.moves:
+            note += f'<p class="moves">{escape(table.moves)}</p>'
+        live = (
+            "<div>"
+            f"<h3>{escape(table.heading)}</h3>"
+            f"{note}"
+            + _standings_table(
+                table.projected,
+                home_id=match.home_team_id,
+                away_id=match.away_team_id,
+                show_delta=True,
+            )
+            + "</div>"
+        )
+    return (
+        '<section class="card">'
+        "<h2>Tabela</h2>"
+        f'<p class="kicker">{caption}</p>'
+        '<div class="tables">'
+        "<div><h3>Przed meczem</h3>"
+        + _standings_table(
+            table.before,
+            home_id=match.home_team_id,
+            away_id=match.away_team_id,
+            show_delta=False,
+        )
+        + "</div>"
+        + live
+        + "</div>"
+        + _split_cards(table, match)
+        + "</section>"
+    )
+
+
+def _split_cards(table: GroupTable, match: LiveMatch) -> str:
+    if not table.splits:
+        return ""
+    cards: list[str] = []
+    for item in table.splits:
+        kind = "split-card active" if item.active else "split-card"
+        cards.append(
+            f'<div class="{kind}">'
+            f'<p class="split-label">{escape(item.label)}</p>'
+            "<p>"
+            f"{escape(match.home)} {item.home_rank}. · {item.home_points} pkt "
+            f"{_delta(item.home_delta)}</p><p>"
+            f"{escape(match.away)} {item.away_rank}. · {item.away_points} pkt "
+            f"{_delta(item.away_delta)}</p></div>"
+        )
+    return (
+        '<h3 class="split-title">Podział punktów</h3>'
+        '<div class="split-grid">' + "".join(cards) + "</div>"
+    )
+
+
+def _standings_table(
+    rows: tuple[RankedSlot, ...],
+    *,
+    home_id: int,
+    away_id: int,
+    show_delta: bool,
+) -> str:
+    head_delta = "<th></th>" if show_delta else ""
+    body: list[str] = []
+    for row in rows:
+        slot = row.slot
+        classes: list[str] = []
+        if slot.team_id in {home_id, away_id}:
+            classes.append("club")
+        if show_delta and row.delta > 0:
+            classes.append("up")
+        elif show_delta and row.delta < 0:
+            classes.append("down")
+        class_attr = f' class="{" ".join(classes)}"' if classes else ""
+        delta = f"<td>{_delta(row.delta)}</td>" if show_delta else ""
+        gd = f"{slot.gd:+d}"
+        body.append(
+            f"<tr{class_attr}>"
+            f"<td>{row.rank}</td>"
+            f'<td class="name">{escape(slot.name)}</td>'
+            f"<td>{slot.played}</td>"
+            f"<td>{slot.points}</td>"
+            f"<td>{slot.gf}–{slot.ga}</td>"
+            f"<td>{gd}</td>"
+            f"{delta}</tr>"
+        )
+    return (
+        '<table class="stand"><thead><tr>'
+        "<th>#</th><th class='name'>Drużyna</th><th>M</th><th>Pkt</th>"
+        f"<th>Bramki</th><th>+/-</th>{head_delta}"
+        "</tr></thead><tbody>" + "".join(body) + "</tbody></table>"
+    )
+
+
+def _delta(delta: int) -> str:
+    if delta > 0:
+        return f'<span class="delta up">↑{delta}</span>'
+    if delta < 0:
+        return f'<span class="delta down">↓{-delta}</span>'
+    return '<span class="delta flat">·</span>'
 
 
 def _prediction_card(detail: MatchDetail) -> str:
@@ -942,6 +1482,38 @@ _DETAIL_CSS = """
   }
   .bars i.away { background: var(--bar-away); margin-left: auto; }
   .xi { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .tables { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .tables .kicker { margin-bottom: 8px; }
+  table.stand { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+  table.stand th {
+    color: var(--muted); font-weight: 500; text-align: right;
+    font-size: 0.72rem; padding: 0 4px 6px;
+  }
+  table.stand th.name, table.stand td.name { text-align: left; }
+  table.stand td {
+    padding: 5px 4px; border-top: 1px solid var(--line);
+    text-align: right; font-variant-numeric: tabular-nums;
+  }
+  table.stand tr.club td.name { font-weight: 650; }
+  table.stand tr.up td.name { color: var(--live); }
+  table.stand tr.down td.name { color: #f85149; }
+  .split, .moves { margin: 0 0 8px; font-size: 0.82rem; }
+  .split { color: var(--text); }
+  .delta.up { color: var(--live); }
+  .delta.down { color: #f85149; }
+  .delta.flat { color: var(--muted); }
+  .split-title { margin-top: 16px; }
+  .split-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .split-card {
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px;
+    font-size: 0.8rem;
+  }
+  .split-card.active { border-color: var(--live); }
+  .split-card p { margin: 0 0 4px; }
+  .split-label {
+    color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+    font-size: 0.68rem;
+  }
   .bench { color: var(--muted); font-size: 0.8rem; margin: 10px 0 0; }
   .bench span {
     display: block; text-transform: uppercase; letter-spacing: 0.05em;
@@ -953,7 +1525,7 @@ _DETAIL_CSS = """
   .empty { text-align: center; color: var(--muted); padding: 48px 16px; }
   .sub { font-size: 0.78rem; text-align: right; }
   @media (max-width: 720px) {
-    .grid, .xi, .headline { grid-template-columns: 1fr; }
+    .grid, .xi, .headline, .tables, .split-grid { grid-template-columns: 1fr; }
     .team.away { flex-direction: row; text-align: left; }
     .scoreblock { order: -1; }
   }
