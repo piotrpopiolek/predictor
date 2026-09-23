@@ -30,9 +30,12 @@ from predictor.services.health import (
 )
 from predictor.services.live_board import (
     LiveMatch,
+    list_day_matches,
     list_live_matches,
     list_next_goal_matches,
+    parse_query_day,
     render_bets_html,
+    render_day_html,
     render_live_html,
 )
 from predictor.services.lock import fetch_holder_sqlalchemy
@@ -202,6 +205,42 @@ def create_app() -> FastAPI:
                 for match, reasons in selected
             ],
         }
+
+    @app.get("/live/day", response_model=None)
+    async def live_day(day: str | None = None) -> HTMLResponse:
+        return await _day_page(day)
+
+    @app.get("/live/day/{day}", response_model=None)
+    async def live_day_path(day: str) -> HTMLResponse:
+        return await _day_page(day)
+
+    async def _day_page(raw: str | None) -> HTMLResponse:
+        today = datetime.now(UTC).date()
+        invalid = False
+        if raw is None or not raw.strip():
+            selected = today
+        else:
+            parsed = parse_query_day(raw)
+            if parsed is None:
+                invalid = True
+                selected = today
+            else:
+                selected = parsed
+        engine = cast(AsyncEngine, app.state.engine)
+        try:
+            matches = await list_day_matches(engine, selected)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
+        html = render_day_html(
+            matches,
+            day=selected,
+            today=today,
+            generated_at=datetime.now(UTC),
+            invalid_date=invalid,
+        )
+        return HTMLResponse(html)
 
     @app.get("/live/match/{fixture_id}", response_model=None)
     async def live_match(fixture_id: int) -> HTMLResponse:

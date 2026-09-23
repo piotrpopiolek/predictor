@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from html import escape
 from itertools import groupby
@@ -926,6 +926,71 @@ def _assemble_matches(
             )
         )
     return matches
+
+
+def parse_query_day(raw: str | None) -> date | None:
+    """Accept ``YYYY-MM-DD``. Empty input is not a day."""
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _kickoff_utc(match: LiveMatch) -> datetime | None:
+    stamp = match.kickoff
+    if stamp is None:
+        return None
+    if stamp.tzinfo is None:
+        return stamp.replace(tzinfo=UTC)
+    return stamp.astimezone(UTC)
+
+
+def order_day_matches(matches: Sequence[LiveMatch]) -> list[LiveMatch]:
+    """Leagues by first kickoff, matches inside a league by kickoff."""
+    far = datetime.max.replace(tzinfo=UTC)
+
+    def kick(match: LiveMatch) -> datetime:
+        stamp = _kickoff_utc(match)
+        return far if stamp is None else stamp
+
+    first: dict[tuple[str, str], datetime] = {}
+    for match in matches:
+        key = (match.country, match.league)
+        stamp = kick(match)
+        current = first.get(key)
+        if current is None or stamp < current:
+            first[key] = stamp
+    return sorted(
+        matches,
+        key=lambda match: (
+            first[(match.country, match.league)],
+            match.country,
+            match.league,
+            kick(match),
+            match.fixture_id,
+        ),
+    )
+
+
+async def list_day_matches(engine: AsyncEngine, day: date) -> list[LiveMatch]:
+    start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        stmt = (
+            _board_stmt()
+            .where(Fixture.date.is_not(None))
+            .where(Fixture.date >= start)
+            .where(Fixture.date < end)
+            .order_by(Fixture.date.asc(), Fixture.id)
+        )
+        rows = (await session.execute(stmt)).all()
+        extras = await _load_extras(session, rows)
+    return order_day_matches(_assemble_matches(rows, extras))
 
 
 async def list_live_matches(engine: AsyncEngine) -> list[LiveMatch]:
@@ -2022,6 +2087,38 @@ _LIVE_CSS = """
     margin-right: 10px;
   }
   .bet-settle { display: inline-flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .day-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin: 0 0 18px;
+  }
+  .day-bar a, .day-bar button {
+    color: var(--text);
+    text-decoration: none;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px 12px;
+    font: inherit;
+    cursor: pointer;
+  }
+  .day-bar a:hover, .day-bar button:hover { border-color: var(--muted); }
+  .day-bar input[type="date"] {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 8px;
+    font: inherit;
+  }
+  .day-error { color: #f85149; margin: 0 0 12px; }
+  .kickoff {
+    color: var(--muted);
+    margin-right: 6px;
+    font-variant-numeric: tabular-nums;
+  }
 """
 
 
@@ -2031,12 +2128,20 @@ def _match_card(
     allow_bet: bool = False,
     open_bet: dict[str, Any] | None = None,
     current_stake: str | None = None,
+    show_kickoff: bool = False,
 ) -> str:
     home = escape(match.home)
     away = escape(match.away)
     clock = escape(match.clock)
     status = escape(match.status_short)
     long_status = escape(match.status_long or match.status_short)
+    kickoff_html = ""
+    if show_kickoff:
+        kickoff = _kickoff_utc(match)
+        if kickoff is not None:
+            kickoff_html = (
+                f'<span class="kickoff">{escape(kickoff.strftime("%H:%M"))}</span>'
+            )
     home_scorers = _scorer_list(match, "home")
     away_scorers = _scorer_list(match, "away")
     scorers = ""
@@ -2064,8 +2169,10 @@ def _match_card(
     </div>
     <div class="scoreblock">
       <div class="score">{_score(match.goals_home)}–{_score(match.goals_away)}</div>
-      <div class="meta" title="{long_status}"><span class="clock">{clock}</span>
-        <span class="status">{status}</span></div>
+      <div class="meta" title="{long_status}">
+        {kickoff_html}<span class="clock">{clock}</span>
+        <span class="status">{status}</span>
+      </div>
     </div>
     <div class="team away">
       {_img(match.away_logo, match.away)}
@@ -2253,6 +2360,99 @@ def render_live_html(
   {body}
 </main>
 {_REFRESH_SCRIPT}
+</body>
+</html>
+"""
+
+
+_WEEKDAYS_PL = (
+    "poniedziałek",
+    "wtorek",
+    "środa",
+    "czwartek",
+    "piątek",
+    "sobota",
+    "niedziela",
+)
+
+
+def format_day_heading(day: date) -> str:
+    weekday = _WEEKDAYS_PL[day.weekday()]
+    return f"{weekday} {day.strftime('%d.%m.%Y')}"
+
+
+def render_day_html(
+    matches: list[LiveMatch],
+    *,
+    day: date,
+    today: date,
+    generated_at: datetime,
+    invalid_date: bool = False,
+) -> str:
+    ordered = order_day_matches(matches)
+    sections: list[str] = []
+    for (country, league), rows in groupby(
+        ordered, key=lambda item: (item.country, item.league)
+    ):
+        group = list(rows)
+        logo = _img(group[0].league_logo, league, class_name="league-logo")
+        cards = "".join(_match_card(item, show_kickoff=True) for item in group)
+        sections.append(f"""
+<section class="league">
+  <h2>{logo}<span>{escape(country)} · {escape(league)}</span></h2>
+  {cards}
+</section>
+""")
+    body = "".join(sections)
+    if not body:
+        body = '<p class="empty">Brak meczów w tym dniu.</p>'
+    previous = day - timedelta(days=1)
+    following = day + timedelta(days=1)
+    today_link = ""
+    if day != today:
+        today_link = '<a href="/live/day">Dziś</a>'
+    error = ""
+    if invalid_date:
+        error = '<p class="day-error">Nie rozpoznaję tej daty. Pokazuję dziś.</p>'
+    heading = escape(format_day_heading(day))
+    when = escape(generated_at.strftime("%H:%M:%S UTC"))
+    count = len(ordered)
+    noun = _match_noun(count)
+    refresh = ""
+    refresh_note = "godziny UTC"
+    if day == today and not invalid_date:
+        refresh = _REFRESH_SCRIPT
+        refresh_note = f"odświeżanie co {REFRESH_SECONDS} s · godziny UTC"
+    return f"""<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mecze · {heading}</title>
+<style>
+{_LIVE_CSS}
+</style>
+</head>
+<body>
+<header>
+  <h1>Mecze · {heading}</h1>
+  <div class="header-meta">
+    {_live_nav("day")}
+    <p class="sub">{count} {noun} · {refresh_note} · {when}</p>
+  </div>
+</header>
+<main>
+  {error}
+  <form class="day-bar" method="get" action="/live/day">
+    <a href="/live/day/{previous.isoformat()}">← {previous.strftime("%d.%m")}</a>
+    <input type="date" name="day" value="{day.isoformat()}" required>
+    <button type="submit">Pokaż</button>
+    {today_link}
+    <a href="/live/day/{following.isoformat()}">{following.strftime("%d.%m")} →</a>
+  </form>
+  {body}
+</main>
+{refresh}
 </body>
 </html>
 """
@@ -2823,6 +3023,7 @@ def render_bets_html(
 def _live_nav(active_nav: str) -> str:
     items = (
         ("all", "/live", "Wszystkie"),
+        ("day", "/live/day", "Dzień"),
         ("next_goal", "/live/next-goal", "Następny gol"),
         ("bets", "/live/bets", "Zakłady"),
     )

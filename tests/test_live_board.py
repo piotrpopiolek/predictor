@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from html import escape
 from typing import Any
@@ -29,8 +29,11 @@ from predictor.services.live_board import (
     match_winner_side,
     next_goal_target,
     odd_side,
+    order_day_matches,
     parse_live_fixture_ids,
+    parse_query_day,
     pick_venue,
+    render_day_html,
     render_live_html,
     safe_http_url,
     scoring_team_id,
@@ -230,6 +233,86 @@ def test_select_next_goal_odds_picks_current_ordinal() -> None:
     assert quote.away == "11"
     assert "5th goal" in quote.market
     assert "extra time" not in quote.market
+
+
+def test_parse_query_day_accepts_iso_only() -> None:
+    assert parse_query_day(None) is None
+    assert parse_query_day("  ") is None
+    assert parse_query_day("2026-09-22") == date(2026, 9, 22)
+    assert parse_query_day("22.09.2026") is None
+
+
+def test_order_day_matches_by_first_kickoff_then_time() -> None:
+    early = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
+    late = datetime(2026, 9, 23, 18, 0, tzinfo=UTC)
+    ordered = order_day_matches(
+        [
+            _match(
+                fixture_id=2,
+                country="Israel",
+                league="Liga Alef",
+                kickoff=late,
+            ),
+            _match(
+                fixture_id=1,
+                country="England",
+                league="Premier League",
+                kickoff=early,
+                home="Later kick",
+            ),
+            _match(
+                fixture_id=3,
+                country="England",
+                league="Premier League",
+                kickoff=datetime(2026, 9, 23, 15, 0, tzinfo=UTC),
+                home="Mid",
+            ),
+        ]
+    )
+    assert [item.fixture_id for item in ordered] == [1, 3, 2]
+
+
+def test_render_day_html_steps_and_date_field() -> None:
+    day = date(2026, 9, 23)
+    html = render_day_html(
+        [
+            _match(
+                home="Tzeirey Tamra",
+                away="Hapoel Beit Shean",
+                kickoff=datetime(2026, 9, 23, 12, 30, tzinfo=UTC),
+                status_short="2H",
+                elapsed=76,
+            )
+        ],
+        day=day,
+        today=day,
+        generated_at=datetime(2026, 9, 23, 15, 0, tzinfo=UTC),
+    )
+    assert "środa 23.09.2026" in html
+    assert 'href="/live/day/2026-09-22"' in html
+    assert 'href="/live/day/2026-09-24"' in html
+    assert 'name="day" value="2026-09-23"' in html
+    assert "Tzeirey Tamra" in html
+    assert "12:30" in html
+    assert "Dziś" not in html
+    assert "odświeżanie co" in html
+    past = render_day_html(
+        [],
+        day=date(2026, 9, 21),
+        today=day,
+        generated_at=datetime(2026, 9, 23, 15, 0, tzinfo=UTC),
+    )
+    assert "Brak meczów w tym dniu." in past
+    assert 'href="/live/day">Dziś</a>' in past
+    assert "odświeżanie co" not in past
+    bad = render_day_html(
+        [],
+        day=day,
+        today=day,
+        generated_at=datetime(2026, 9, 23, 15, 0, tzinfo=UTC),
+        invalid_date=True,
+    )
+    assert "Nie rozpoznaję tej daty" in bad
 
 
 def test_render_escapes_team_names() -> None:
