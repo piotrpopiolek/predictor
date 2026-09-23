@@ -1,13 +1,14 @@
-"""Quota budget: live priorities may use the 5% buffer; the rest may not.
+"""Quota budget: keep enough requests for live matches until UTC midnight.
 
-Priorities 1–2 always run while any quota remains. Priorities 3–4 (live
-context and /odds/live) may use the buffer, but not the last
-LIVE_REQUESTS_PER_TICK calls — those stay reserved for the next live=all poll.
+History (priorities 5–9) and live odds spend only the surplus above that
+reserve. Match details slow from 5 to 15 minutes when the reserve is tight.
+An empty board polls scores every 5 minutes instead of every minute.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
@@ -17,25 +18,136 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from predictor.client.quota import QuotaSnapshot
 from predictor.constants import (
-    LIVE_QUOTA_PRIORITIES,
+    IDLE_SCORE_POLL_SECONDS,
+    LIVE_CONTEXT_ONESHOT_CALLS,
+    LIVE_DETAIL_REFRESH_MAX_SECONDS,
+    LIVE_DETAIL_REFRESH_SECONDS,
     LIVE_REQUESTS_PER_TICK,
     QUOTA_SNAPSHOT_ENDPOINT,
 )
 from predictor.models.etl import EtlTask
 
 
-def quota_allows(priority: int, snapshot: QuotaSnapshot, buffer_percent: float) -> bool:
-    if snapshot.remaining <= 0:
+@dataclass(frozen=True, slots=True)
+class LiveBudgetPlan:
+    """Requests to hold until reset, and how fast live work may run."""
+
+    score_need: int
+    detail_need: int
+    odds_need: int
+    detail_refresh_seconds: int
+    oneshot_calls: int
+    score_poll_seconds: float
+
+    @property
+    def full_reserve(self) -> int:
+        return self.score_need + self.detail_need + self.odds_need
+
+
+@dataclass
+class LiveSpendGate:
+    """Mutable view of the latest plan, read by the live-context handler."""
+
+    detail_refresh_seconds: int = LIVE_DETAIL_REFRESH_SECONDS
+    oneshot_calls: int = LIVE_CONTEXT_ONESHOT_CALLS
+
+
+def plan_live_budget(
+    *,
+    live_matches: int,
+    remaining: int,
+    now: datetime,
+    target_seconds: int = 60,
+) -> LiveBudgetPlan:
+    """Reserve score, detail and odds calls for the matches in play."""
+    hours = seconds_until_utc_midnight(now) / 3600.0
+    idle = live_matches <= 0
+    score_target = IDLE_SCORE_POLL_SECONDS if idle else target_seconds
+    score_per_hour = 3600.0 / score_target
+    score_need = math.ceil(hours * score_per_hour)
+    detail_need = 0
+    if not idle:
+        detail_need = math.ceil(
+            hours * live_matches * (3600.0 / LIVE_DETAIL_REFRESH_SECONDS)
+        )
+    odds_need = 0 if idle else math.ceil(hours * (3600.0 / target_seconds))
+    score_poll = _score_poll_seconds(
+        remaining=remaining,
+        score_need=score_need,
+        target_seconds=score_target,
+        now=now,
+    )
+    return LiveBudgetPlan(
+        score_need=score_need,
+        detail_need=detail_need,
+        odds_need=odds_need,
+        detail_refresh_seconds=_detail_refresh_seconds(
+            live_matches=live_matches,
+            remaining=remaining,
+            score_need=score_need,
+            detail_need=detail_need,
+            hours=hours,
+        ),
+        oneshot_calls=(
+            LIVE_CONTEXT_ONESHOT_CALLS
+            if remaining > score_need + detail_need + odds_need
+            else 0
+        ),
+        score_poll_seconds=score_poll,
+    )
+
+
+def quota_allows(priority: int, snapshot: QuotaSnapshot, plan: LiveBudgetPlan) -> bool:
+    """History and odds run only above the live reserve. Scores always run."""
+    remaining = snapshot.remaining
+    if remaining <= 0:
         return False
-    # Keep the next live score poll funded.
     if priority <= 2:
         return True
-    if snapshot.remaining <= LIVE_REQUESTS_PER_TICK:
+    if remaining <= LIVE_REQUESTS_PER_TICK:
         return False
-    if priority in LIVE_QUOTA_PRIORITIES:
-        return True
-    floor = math.ceil(snapshot.limit_day * (buffer_percent / 100.0))
-    return snapshot.remaining > floor
+    if priority == 3:
+        return remaining > plan.score_need
+    if priority == 4:
+        return plan.odds_need > 0 and remaining > plan.score_need + plan.detail_need
+    return remaining > plan.full_reserve
+
+
+def _score_poll_seconds(
+    *,
+    remaining: int,
+    score_need: int,
+    target_seconds: int,
+    now: datetime,
+) -> float:
+    target = float(target_seconds)
+    if remaining >= score_need and remaining > 0:
+        return target
+    if remaining <= 0:
+        return seconds_until_utc_midnight(now)
+    ticks = max(1, remaining)
+    return max(target, seconds_until_utc_midnight(now) / ticks)
+
+
+def _detail_refresh_seconds(
+    *,
+    live_matches: int,
+    remaining: int,
+    score_need: int,
+    detail_need: int,
+    hours: float,
+) -> int:
+    slowest = LIVE_DETAIL_REFRESH_MAX_SECONDS
+    fastest = LIVE_DETAIL_REFRESH_SECONDS
+    if live_matches <= 0:
+        return fastest
+    budget = remaining - score_need
+    if budget >= detail_need:
+        return fastest
+    if budget <= 0:
+        return slowest
+    raw = (hours * live_matches * 3600.0) / budget
+    return int(min(slowest, max(fastest, math.ceil(raw))))
 
 
 def seconds_until_utc_midnight(now: datetime) -> float:
@@ -105,7 +217,10 @@ def quota_gauges_from_params(params: dict[str, Any] | None) -> tuple[int, int]:
 
 
 async def persist_quota_snapshot(
-    session: AsyncSession, snapshot: QuotaSnapshot
+    session: AsyncSession,
+    snapshot: QuotaSnapshot,
+    *,
+    score_poll_seconds: float | None = None,
 ) -> None:
     if snapshot.source != "api":
         return
@@ -118,6 +233,8 @@ async def persist_quota_snapshot(
             snapshot.fetched_at.isoformat() if snapshot.fetched_at is not None else None
         ),
     }
+    if score_poll_seconds is not None:
+        params["score_poll_seconds"] = score_poll_seconds
     task = await session.scalar(
         select(EtlTask)
         .where(EtlTask.endpoint == QUOTA_SNAPSHOT_ENDPOINT)

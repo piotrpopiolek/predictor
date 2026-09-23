@@ -213,11 +213,12 @@ async def test_scheduler_logs_when_live_interval_must_stretch(
         _unused_factory(),
         idle_cap_seconds=0.01,
         now_fn=lambda: datetime(2026, 9, 13, 23, 0, tzinfo=UTC),
+        live_match_count=lambda: 1,
     )
     with caplog.at_level("WARNING"):
         await scheduler._tick(asyncio.Event())
     assert "live_freshness_missed" in caplog.text
-    assert scheduler.live_interval_seconds == 1800.0
+    assert scheduler.live_interval_seconds == 900.0
 
 
 @pytest.mark.asyncio
@@ -255,6 +256,7 @@ async def test_odds_live_waits_when_context_uses_the_tick(valid_env: None) -> No
         _unused_factory(),
         handlers={3: context, 4: odds_live},
         now_fn=now,
+        live_match_count=lambda: 1,
     )
     await scheduler._tick(asyncio.Event())
     assert called == [3]

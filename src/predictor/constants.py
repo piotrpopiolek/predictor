@@ -14,19 +14,16 @@ HTTP_MAX_CONNECTIONS = 10
 HTTP_MAX_KEEPALIVE_CONNECTIONS = 5
 HTTP_RETRY_ATTEMPTS = 5
 
-# Priorities 1–4 (dictionaries, live fixtures, live context, odds/live) may
-# spend the safety buffer. Residual work from priority 5 up may not.
-# quota_allows also keeps LIVE_REQUESTS_PER_TICK for the next live=all cycle.
-LIVE_QUOTA_PRIORITIES = frozenset({1, 2, 3, 4})
-
-# Forecast reserved for the next /fixtures?live=all cycle. /odds/live is extra
-# and is dropped first when the tick or the quota is tight.
+# Last calls kept for the next /fixtures?live=all poll. Context and odds
+# stop before this. History stops earlier, once the live reserve is touched.
 LIVE_REQUESTS_PER_TICK = 2
 
 # P3 live-context budget after /fixtures?live=all.
 # Detail (/fixtures?id=) repeats every 5 minutes for events and match stats.
 # One-shots (odds, predictions, H2H, squads, season stats) run once, a few per tick.
 LIVE_DETAIL_REFRESH_SECONDS = 5 * 60
+LIVE_DETAIL_REFRESH_MAX_SECONDS = 15 * 60
+IDLE_SCORE_POLL_SECONDS = 5 * 60
 LIVE_CONTEXT_DETAIL_CALLS = 40
 LIVE_CONTEXT_FINAL_CALLS = 8
 LIVE_CONTEXT_ONESHOT_CALLS = 12

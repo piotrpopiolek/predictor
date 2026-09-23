@@ -23,8 +23,10 @@ from predictor.schemas.settings import Settings
 from predictor.services.completeness import write_daily_report
 from predictor.services.queue import ensure_cursors
 from predictor.services.quota import (
-    live_poll_interval_seconds,
+    LiveBudgetPlan,
+    LiveSpendGate,
     persist_quota_snapshot,
+    plan_live_budget,
     quota_allows,
     seconds_until_utc_midnight,
 )
@@ -78,6 +80,8 @@ class Scheduler:
         idle_cap_seconds: float = 60.0,
         status_refresh_seconds: float = STATUS_REFRESH_SECONDS,
         now_fn: Callable[[], datetime] | None = None,
+        live_match_count: Callable[[], int] | None = None,
+        gate: LiveSpendGate | None = None,
     ) -> None:
         self._settings = settings
         self._client = client
@@ -86,6 +90,8 @@ class Scheduler:
         self._idle_cap_seconds = idle_cap_seconds
         self._status_refresh_seconds = status_refresh_seconds
         self._now = now_fn or (lambda: datetime.now(UTC))
+        self._live_match_count = live_match_count or (lambda: 0)
+        self._gate = gate or LiveSpendGate()
         self._quota: QuotaSnapshot | None = None
         self._live_interval_seconds: float | None = None
 
@@ -123,19 +129,13 @@ class Scheduler:
                 )
                 return
             target = float(self._settings.live_poll_target_seconds)
-            if quota.source == "api":
-                interval = live_poll_interval_seconds(
-                    quota, self._settings.live_poll_target_seconds, self._now()
-                )
-            else:
-                interval = target
-            self._live_interval_seconds = interval
-            if interval > target:
+            plan = self._apply_budget(quota.remaining)
+            if plan.score_poll_seconds > target and self._live_match_count() > 0:
                 log_json(
                     logging.WARNING,
                     service="worker",
                     event="live_freshness_missed",
-                    interval_seconds=round(interval, 3),
+                    interval_seconds=round(plan.score_poll_seconds, 3),
                     target_seconds=self._settings.live_poll_target_seconds,
                     remaining=quota.remaining,
                 )
@@ -143,9 +143,8 @@ class Scheduler:
             for slot in PRIORITY_ORDER:
                 if stop.is_set():
                     return
-                if not quota_allows(
-                    slot.priority, quota, self._settings.quota_safety_buffer_percent
-                ):
+                plan = self._apply_budget(quota.remaining)
+                if not quota_allows(slot.priority, quota, plan):
                     continue
                 # P1–P3 always (dictionaries, live scores, live context).
                 # P4+ (odds/live, then residual) stop once the tick hits target.
@@ -177,7 +176,11 @@ class Scheduler:
         try:
             async with session_cm as session:
                 async with session.begin():
-                    await persist_quota_snapshot(session, snapshot)
+                    await persist_quota_snapshot(
+                        session,
+                        snapshot,
+                        score_poll_seconds=self._live_interval_seconds,
+                    )
         except (TypeError, AttributeError):
             return
         except Exception:
@@ -208,6 +211,18 @@ class Scheduler:
                 event="daily_report",
                 day=yesterday.isoformat(),
             )
+
+    def _apply_budget(self, remaining: int) -> LiveBudgetPlan:
+        plan = plan_live_budget(
+            live_matches=max(0, self._live_match_count()),
+            remaining=remaining,
+            now=self._now(),
+            target_seconds=int(self._settings.live_poll_target_seconds),
+        )
+        self._gate.detail_refresh_seconds = plan.detail_refresh_seconds
+        self._gate.oneshot_calls = plan.oneshot_calls
+        self._live_interval_seconds = plan.score_poll_seconds
+        return plan
 
     def _client_quota(self) -> QuotaSnapshot | None:
         snapshot = getattr(self._client, "quota", None)

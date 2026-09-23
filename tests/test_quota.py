@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
@@ -9,46 +8,77 @@ from predictor.client.quota import QuotaSnapshot
 from predictor.services.quota import (
     live_poll_interval_gauge,
     live_poll_interval_seconds,
+    plan_live_budget,
     quota_allows,
     quota_gauges_from_params,
     seconds_until_utc_midnight,
 )
 
 
-def test_live_priorities_may_use_buffer() -> None:
-    snap = QuotaSnapshot(current=7490, limit_day=7500, remaining=10, source="api")
-    assert quota_allows(1, snap, 5.0) is True
-    assert quota_allows(2, snap, 5.0) is True
-    assert quota_allows(3, snap, 5.0) is True
-    assert quota_allows(4, snap, 5.0) is True
-    assert quota_allows(5, snap, 5.0) is False
-    assert quota_allows(9, snap, 5.0) is False
+def _plan(matches: int, remaining: int, now: datetime):
+    return plan_live_budget(
+        live_matches=matches, remaining=remaining, now=now, target_seconds=60
+    )
 
 
-def test_non_live_allowed_above_buffer_floor() -> None:
-    floor = math.ceil(7500 * 0.05)
-    snap = QuotaSnapshot(
-        current=7500 - floor - 1, limit_day=7500, remaining=floor + 1, source="api"
-    )
-    assert quota_allows(7, snap, 5.0) is True
-    snap_eq = QuotaSnapshot(
-        current=7500 - floor, limit_day=7500, remaining=floor, source="api"
-    )
-    assert quota_allows(7, snap_eq, 5.0) is False
+def test_history_stops_when_live_reserve_is_touched() -> None:
+    now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
+    snap = QuotaSnapshot(current=7100, limit_day=7500, remaining=400, source="api")
+    plan = _plan(30, snap.remaining, now)
+    assert plan.full_reserve > 400
+    assert quota_allows(1, snap, plan) is True
+    assert quota_allows(2, snap, plan) is True
+    assert quota_allows(5, snap, plan) is False
+    assert quota_allows(9, snap, plan) is False
+    assert quota_allows(4, snap, plan) is False
+
+
+def test_surplus_allows_history_and_five_minute_details() -> None:
+    now = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
+    snap = QuotaSnapshot(current=500, limit_day=7500, remaining=7000, source="api")
+    plan = _plan(30, snap.remaining, now)
+    assert quota_allows(7, snap, plan) is True
+    assert quota_allows(4, snap, plan) is True
+    assert plan.detail_refresh_seconds == 300
+    assert plan.oneshot_calls == 12
+    assert plan.score_poll_seconds == 60.0
+
+
+def test_tight_reserve_slows_details_and_drops_oneshots() -> None:
+    now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
+    plan = _plan(30, 400, now)
+    assert plan.detail_refresh_seconds == 900
+    assert plan.oneshot_calls == 0
+    assert plan.score_poll_seconds == 60.0
+
+
+def test_empty_board_polls_scores_every_five_minutes() -> None:
+    now = datetime(2026, 9, 23, 3, 0, tzinfo=UTC)
+    plan = _plan(0, 7000, now)
+    assert plan.odds_need == 0
+    assert plan.detail_need == 0
+    assert plan.score_poll_seconds == 300.0
+    snap = QuotaSnapshot(current=500, limit_day=7500, remaining=7000, source="api")
+    assert quota_allows(4, snap, plan) is False
+    assert quota_allows(8, snap, plan) is True
 
 
 def test_remaining_zero_blocks_all() -> None:
-    snap = QuotaSnapshot(current=100, limit_day=100, remaining=0, source="api")
+    now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
+    snap = QuotaSnapshot(current=7500, limit_day=7500, remaining=0, source="api")
+    plan = _plan(10, 0, now)
     for priority in range(1, 10):
-        assert quota_allows(priority, snap, 5.0) is False
+        assert quota_allows(priority, snap, plan) is False
 
 
 def test_last_live_requests_stay_reserved_for_score_poll() -> None:
+    now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     snap = QuotaSnapshot(current=7498, limit_day=7500, remaining=2, source="api")
-    assert quota_allows(1, snap, 5.0) is True
-    assert quota_allows(2, snap, 5.0) is True
-    assert quota_allows(3, snap, 5.0) is False
-    assert quota_allows(4, snap, 5.0) is False
+    plan = _plan(10, 2, now)
+    assert quota_allows(1, snap, plan) is True
+    assert quota_allows(2, snap, plan) is True
+    assert quota_allows(3, snap, plan) is False
+    assert quota_allows(4, snap, plan) is False
 
 
 def test_seconds_until_utc_midnight() -> None:

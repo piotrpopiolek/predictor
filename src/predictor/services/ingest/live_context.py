@@ -143,6 +143,8 @@ class LiveContextIngest:
         live_ids: Sequence[int],
         *,
         finishing_ids: Sequence[int] | None = None,
+        detail_refresh_seconds: int = LIVE_DETAIL_REFRESH_SECONDS,
+        oneshot_calls: int = LIVE_CONTEXT_ONESHOT_CALLS,
     ) -> list[int]:
         live = _unique(live_ids)
         live_set = set(live)
@@ -154,7 +156,7 @@ class LiveContextIngest:
             started=self._now(),
             max_calls=context_call_budget(
                 detail_calls=LIVE_CONTEXT_DETAIL_CALLS + LIVE_CONTEXT_FINAL_CALLS,
-                oneshot_calls=LIVE_CONTEXT_ONESHOT_CALLS,
+                oneshot_calls=oneshot_calls,
                 hard_cap=self._max_calls,
             ),
             target=self._target_seconds,
@@ -163,12 +165,20 @@ class LiveContextIngest:
             quota_fn=self._quota_left,
         )
         await self._refresh_details(
-            live, spend, final=False, limit=LIVE_CONTEXT_DETAIL_CALLS
+            live,
+            spend,
+            final=False,
+            limit=LIVE_CONTEXT_DETAIL_CALLS,
+            refresh_seconds=detail_refresh_seconds,
         )
         await self._refresh_details(
-            finishing, spend, final=True, limit=LIVE_CONTEXT_FINAL_CALLS
+            finishing,
+            spend,
+            final=True,
+            limit=LIVE_CONTEXT_FINAL_CALLS,
+            refresh_seconds=detail_refresh_seconds,
         )
-        oneshot_left = LIVE_CONTEXT_ONESHOT_CALLS
+        oneshot_left = oneshot_calls
         if finishing:
             oneshot_left = await self._drain(finishing, spend, limit=oneshot_left)
         if live and spend.left() and oneshot_left:
@@ -231,6 +241,7 @@ class LiveContextIngest:
         *,
         final: bool,
         limit: int,
+        refresh_seconds: int = LIVE_DETAIL_REFRESH_SECONDS,
     ) -> None:
         if not live_ids or limit <= 0:
             return
@@ -250,10 +261,14 @@ class LiveContextIngest:
                 match_status=match_status,
                 now=self._now(),
                 final=final,
+                refresh_seconds=refresh_seconds,
             ):
                 continue
             if await self._refresh_detail(
-                fixture_id, final=final, match_status=match_status
+                fixture_id,
+                final=final,
+                match_status=match_status,
+                refresh_seconds=refresh_seconds,
             ):
                 spend.take()
                 fetched += 1
@@ -298,6 +313,7 @@ class LiveContextIngest:
         *,
         final: bool,
         match_status: str | None,
+        refresh_seconds: int = LIVE_DETAIL_REFRESH_SECONDS,
     ) -> bool:
         async with self._session_factory() as session:
             async with session.begin():
@@ -315,6 +331,7 @@ class LiveContextIngest:
                     match_status=match_status,
                     now=self._now(),
                     final=final,
+                    refresh_seconds=refresh_seconds,
                 ):
                     return False
                 if task is None:

@@ -212,9 +212,8 @@ async def scrape_gauges(engine: AsyncEngine) -> dict[str, float]:
         if created.tzinfo is None:
             created = created.replace(tzinfo=UTC)
         pending_age = max(0.0, (now - created).total_seconds())
-    remaining, used = quota_gauges_from_params(
-        quota_row.params if quota_row is not None else None
-    )
+    quota_params = quota_row.params if quota_row is not None else None
+    remaining, used = quota_gauges_from_params(quota_params)
     return {
         "in_play_fixtures": float(in_play or 0),
         "live_last_snapshot_unixtime": live_ts,
@@ -222,7 +221,19 @@ async def scrape_gauges(engine: AsyncEngine) -> dict[str, float]:
         "oldest_pending_age_seconds": pending_age,
         "quota_remaining": float(remaining),
         "quota_used": float(used),
+        "score_poll_seconds": _score_poll_seconds(quota_params),
     }
+
+
+def _score_poll_seconds(params: dict[str, Any] | None) -> float:
+    if not params:
+        return 0.0
+    raw = params.get("score_poll_seconds")
+    try:
+        value = float(raw) if raw is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+    return value if value > 0 else 0.0
 
 
 def _holder_payload(holder: HolderInfo | None) -> dict[str, Any]:

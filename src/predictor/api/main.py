@@ -357,12 +357,17 @@ def create_app() -> FastAPI:
         remaining = int(gauges["quota_remaining"])
         used = int(gauges["quota_used"])
         now = datetime.now(UTC)
-        interval = live_poll_interval_gauge(
-            remaining,
-            used,
-            settings.quota_daily_limit,
-            settings.live_poll_target_seconds,
-            now,
+        planned = float(gauges.get("score_poll_seconds") or 0)
+        interval = (
+            planned
+            if planned > 0
+            else live_poll_interval_gauge(
+                remaining,
+                used,
+                settings.quota_daily_limit,
+                settings.live_poll_target_seconds,
+                now,
+            )
         )
         body = render_metrics(
             environment=settings.host_environment.value,

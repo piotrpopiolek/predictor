@@ -32,6 +32,7 @@ from predictor.services.queue import (
     record_run_start,
     requeue_orphans,
 )
+from predictor.services.quota import LiveSpendGate
 from predictor.services.scheduler import Scheduler
 from predictor.telemetry import configure_telemetry, instrument_engine
 
@@ -93,10 +94,14 @@ async def run_locked_loop(
             target_seconds=settings.live_poll_target_seconds,
         )
 
+        gate = LiveSpendGate()
+
         async def priority_three() -> None:
             live.finishing_fixture_ids = await live_context.refresh(
                 live.last_live_fixture_ids,
                 finishing_ids=live.finishing_fixture_ids,
+                detail_refresh_seconds=gate.detail_refresh_seconds,
+                oneshot_calls=gate.oneshot_calls,
             )
 
         async def priority_four() -> None:
@@ -110,6 +115,8 @@ async def run_locked_loop(
             settings,
             client,
             session_factory,
+            live_match_count=lambda: len(live.last_live_fixture_ids),
+            gate=gate,
             handlers={
                 1: catalog.refresh_priority_one,
                 2: live.refresh_live_fixtures,
