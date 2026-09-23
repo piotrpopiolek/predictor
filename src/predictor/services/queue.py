@@ -18,11 +18,13 @@ from predictor.constants import (
     ETL_STATUSES,
     FINISHED_FIXTURE_STATUSES,
     GLOBAL_ENDPOINT_ORDER,
+    HISTORICAL_BACKLOG_MAX_AGE_SECONDS,
     LIVE_CONTEXT_EMPTY_BACKOFF_SECONDS,
     LIVE_CONTEXT_MAX_EMPTY_ATTEMPTS,
     LOOKUP_WITHOUT_HTTP,
     ODDS_MAPPING_REFRESH_SECONDS,
     ODDS_MAPPING_RETRY_BACKOFF_SECONDS,
+    OPEN_ETL_STATUSES,
     STALE_GLOBAL_ENDPOINTS,
     TOP_PLAYER_ENDPOINTS,
     URGENT_PREMATCH_HORIZON_HOURS,
@@ -502,10 +504,40 @@ async def claim_control_refresh_task(
     return _mark_claimed(task)
 
 
+def _as_utc(stamp: datetime) -> datetime:
+    if stamp.tzinfo is None:
+        return stamp.replace(tzinfo=UTC)
+    return stamp.astimezone(UTC)
+
+
+async def historical_backlog_blocks(
+    session: AsyncSession, now: datetime | None = None
+) -> bool:
+    """True when an open task has been waiting longer than a week.
+
+    Same clock as the oldest-pending gauge: ``now - min(created_at)`` over
+    open tasks. Daily snapshot rows are re-dated when they are reopened, so
+    a finished table does not keep this gate shut.
+    """
+    stamp = _as_utc(now or datetime.now(UTC))
+    oldest = await session.scalar(
+        select(func.min(EtlTask.created_at)).where(
+            EtlTask.status.in_(tuple(OPEN_ETL_STATUSES)),
+            EtlTask.cursor_kind.is_(None),
+        )
+    )
+    if oldest is None:
+        return False
+    age = stamp - _as_utc(oldest)
+    return age.total_seconds() > HISTORICAL_BACKLOG_MAX_AGE_SECONDS
+
+
 async def enqueue_fixture_followups(
-    session: AsyncSession, extra: dict[str, Any]
+    session: AsyncSession, extra: dict[str, Any], *, historical: bool = False
 ) -> None:
     _require_transaction(session, "enqueue fixture followups")
+    if historical and await historical_backlog_blocks(session):
+        return
     discovered = extra.get("discovered")
     if isinstance(discovered, list) and discovered:
         for row in discovered:
@@ -983,6 +1015,7 @@ async def requeue_stale_global(session: AsyncSession, now: datetime) -> int:
     for task in tasks:
         if needs_refresh(task, now):
             task.status = "pending"
+            task.created_at = now
             task.updated_at = now
             task.completed_at = None
             count += 1

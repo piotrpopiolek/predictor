@@ -17,6 +17,7 @@ from predictor.client.errors import (
     RetryableHttpError,
 )
 from predictor.client.football import FootballClient
+from predictor.constants import HISTORICAL_BACKLOG_MAX_AGE_SECONDS
 from predictor.logutil import log_json
 from predictor.models.etl import EtlTask
 from predictor.schemas.fixtures import FixtureItem
@@ -34,6 +35,7 @@ from predictor.services.queue import (
     enqueue_fixture_followups,
     get_cursor_task,
     get_or_create_day_task,
+    historical_backlog_blocks,
     needs_refresh,
 )
 
@@ -71,6 +73,14 @@ class FixtureIngest:
         if not self._quota_left():
             return
         if not await self._today_fixtures_complete():
+            return
+        if await self._historical_backlog_blocks():
+            log_json(
+                logging.INFO,
+                service="worker",
+                event="historical_enqueue_paused",
+                max_age_seconds=HISTORICAL_BACKLOG_MAX_AGE_SECONDS,
+            )
             return
         day = await self._peek_backfill_day()
         if day >= self._today():
@@ -134,6 +144,10 @@ class FixtureIngest:
             if task_id is None or league_id is None or season is None:
                 return
             await self._ingest_rounds(task_id, league_id, season)
+
+    async def _historical_backlog_blocks(self) -> bool:
+        async with self._session_factory() as session:
+            return await historical_backlog_blocks(session, self._now())
 
     async def _today_fixtures_complete(self) -> bool:
         day = self._today()
@@ -201,7 +215,9 @@ class FixtureIngest:
                     if task is None:
                         return False
                     extra = await upsert_fixtures(session, parsed)
-                    await enqueue_fixture_followups(session, extra)
+                    await enqueue_fixture_followups(
+                        session, extra, historical=role == "backfill"
+                    )
                     params = dict(task.params)
                     params.update(
                         {

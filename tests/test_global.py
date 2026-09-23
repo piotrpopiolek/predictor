@@ -1007,6 +1007,11 @@ async def test_stale_global_requeues_next_utc_day() -> None:
         assert count == 1
         assert task is not None
         assert task.status == "pending"
+        assert task.created_at is not None
+        created = task.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        assert created == NOW
     finally:
         await engine.dispose()
 

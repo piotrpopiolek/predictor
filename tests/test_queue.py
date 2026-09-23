@@ -24,6 +24,7 @@ from predictor.services.queue import (
     enqueue_fixture_followups,
     ensure_cursors,
     ensure_prematch_for_fixture_ids,
+    historical_backlog_blocks,
     reopen_live_detail_task,
     requeue_orphans,
     unfinished_context_fixture_ids,
@@ -220,6 +221,105 @@ async def _purge_prematch_fixtures(session) -> None:
     ids = (FID_SOON, FID_LATER, FID_FAR, FID_FT)
     await session.execute(delete(EtlTask).where(EtlTask.fixture_id.in_(ids)))
     await session.execute(delete(Fixture).where(Fixture.id.in_(ids)))
+
+
+async def _drop_marker(factory, marker: int) -> None:
+    async with factory() as session:
+        async with session.begin():
+            await session.execute(
+                delete(EtlTask).where(
+                    or_(
+                        EtlTask.fixture_id == marker,
+                        EtlTask.params.contains({"id": marker}),
+                    )
+                )
+            )
+            await session.execute(delete(Fixture).where(Fixture.id == marker))
+
+
+@pytest.mark.asyncio
+async def test_historical_followups_wait_for_week_old_pending() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    marker = 92090
+    try:
+        await _drop_marker(factory, marker)
+        async with factory() as session:
+            async with session.begin():
+                session.add(
+                    EtlTask(
+                        endpoint="/coachs",
+                        params={"id": marker},
+                        status="pending",
+                        created_at=NOW - timedelta(days=8),
+                    )
+                )
+                blocked = await historical_backlog_blocks(session, NOW)
+                await enqueue_fixture_followups(
+                    session,
+                    {
+                        "discovered": [
+                            {
+                                "id": marker,
+                                "home": 1,
+                                "away": 2,
+                                "league": 9,
+                                "season": 2026,
+                            }
+                        ]
+                    },
+                    historical=True,
+                )
+        assert blocked is True
+        async with factory() as session:
+            odds = await session.scalar(
+                select(EtlTask.id)
+                .where(EtlTask.endpoint == "/odds")
+                .where(EtlTask.fixture_id == marker)
+            )
+        assert odds is None
+    finally:
+        await _drop_marker(factory, marker)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_live_followups_still_enqueue_when_backlog_is_old() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    marker = 92091
+    try:
+        await _drop_marker(factory, marker)
+        async with factory() as session:
+            async with session.begin():
+                item = FixtureItem.model_validate(
+                    _fixture_payload(marker, kickoff=NOW + timedelta(hours=1))
+                )
+                await upsert_fixtures(session, [item])
+                session.add(
+                    EtlTask(
+                        endpoint="/coachs",
+                        params={"id": marker},
+                        status="pending",
+                        created_at=NOW - timedelta(days=8),
+                    )
+                )
+                await enqueue_fixture_followups(
+                    session,
+                    {"fixture_ids": [marker]},
+                )
+        async with factory() as session:
+            odds = await session.scalar(
+                select(EtlTask.id)
+                .where(EtlTask.endpoint == "/odds")
+                .where(EtlTask.fixture_id == marker)
+            )
+        assert odds is not None
+    finally:
+        await _drop_marker(factory, marker)
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
