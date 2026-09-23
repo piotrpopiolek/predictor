@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from predictor.client.errors import (
     AuthBlockedError,
     FootballHttpError,
+    QuotaExhaustedError,
     RetryableHttpError,
 )
 from predictor.client.football import FootballClient
@@ -53,6 +54,17 @@ STATUS_REFRESH_SECONDS = 3600.0
 
 async def _noop() -> None:
     return None
+
+
+def _blocks_until_reset(snapshot: QuotaSnapshot, now: datetime) -> bool:
+    if snapshot.source != "api" or snapshot.remaining > 0:
+        return False
+    fetched = snapshot.fetched_at
+    if fetched is None:
+        return False
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=UTC)
+    return fetched.astimezone(UTC).date() == now.astimezone(UTC).date()
 
 
 class Scheduler:
@@ -142,7 +154,13 @@ class Scheduler:
                     if elapsed >= target:
                         break
                 handler = self._handlers.get(slot.priority, _noop)
-                await handler()
+                try:
+                    await handler()
+                except QuotaExhaustedError:
+                    fresh = self._client_quota()
+                    if fresh is not None:
+                        self._quota = fresh
+                    break
         finally:
             await self._persist_quota()
 
@@ -191,8 +209,17 @@ class Scheduler:
                 day=yesterday.isoformat(),
             )
 
+    def _client_quota(self) -> QuotaSnapshot | None:
+        snapshot = getattr(self._client, "quota", None)
+        if isinstance(snapshot, QuotaSnapshot):
+            return snapshot
+        return None
+
     async def _ensure_quota(self) -> QuotaSnapshot:
         now = self._now()
+        observed = self._client_quota()
+        if observed is not None and _blocks_until_reset(observed, now):
+            return observed
         cached = self._quota
         if cached is not None and cached.source == "api":
             if cached.remaining <= 0 and cached.fetched_at is not None:
@@ -209,6 +236,17 @@ class Scheduler:
             snapshot = await self._client.get_status()
         except AuthBlockedError:
             raise
+        except QuotaExhaustedError:
+            observed = self._client_quota()
+            if observed is not None and observed.remaining <= 0:
+                return observed
+            return QuotaSnapshot(
+                current=self._settings.quota_daily_limit,
+                limit_day=self._settings.quota_daily_limit,
+                remaining=0,
+                fetched_at=now,
+                source="api",
+            )
         except (RetryableHttpError, FootballHttpError):
             log_json(logging.WARNING, service="worker", event="quota_refresh_failed")
             if cached is not None:

@@ -88,6 +88,72 @@ async def test_scheduler_quota_exhausted_does_not_spin_http(valid_env: None) -> 
 
 
 @pytest.mark.asyncio
+async def test_daily_limit_body_stops_the_scheduler(valid_env: None) -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(
+            200,
+            json={
+                "get": "status",
+                "errors": {
+                    "requests": "You have reached the request limit for the day."
+                },
+                "results": 0,
+                "response": [],
+            },
+            headers={
+                "x-ratelimit-requests-limit": "7500",
+                "x-ratelimit-requests-remaining": "7499",
+            },
+        )
+
+    settings = load_settings()
+    client = FootballClient(
+        settings,
+        locked=True,
+        transport=httpx.MockTransport(handler),
+        retry_wait=WaitZero(),
+    )
+    stop = asyncio.Event()
+    frozen = datetime.now(UTC).replace(hour=20, minute=0, second=0, microsecond=0)
+    ran = {"n": 0}
+
+    async def domain() -> None:
+        ran["n"] += 1
+
+    scheduler = Scheduler(
+        settings,
+        client,
+        _unused_factory(),
+        handlers={2: domain},
+        idle_cap_seconds=0.05,
+        status_refresh_seconds=3600,
+        now_fn=lambda: frozen,
+    )
+
+    async def fake_persist() -> None:
+        return None
+
+    scheduler._persist_cursors = fake_persist  # type: ignore[method-assign]
+    try:
+
+        async def halt() -> None:
+            await asyncio.sleep(0.2)
+            stop.set()
+
+        await asyncio.gather(scheduler.run(stop), halt())
+    finally:
+        await client.aclose()
+    assert calls["n"] == 1
+    assert ran["n"] == 0
+    assert scheduler.quota is not None
+    assert scheduler.quota.remaining == 0
+    assert scheduler.quota.current == 7500
+
+
+@pytest.mark.asyncio
 async def test_priority_order_matches_fr023() -> None:
     assert [slot.priority for slot in PRIORITY_ORDER] == list(range(1, 10))
     assert PRIORITY_ORDER[0].name == "quota_and_live_dictionaries"

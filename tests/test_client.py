@@ -11,11 +11,14 @@ from tenacity.wait import wait_base
 from predictor.client.errors import (
     AuthBlockedError,
     FootballHttpError,
+    QuotaExhaustedError,
     RetryableHttpError,
     WriterLockRequiredError,
 )
 from predictor.client.football import FootballClient
+from predictor.client.quota import quota_from_http, requests_limit_reached
 from predictor.client.retry import WaitRetryAfterOrJitter, parse_retry_after
+from predictor.schemas.api_football import ApiEnvelope
 from predictor.schemas.settings import load_settings
 
 STATUS_BODY = {
@@ -97,6 +100,70 @@ async def test_quota_headers_override_body(valid_env: None) -> None:
         await client.aclose()
     assert snapshot.limit_day == 7500
     assert snapshot.remaining == 10
+
+
+LIMIT_BODY = {
+    "get": "status",
+    "errors": {
+        "requests": (
+            "You have reached the request limit for the day, "
+            "Go to https://dashboard.api-football.com to upgrade your plan."
+        )
+    },
+    "results": 0,
+    "response": [],
+}
+
+
+def test_requests_limit_reached_ignores_other_errors() -> None:
+    assert requests_limit_reached(LIMIT_BODY["errors"]) is True
+    assert requests_limit_reached([]) is False
+    assert requests_limit_reached({"token": "missing"}) is False
+    assert requests_limit_reached({"requests": "plan does not include this"}) is False
+
+
+def test_quota_from_http_trusts_daily_limit_body_over_header() -> None:
+    response = httpx.Response(
+        200,
+        json=LIMIT_BODY,
+        headers={
+            "x-ratelimit-requests-limit": "7500",
+            "x-ratelimit-requests-remaining": "7499",
+        },
+    )
+    snapshot = quota_from_http(response, ApiEnvelope.model_validate(LIMIT_BODY))
+    assert snapshot.remaining == 0
+    assert snapshot.limit_day == 7500
+    assert snapshot.current == 7500
+
+
+@pytest.mark.asyncio
+async def test_daily_limit_body_stops_further_http(valid_env: None) -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(
+            200,
+            json=LIMIT_BODY,
+            headers={
+                "x-ratelimit-requests-limit": "7500",
+                "x-ratelimit-requests-remaining": "7499",
+            },
+        )
+
+    client = _client(True, httpx.MockTransport(handler))
+    try:
+        with pytest.raises(QuotaExhaustedError):
+            await client.get("/fixtures", domain=True)
+        with pytest.raises(QuotaExhaustedError):
+            await client.get("/fixtures", domain=True)
+    finally:
+        await client.aclose()
+    assert calls["n"] == 1
+    assert client.quota is not None
+    assert client.quota.remaining == 0
+    assert client.quota.current == 7500
 
 
 @pytest.mark.asyncio

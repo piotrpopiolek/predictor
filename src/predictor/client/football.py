@@ -18,10 +18,15 @@ from tenacity.wait import wait_base
 from predictor.client.errors import (
     AuthBlockedError,
     FootballHttpError,
+    QuotaExhaustedError,
     RetryableHttpError,
     WriterLockRequiredError,
 )
-from predictor.client.quota import QuotaSnapshot, quota_from_http
+from predictor.client.quota import (
+    QuotaSnapshot,
+    quota_from_http,
+    requests_limit_reached,
+)
 from predictor.client.retry import WaitRetryAfterOrJitter, parse_retry_after
 from predictor.constants import (
     API_SPORTS_KEY_HEADER,
@@ -119,6 +124,8 @@ class FootballClient:
             raise AuthBlockedError(
                 "API authorization previously failed; new requests are stopped"
             )
+        if self._daily_quota_blocked():
+            raise QuotaExhaustedError(path)
 
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(HTTP_RETRY_ATTEMPTS),
@@ -147,6 +154,9 @@ class FootballClient:
             raise RetryableHttpError(None) from None
 
         self._note_quota_headers(response)
+        if response.status_code == 200 and self._body_says_daily_limit(response):
+            self._exhaust_daily_quota()
+            raise QuotaExhaustedError(path)
         if response.status_code in {401, 403}:
             self._auth_blocked = True
             raise AuthBlockedError(
@@ -185,6 +195,39 @@ class FootballClient:
             fetched_at=datetime.now(UTC),
             source="api",
         )
+
+    def _body_says_daily_limit(self, response: httpx.Response) -> bool:
+        try:
+            payload: Any = response.json()
+        except ValueError:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        return requests_limit_reached(payload.get("errors"))
+
+    def _exhaust_daily_quota(self) -> None:
+        limit = 0
+        if self._quota is not None and self._quota.limit_day > 0:
+            limit = self._quota.limit_day
+        self._quota = QuotaSnapshot(
+            current=limit,
+            limit_day=limit,
+            remaining=0,
+            fetched_at=datetime.now(UTC),
+            source="api",
+        )
+
+    def _daily_quota_blocked(self) -> bool:
+        """Stop HTTP until the next UTC day once the vendor reports the cap."""
+        quota = self._quota
+        if quota is None or quota.remaining > 0 or quota.fetched_at is None:
+            return False
+        if quota.source != "api":
+            return False
+        fetched = quota.fetched_at
+        if fetched.tzinfo is None:
+            fetched = fetched.replace(tzinfo=UTC)
+        return fetched.astimezone(UTC).date() == datetime.now(UTC).date()
 
     async def get_status(self) -> QuotaSnapshot:
         response = await self.get("/status", domain=False)
