@@ -29,7 +29,7 @@ from predictor.services.ingest.next_goal import (
 )
 
 REFRESH_SECONDS = 15
-FORM_LAST_MATCHES = 5
+FORM_LAST_MATCHES = 15
 _GOAL_MARKET = re.compile(
     r"^which team will score the (\d+)(?:st|nd|rd|th) goal" r"( in extra time)?\??$"
 )

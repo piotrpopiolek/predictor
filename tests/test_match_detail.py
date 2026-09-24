@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from predictor.services.live_board import LiveMatch, PrematchOdds, TeamGoalForm
 from predictor.services.match_detail import (
@@ -13,8 +14,11 @@ from predictor.services.match_detail import (
     StandingSlot,
     _snapshot_includes_match,
     build_group_table,
+    read_goal_price,
+    recent_attack_changes,
     render_match_html,
     render_match_missing,
+    select_display_markets,
 )
 
 
@@ -62,6 +66,98 @@ def _detail() -> MatchDetail:
     )
 
 
+def test_read_goal_price_treats_over_line_as_another_goal() -> None:
+    price = read_goal_price(
+        none_odd=Decimal("3.40"),
+        over_odd=Decimal("1.25"),
+        line=1.5,
+        ht_odd=Decimal("1.45"),
+        ht_elapsed=46,
+    )
+    assert price is not None
+    assert price.none_odd == "3.40"
+    assert price.none_implied == "29%"
+    assert price.line == "1,5"
+    assert price.over_odd == "1.25"
+    assert "1.45 → 1.25" in (price.move or "")
+    assert "więcej sytuacji" in (price.move or "")
+    flat = read_goal_price(
+        none_odd=None,
+        over_odd=Decimal("1.45"),
+        line=1.5,
+        ht_odd=Decimal("1.45"),
+        ht_elapsed=46,
+    )
+    assert flat is not None
+    assert flat.move is None
+
+
+def test_recent_attack_changes_marks_striker_on_and_only_winger_off() -> None:
+    spots = [
+        (1, 11, "F", "4:2", True),
+        (1, 10, "F", "3:1", True),
+        (1, 20, "F", None, False),
+    ]
+    changes = recent_attack_changes(
+        [(78, None, 1, 10, 20, "Wing", "Striker")],
+        spots,
+        home_id=1,
+        away_id=2,
+        home="Home",
+        away="Away",
+        elapsed=85,
+        extra=None,
+    )
+    assert len(changes) == 1
+    assert "schodzi Wing (skrzydłowy)" in changes[0].summary
+    assert "wchodzi Striker (napastnik)" in changes[0].summary
+    assert changes[0].effect is not None
+    assert "Wszedł napastnik" in changes[0].effect
+    assert "jedyne skrzydło" in changes[0].effect
+    early = recent_attack_changes(
+        [(40, None, 1, 10, 20, "Wing", "Striker")],
+        spots,
+        home_id=1,
+        away_id=2,
+        home="Home",
+        away="Away",
+        elapsed=85,
+        extra=None,
+    )
+    assert early == ()
+
+
+def test_select_display_markets_keeps_main_lines_and_next_goal() -> None:
+    rows = [
+        ("Fulltime Result", "Home", "", Decimal("1.615"), None, False),
+        ("Fulltime Result", "Draw", "", Decimal("3.5"), None, False),
+        ("Fulltime Result", "Away", "", Decimal("6"), None, False),
+        ("Over/Under Line", "Over", "2.5", Decimal("2"), True, False),
+        ("Over/Under Line", "Under", "2.5", Decimal("1.8"), True, False),
+        ("Over/Under Line", "Over", "3", Decimal("3.1"), False, False),
+        (
+            "Which team will score the 2nd goal?",
+            "Away",
+            "",
+            Decimal("2.1"),
+            None,
+            False,
+        ),
+        ("Final Score", "1-0", "", Decimal("7"), None, False),
+        ("Double Chance", "Home or Draw", "", Decimal("1.1"), None, True),
+    ]
+    markets = select_display_markets(
+        rows, home="Uzbekistan", away="Iran", goals_home=1, goals_away=0
+    )
+    titles = [market.title for market in markets]
+    assert titles == ["Wynik", "Powyżej / poniżej", "Kto strzeli 2. gola"]
+    assert markets[0].quotes[0].label == "Uzbekistan"
+    assert markets[0].quotes[0].odd == "1.62"
+    assert markets[1].quotes[0].label == "Powyżej 2.5"
+    assert len(markets[1].quotes) == 2
+    assert all(quote.odd != "1.10" for market in markets for quote in market.quotes)
+
+
 def test_render_match_html_shows_collected_sections() -> None:
     html = render_match_html(
         _detail(), generated_at=datetime(2026, 9, 22, 14, 0, tzinfo=UTC)
@@ -80,7 +176,7 @@ def test_render_match_html_shows_collected_sections() -> None:
     assert "Ławka" in html
     assert "Prognoza" in html
     assert "Double chance" in html
-    assert "Przed meczem" in html
+    assert "Otwarcie" in html
     assert "Bezpośrednie" in html
     assert 'href="/live"' in html
 
@@ -283,7 +379,7 @@ def test_render_match_html_shows_table_movement() -> None:
         detail, generated_at=datetime(2026, 9, 23, 6, 40, tzinfo=UTC)
     )
     assert "Tabela" in html
-    assert "Przed meczem" in html
+    assert "Otwarcie" in html
     assert "Przy wyniku 0–2" in html
     assert "Korea DPR U23 awansuje na 1." in html
     assert "Iran U23 spada na 3." in html

@@ -4,24 +4,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from html import escape
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import aliased
 
 from predictor.constants import FINISHED_FIXTURE_STATUSES, IN_PLAY_FIXTURE_STATUSES
-from predictor.models.catalog import Player
+from predictor.models.catalog import OddsLiveBet, Player
 from predictor.models.children import (
     FixtureEvent,
     FixtureLineupPlayer,
     FixtureStatistic,
 )
 from predictor.models.fixtures import Fixture, Team
+from predictor.models.odds import FixtureOddsLive
 from predictor.models.predictions import Prediction, PredictionH2H
 from predictor.models.seasonal import Standing
 from predictor.services.live_board import (
+    FORM_LAST_MATCHES,
     REFRESH_SECONDS,
     LiveMatch,
     _img,
@@ -83,6 +86,27 @@ _EVENT_LABELS = {
     "subst": "Zmiana",
     "Var": "VAR",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class AttackChange:
+    clock: str
+    team: str
+    summary: str
+    effect: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GoalPrice:
+    none_odd: str | None
+    none_implied: str | None
+    line: str
+    over_odd: str | None
+    over_implied: str | None
+    move: str | None
+
+
+ATTACK_SUB_WINDOW = 15
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +215,9 @@ class MatchDetail:
     comparison: tuple[tuple[str, str, str], ...]
     h2h: tuple[DetailH2H, ...]
     table: GroupTable | None = None
+    markets: tuple[OddsMarket, ...] = ()
+    attack_subs: tuple[AttackChange, ...] = ()
+    goal_price: GoalPrice | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -234,6 +261,9 @@ async def load_match_detail(engine: AsyncEngine, fixture_id: int) -> MatchDetail
         prediction = await session.get(Prediction, fixture_id)
         h2h = await _h2h(session, fixture_id)
         table = await _group_table(session, match)
+        markets = await _live_markets(session, match)
+        attack_subs = await _attack_subs(session, match)
+        goal_price = await _goal_price(session, match)
     advice = None
     expected_home = None
     expected_away = None
@@ -260,6 +290,9 @@ async def load_match_detail(engine: AsyncEngine, fixture_id: int) -> MatchDetail
         comparison=comparison,
         h2h=tuple(h2h),
         table=table,
+        markets=tuple(markets),
+        attack_subs=tuple(attack_subs),
+        goal_price=goal_price,
     )
 
 
@@ -671,6 +704,226 @@ async def _events(session: AsyncSession, match: LiveMatch) -> list[DetailEvent]:
     return events
 
 
+_Sub = tuple[int, int | None, int, int | None, int | None, str | None, str | None]
+
+
+def recent_attack_changes(
+    subs: list[_Sub],
+    spots: list[tuple[int, int, str | None, str | None, bool]],
+    *,
+    home_id: int,
+    away_id: int,
+    home: str,
+    away: str,
+    elapsed: int | None,
+    extra: int | None,
+) -> tuple[AttackChange, ...]:
+    """Attacking substitutions in the last 15 minutes.
+
+    API-Football stores the player coming off in ``player`` and the player
+    coming on in ``assist``. A centre-forward coming on pushes the game
+    forward. The only winger coming off narrows it.
+    """
+    roles = _starter_attack_roles(spots)
+    cutoff = None if elapsed is None else max(0, elapsed - ATTACK_SUB_WINDOW)
+    changes: list[AttackChange] = []
+    for minute, minute_extra, team_id, off_id, on_id, off_name, on_name in subs:
+        if cutoff is not None and minute < cutoff:
+            continue
+        off_role = _player_role(off_id, roles, spots)
+        on_role = _player_role(on_id, roles, spots)
+        if off_role is None and on_role is None:
+            continue
+        team = home if team_id == home_id else away
+        summary = _sub_summary(off_name, off_role, on_name, on_role)
+        effect = _sub_effect(team_id, off_id, off_role, on_role, roles, spots)
+        clock = f"{minute}+{minute_extra}'" if minute_extra else f"{minute}'"
+        changes.append(
+            AttackChange(clock=clock, team=team, summary=summary, effect=effect)
+        )
+    return tuple(changes)
+
+
+def _starter_attack_roles(
+    spots: list[tuple[int, int, str | None, str | None, bool]],
+) -> dict[int, str]:
+    roles: dict[int, str] = {}
+    by_team: dict[int, list[tuple[int, int, int]]] = {}
+    for team_id, player_id, position, grid, starter in spots:
+        if not starter or not _is_forward(position):
+            continue
+        parsed = _parse_grid(grid)
+        if parsed is None:
+            continue
+        by_team.setdefault(team_id, []).append((parsed[0], parsed[1], player_id))
+    for players in by_team.values():
+        front = max(row for row, _col, _pid in players)
+        line = [(col, pid) for row, col, pid in players if row == front]
+        if len(line) >= 3:
+            edge = {min(line)[1], max(line)[1]}
+            for _col, pid in line:
+                roles[pid] = "wing" if pid in edge else "cf"
+            continue
+        if len(line) == 1:
+            roles[line[0][1]] = "cf"
+            support = [(col, pid) for row, col, pid in players if row == front - 1]
+            for _col, pid in support:
+                roles[pid] = "wing"
+            continue
+        for _col, pid in line:
+            roles[pid] = "cf"
+    return roles
+
+
+def _player_role(
+    player_id: int | None,
+    roles: dict[int, str],
+    spots: list[tuple[int, int, str | None, str | None, bool]],
+) -> str | None:
+    if player_id is None:
+        return None
+    role = roles.get(player_id)
+    if role == "wing":
+        return "skrzydłowy"
+    if role == "cf":
+        return "środkowy napastnik"
+    for _team, pid, position, _grid, _starter in spots:
+        if pid == player_id and _is_forward(position):
+            return "napastnik"
+    return None
+
+
+def _sub_effect(
+    team_id: int,
+    off_id: int | None,
+    off_role: str | None,
+    on_role: str | None,
+    roles: dict[int, str],
+    spots: list[tuple[int, int, str | None, str | None, bool]],
+) -> str | None:
+    notes: list[str] = []
+    if on_role in {"napastnik", "środkowy napastnik"}:
+        notes.append("Wszedł napastnik — więcej gry do przodu.")
+    team_wings = [
+        player_id
+        for spot_team, player_id, _position, _grid, _starter in spots
+        if spot_team == team_id and roles.get(player_id) == "wing"
+    ]
+    only_wing_off = (
+        off_role == "skrzydłowy"
+        and off_id is not None
+        and team_wings == [off_id]
+        and on_role != "skrzydłowy"
+    )
+    if only_wing_off:
+        notes.append("Zeszło jedyne skrzydło — mniej szerokości.")
+    if not notes:
+        return None
+    return " ".join(notes)
+
+
+def _is_forward(position: str | None) -> bool:
+    if not position:
+        return False
+    return position.strip().upper().startswith("F")
+
+
+def _parse_grid(grid: str | None) -> tuple[int, int] | None:
+    if not grid or ":" not in grid:
+        return None
+    row_raw, col_raw = grid.split(":", 1)
+    try:
+        return int(row_raw), int(col_raw)
+    except ValueError:
+        return None
+
+
+def _sub_summary(
+    off_name: str | None,
+    off_role: str | None,
+    on_name: str | None,
+    on_role: str | None,
+) -> str:
+    parts: list[str] = []
+    if off_name:
+        role = f" ({off_role})" if off_role else ""
+        parts.append(f"schodzi {off_name}{role}")
+    if on_name:
+        role = f" ({on_role})" if on_role else ""
+        parts.append(f"wchodzi {on_name}{role}")
+    return ", ".join(parts)
+
+
+async def _attack_subs(session: AsyncSession, match: LiveMatch) -> list[AttackChange]:
+    assist = aliased(Player)
+    rows = (
+        await session.execute(
+            select(
+                FixtureEvent.minute,
+                FixtureEvent.minute_extra,
+                FixtureEvent.team_id,
+                FixtureEvent.player_id,
+                FixtureEvent.assist_player_id,
+                Player.name,
+                assist.name,
+            )
+            .outerjoin(Player, Player.id == FixtureEvent.player_id)
+            .outerjoin(assist, assist.id == FixtureEvent.assist_player_id)
+            .where(FixtureEvent.fixture_id == match.fixture_id)
+            .where(func.lower(FixtureEvent.event_type) == "subst")
+            .order_by(
+                FixtureEvent.minute,
+                FixtureEvent.minute_extra.asc().nulls_first(),
+            )
+        )
+    ).all()
+    spots = (
+        await session.execute(
+            select(
+                FixtureLineupPlayer.team_id,
+                FixtureLineupPlayer.player_id,
+                FixtureLineupPlayer.position,
+                FixtureLineupPlayer.grid,
+                FixtureLineupPlayer.is_starter,
+            ).where(FixtureLineupPlayer.fixture_id == match.fixture_id)
+        )
+    ).all()
+    subs = [
+        (
+            int(minute),
+            extra,
+            int(team_id),
+            None if off_id is None else int(off_id),
+            None if on_id is None else int(on_id),
+            _blank(off_name),
+            _blank(on_name),
+        )
+        for minute, extra, team_id, off_id, on_id, off_name, on_name in rows
+    ]
+    lineup = [
+        (
+            int(team_id),
+            int(player_id),
+            _blank(position),
+            _blank(grid),
+            bool(starter),
+        )
+        for team_id, player_id, position, grid, starter in spots
+    ]
+    return list(
+        recent_attack_changes(
+            subs,
+            lineup,
+            home_id=match.home_team_id,
+            away_id=match.away_team_id,
+            home=match.home,
+            away=match.away,
+            elapsed=match.elapsed,
+            extra=match.extra,
+        )
+    )
+
+
 async def _stats(session: AsyncSession, match: LiveMatch) -> list[DetailStat]:
     rows = (
         await session.execute(
@@ -911,9 +1164,11 @@ def _body(detail: MatchDetail, generated_at: datetime) -> str:
   {_events_card(detail)}
   {_stats_card(detail)}
 </div>
+{_attack_subs_card(detail)}
+{_goal_price_card(detail)}
 {_lineups_card(detail)}
+{_odds_card(detail)}
 {_prediction_card(detail)}
-{_odds_card(match)}
 {_h2h_card(detail)}
 <p class="sub">Odświeżono {escape(generated_at.strftime("%H:%M:%S UTC"))}</p>
 """
@@ -975,6 +1230,30 @@ def _events_card(detail: MatchDetail) -> str:
             )
         inner = f'<ol class="timeline">{"".join(rows)}</ol>'
     return f'<section class="card"><h2>Zdarzenia</h2>{inner}</section>'
+
+
+    return f'<section class="card"><h2>Zdarzenia</h2>{inner}</section>'
+
+
+def _attack_subs_card(detail: MatchDetail) -> str:
+    if not detail.attack_subs:
+        return ""
+    rows = []
+    for change in detail.attack_subs:
+        effect = ""
+        if change.effect:
+            effect = f'<p class="effect">{escape(change.effect)}</p>'
+        rows.append(
+            "<li>"
+            f'<span class="minute">{escape(change.clock)}</span>'
+            f"<span><strong>{escape(change.team)}</strong> "
+            f"{escape(change.summary)}</span>"
+            f"{effect}</li>"
+        )
+    return (
+        '<section class="card"><h2>Zmiany napastników</h2>'
+        f'<ul class="subs">{"".join(rows)}</ul></section>'
+    )
 
 
 def _stats_card(detail: MatchDetail) -> str:
@@ -1227,14 +1506,405 @@ def _prediction_card(detail: MatchDetail) -> str:
     return f'<section class="card"><h2>Prognoza</h2>{"".join(bits)}</section>'
 
 
-def _odds_card(match: LiveMatch) -> str:
+@dataclass(frozen=True, slots=True)
+class OddsQuote:
+    label: str
+    odd: str
+
+
+@dataclass(frozen=True, slots=True)
+class OddsMarket:
+    title: str
+    quotes: tuple[OddsQuote, ...]
+
+
+_ODDS_MARKETS = (
+    ("fulltime result", "Wynik"),
+    ("double chance", "Podwójna szansa"),
+    ("both teams to score", "Obie strzelą"),
+    ("over/under line", "Powyżej / poniżej"),
+    ("match goals", "Liczba goli"),
+    ("asian handicap", "Handicap"),
+)
+
+
+def select_display_markets(
+    rows: list[tuple[str, str, str, Decimal, bool | None, bool | None]],
+    *,
+    home: str,
+    away: str,
+    goals_home: int | None,
+    goals_away: int | None,
+) -> tuple[OddsMarket, ...]:
+    """Latest live prices for the markets useful on the match page."""
+    grouped: dict[str, list[tuple[str, str, Decimal, bool | None]]] = {}
+    for market, label, handicap, odd, is_main, suspended in rows:
+        if suspended:
+            continue
+        key = market.strip().casefold()
+        grouped.setdefault(key, []).append((label, handicap, odd, is_main))
+    markets: list[OddsMarket] = []
+    for key, title in _ODDS_MARKETS:
+        lines = grouped.get(key)
+        if not lines:
+            continue
+        chosen = _pick_lines(key, lines)
+        quotes = tuple(
+            OddsQuote(
+                label=_price_label(label, handicap, home, away),
+                odd=_fmt_odd(odd),
+            )
+            for label, handicap, odd, _main in chosen
+        )
+        quotes = tuple(quote for quote in quotes if quote.label)
+        if quotes:
+            markets.append(OddsMarket(title=title, quotes=quotes))
+    nxt = _next_goal_market(grouped, home, away, goals_home, goals_away)
+    if nxt is not None:
+        markets.append(nxt)
+    return tuple(markets)
+
+
+def _pick_lines(
+    market: str,
+    lines: list[tuple[str, str, Decimal, bool | None]],
+) -> list[tuple[str, str, Decimal, bool | None]]:
+    mains = [line for line in lines if line[3] is True]
+    chosen = mains or lines
+    if not mains and market == "match goals":
+        chosen = [line for line in lines if _handicap_num(line[1]) in {1.5, 2.5, 3.5}]
+    return sorted(chosen, key=lambda line: _line_order(line[0], line[1]))
+
+
+def _line_order(label: str, handicap: str) -> tuple[int, float, str]:
+    folded = label.strip().casefold()
+    rank = {
+        "home": 0,
+        "over": 0,
+        "yes": 0,
+        "home or draw": 0,
+        "draw or home": 0,
+        "draw": 1,
+        "home or away": 1,
+        "away or home": 1,
+        "away": 2,
+        "under": 2,
+        "no": 2,
+        "away or draw": 2,
+        "draw or away": 2,
+    }.get(folded, 3)
+    return (rank, _handicap_num(handicap) or 0.0, folded)
+
+
+def _next_goal_market(
+    grouped: dict[str, list[tuple[str, str, Decimal, bool | None]]],
+    home: str,
+    away: str,
+    goals_home: int | None,
+    goals_away: int | None,
+) -> OddsMarket | None:
+    scored = (goals_home or 0) + (goals_away or 0)
+    target = f"which team will score the {_ordinal(scored + 1)} goal?"
+    lines = grouped.get(target)
+    if not lines:
+        return None
+    quotes = tuple(
+        OddsQuote(label=_price_label(label, handicap, home, away), odd=_fmt_odd(odd))
+        for label, handicap, odd, _main in lines
+    )
+    if not quotes:
+        return None
+    return OddsMarket(title=f"Kto strzeli {scored + 1}. gola", quotes=quotes)
+
+
+def _ordinal(number: int) -> str:
+    if 10 <= number % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+    return f"{number}{suffix}"
+
+
+def _price_label(label: str, handicap: str, home: str, away: str) -> str:
+    folded = label.strip().casefold()
+    names = {
+        "home": home,
+        "away": away,
+        "draw": "Remis",
+        "yes": "Tak",
+        "no": "Nie",
+        "over": "Powyżej",
+        "under": "Poniżej",
+        "home or draw": "1X",
+        "draw or home": "1X",
+        "away or draw": "X2",
+        "draw or away": "X2",
+        "home or away": "12",
+        "away or home": "12",
+    }
+    text = names.get(folded, label.strip())
+    line = handicap.strip()
+    if line and line not in {"0", "0.0"}:
+        return f"{text} {line}"
+    return text
+
+
+def _handicap_num(raw: str) -> float | None:
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _fmt_odd(raw: Decimal) -> str:
+    return f"{raw.quantize(Decimal('0.01')):.2f}"
+
+
+async def _live_markets(session: AsyncSession, match: LiveMatch) -> list[OddsMarket]:
+    latest = await session.scalar(
+        select(func.max(FixtureOddsLive.captured_at)).where(
+            FixtureOddsLive.fixture_id == match.fixture_id
+        )
+    )
+    if latest is None:
+        return []
+    rows = (
+        await session.execute(
+            select(
+                OddsLiveBet.name,
+                FixtureOddsLive.value_label,
+                FixtureOddsLive.handicap,
+                FixtureOddsLive.odd,
+                FixtureOddsLive.is_main,
+                FixtureOddsLive.suspended,
+            )
+            .join(OddsLiveBet, OddsLiveBet.id == FixtureOddsLive.bet_id)
+            .where(FixtureOddsLive.fixture_id == match.fixture_id)
+            .where(FixtureOddsLive.captured_at == latest)
+        )
+    ).all()
+    parsed: list[tuple[str, str, str, Decimal, bool | None, bool | None]] = []
+    for market, label, handicap, odd, is_main, suspended in rows:
+        if not market or not label:
+            continue
+        parsed.append(
+            (
+                str(market),
+                str(label),
+                "" if handicap is None else str(handicap),
+                Decimal(odd),
+                is_main,
+                suspended,
+            )
+        )
+    return list(
+        select_display_markets(
+            parsed,
+            home=match.home,
+            away=match.away,
+            goals_home=match.goals_home,
+            goals_away=match.goals_away,
+        )
+    )
+
+
+_NONE_LABELS = frozenset({"no goal", "none", "no", "neither", "no goals"})
+_OVER_MARKETS = frozenset({"over/under line", "match goals"})
+
+
+def read_goal_price(
+    *,
+    none_odd: Decimal | None,
+    over_odd: Decimal | None,
+    line: float,
+    ht_odd: Decimal | None,
+    ht_elapsed: int | None,
+) -> GoalPrice | None:
+    """No-goal price and over current total + 0.5 are the same bet."""
+    if none_odd is None and over_odd is None:
+        return None
+    return GoalPrice(
+        none_odd=None if none_odd is None else _fmt_odd(none_odd),
+        none_implied=None if none_odd is None else _implied(none_odd),
+        line=_line_label(line),
+        over_odd=None if over_odd is None else _fmt_odd(over_odd),
+        over_implied=None if over_odd is None else _implied(over_odd),
+        move=_line_move(over_odd, ht_odd, ht_elapsed),
+    )
+
+
+def _implied(odd: Decimal) -> str:
+    if odd <= 0:
+        return "—"
+    return f"{(Decimal(100) / odd).quantize(Decimal('1')):.0f}%"
+
+
+def _line_label(line: float) -> str:
+    text = f"{line:.1f}"
+    return text.replace(".", ",")
+
+
+def _line_move(
+    now_odd: Decimal | None,
+    ht_odd: Decimal | None,
+    ht_elapsed: int | None,
+) -> str | None:
+    if now_odd is None or ht_odd is None or now_odd == ht_odd:
+        return None
+    if ht_elapsed is None or ht_elapsed <= 50:
+        start = "od przerwy"
+    else:
+        start = f"od {ht_elapsed}′"
+    change = f"{start} {_fmt_odd(ht_odd)} → {_fmt_odd(now_odd)}"
+    if now_odd < ht_odd:
+        return f"{change}. Rynek widzi więcej sytuacji."
+    return f"{change}. Rynek widzi mniej sytuacji."
+
+
+async def _goal_price(session: AsyncSession, match: LiveMatch) -> GoalPrice | None:
+    total = (match.goals_home or 0) + (match.goals_away or 0)
+    line = total + 0.5
+    latest = await session.scalar(
+        select(func.max(FixtureOddsLive.captured_at)).where(
+            FixtureOddsLive.fixture_id == match.fixture_id
+        )
+    )
+    none_odd = _none_from_next_goal(match)
+    over_odd = None
+    if latest is not None:
+        rows = (
+            await session.execute(
+                select(
+                    OddsLiveBet.name,
+                    FixtureOddsLive.value_label,
+                    FixtureOddsLive.handicap,
+                    FixtureOddsLive.odd,
+                    FixtureOddsLive.suspended,
+                )
+                .join(OddsLiveBet, OddsLiveBet.id == FixtureOddsLive.bet_id)
+                .where(FixtureOddsLive.fixture_id == match.fixture_id)
+                .where(FixtureOddsLive.captured_at == latest)
+            )
+        ).all()
+        if none_odd is None:
+            none_odd = _none_odd(rows, total)
+        over_odd = _over_odd(rows, line)
+    ht_odd, ht_elapsed = await _ht_over(session, match.fixture_id, line, total)
+    return read_goal_price(
+        none_odd=none_odd,
+        over_odd=over_odd,
+        line=line,
+        ht_odd=ht_odd,
+        ht_elapsed=ht_elapsed,
+    )
+
+
+def _none_from_next_goal(match: LiveMatch) -> Decimal | None:
+    quote = match.next_goal
+    if quote is None or not quote.none:
+        return None
+    try:
+        return Decimal(quote.none)
+    except Exception:
+        return None
+
+
+def _none_odd(rows: list[Any], total: int) -> Decimal | None:
+    target = f"which team will score the {_ordinal(total + 1)} goal?"
+    for market, label, _handicap, odd, suspended in rows:
+        if suspended or not market or not label:
+            continue
+        if str(market).strip().casefold() != target:
+            continue
+        if str(label).strip().casefold() in _NONE_LABELS:
+            return Decimal(odd)
+    return None
+
+
+def _over_odd(rows: list[Any], line: float) -> Decimal | None:
+    for market, label, handicap, odd, suspended in rows:
+        if suspended or not market or not label:
+            continue
+        if str(market).strip().casefold() not in _OVER_MARKETS:
+            continue
+        if str(label).strip().casefold() != "over":
+            continue
+        number = _handicap_num("" if handicap is None else str(handicap))
+        if number is not None and abs(number - line) < 0.01:
+            return Decimal(odd)
+    return None
+
+
+async def _ht_over(
+    session: AsyncSession,
+    fixture_id: int,
+    line: float,
+    total: int,
+) -> tuple[Decimal | None, int | None]:
+    rows = (
+        await session.execute(
+            select(
+                FixtureOddsLive.odd,
+                FixtureOddsLive.handicap,
+                FixtureOddsLive.elapsed_minutes,
+            )
+            .join(OddsLiveBet, OddsLiveBet.id == FixtureOddsLive.bet_id)
+            .where(FixtureOddsLive.fixture_id == fixture_id)
+            .where(func.lower(OddsLiveBet.name).in_(tuple(_OVER_MARKETS)))
+            .where(func.lower(FixtureOddsLive.value_label) == "over")
+            .where(FixtureOddsLive.elapsed_minutes >= 45)
+            .where(
+                FixtureOddsLive.home_goals + FixtureOddsLive.away_goals == total
+            )
+            .order_by(FixtureOddsLive.captured_at.asc())
+        )
+    ).all()
+    for odd, handicap, elapsed in rows:
+        number = _handicap_num("" if handicap is None else str(handicap))
+        if number is None or abs(number - line) >= 0.01:
+            continue
+        return Decimal(odd), None if elapsed is None else int(elapsed)
+    return None, None
+
+
+def _goal_price_card(detail: MatchDetail) -> str:
+    price = detail.goal_price
+    if price is None:
+        return ""
+    bits: list[str] = []
+    if price.none_odd:
+        bits.append(
+            "<p class='chance'>"
+            f"<span class='stat-label'>Brak gola</span>"
+            f"<strong>{escape(price.none_odd)}</strong>"
+            f"<span>{escape(price.none_implied or '')} z kursu</span></p>"
+        )
+    if price.over_odd:
+        bits.append(
+            "<p class='chance'>"
+            f"<span class='stat-label'>Powyżej {escape(price.line)}</span>"
+            f"<strong>{escape(price.over_odd)}</strong>"
+            f"<span>{escape(price.over_implied or '')} z kursu</span></p>"
+            "<p class='muted'>To ten sam zakład co „padnie jeszcze gol”.</p>"
+        )
+    if price.move:
+        bits.append(f"<p class='effect'>{escape(price.move)}</p>")
+    if not bits:
+        return ""
+    return f'<section class="card"><h2>Czy padnie gol</h2>{"".join(bits)}</section>'
+
+
+def _odds_card(detail: MatchDetail) -> str:
+    match = detail.match
     blocks: list[str] = []
     prematch = match.prematch
-    if prematch is not None:
-        label = "Przed meczem" if prematch.source == "prematch" else "Otwarcie live"
+    if prematch is not None and prematch.source == "prematch":
         blocks.append(
             _odd_row(
-                label,
+                "Otwarcie",
                 match.home,
                 prematch.home,
                 "Remis",
@@ -1243,25 +1913,51 @@ def _odds_card(match: LiveMatch) -> str:
                 prematch.away,
             )
         )
-    next_goal = match.next_goal
-    if next_goal is not None:
-        blocks.append(
-            _odd_row(
-                "Następna bramka",
-                match.home,
-                next_goal.home,
-                "Brak",
-                next_goal.none,
-                match.away,
-                next_goal.away,
+    if detail.markets:
+        blocks.extend(_market_block(market) for market in detail.markets)
+    else:
+        if prematch is not None and prematch.source != "prematch":
+            blocks.append(
+                _odd_row(
+                    "Otwarcie live",
+                    match.home,
+                    prematch.home,
+                    "Remis",
+                    prematch.draw,
+                    match.away,
+                    prematch.away,
+                )
             )
-        )
+        next_goal = match.next_goal
+        if next_goal is not None:
+            blocks.append(
+                _odd_row(
+                    "Następna bramka",
+                    match.home,
+                    next_goal.home,
+                    "Brak",
+                    next_goal.none,
+                    match.away,
+                    next_goal.away,
+                )
+            )
     form = _form(match)
     if form:
         blocks.append(form)
     if not blocks:
         return ""
-    return f'<section class="card"><h2>Kursy i forma</h2>{"".join(blocks)}</section>'
+    return f'<section class="card"><h2>Kursy</h2>{"".join(blocks)}</section>'
+
+
+def _market_block(market: OddsMarket) -> str:
+    chips = "".join(
+        f"<span><em>{escape(quote.label)}</em> {escape(quote.odd)}</span>"
+        for quote in market.quotes
+    )
+    return (
+        f"<div class='market'><h3>{escape(market.title)}</h3>"
+        f"<div class='quotes'>{chips}</div></div>"
+    )
 
 
 def _odd_row(
@@ -1288,13 +1984,20 @@ def _odd_row(
 
 def _form(match: LiveMatch) -> str:
     parts: list[str] = []
-    if match.form_home is not None:
-        parts.append(f"{escape(match.home)} {match.form_home.avg_goals:.2f} gola")
-    if match.form_away is not None:
-        parts.append(f"{escape(match.away)} {match.form_away.avg_goals:.2f} gola")
+    for name, form in ((match.home, match.form_home), (match.away, match.form_away)):
+        if form is None:
+            continue
+        minute = "" if form.minute_label is None else f", gol {form.minute_label}"
+        sample = "" if form.matches == FORM_LAST_MATCHES else f" ({form.matches} m.)"
+        parts.append(
+            f"{escape(name)} {form.avg_goals:.2f} gola{minute}{escape(sample)}"
+        )
     if not parts:
         return ""
-    return f"<p class='muted'>Średnia goli · {' · '.join(parts)}</p>"
+    return (
+        f'<p class="muted">Ostatnie {FORM_LAST_MATCHES} meczów · '
+        f"{' · '.join(parts)}</p>"
+    )
 
 
 def _h2h_card(detail: MatchDetail) -> str:
@@ -1522,6 +2225,44 @@ _DETAIL_CSS = """
   .advice { margin: 8px 0 0; }
   .odds { align-items: baseline; flex-wrap: wrap; margin: 8px 0; }
   .odds em { color: var(--muted); font-style: normal; font-weight: 500; }
+  .subs { list-style: none; margin: 0; padding: 0; }
+  .subs li {
+    padding: 8px 0;
+    border-top: 1px solid var(--line);
+    font-size: 0.88rem;
+  }
+  .effect { margin: 4px 0 0; color: var(--muted); font-size: 0.82rem; }
+  .chance {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    align-items: baseline;
+    margin: 0 0 8px;
+  }
+  .chance strong { font-variant-numeric: tabular-nums; font-size: 1.15rem; }
+  .market { margin: 0 0 14px; }
+  .market h3 {
+    margin: 0 0 6px;
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 650;
+  }
+  .quotes { display: flex; flex-wrap: wrap; gap: 8px; }
+  .quotes span {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.86rem;
+  }
+  .quotes em {
+    color: var(--muted);
+    font-style: normal;
+    font-weight: 500;
+    margin-right: 6px;
+  }
   .empty { text-align: center; color: var(--muted); padding: 48px 16px; }
   .sub { font-size: 0.78rem; text-align: right; }
   @media (max-width: 720px) {

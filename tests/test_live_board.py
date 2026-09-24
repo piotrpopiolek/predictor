@@ -429,7 +429,7 @@ def test_render_match_facts_from_database_fields() -> None:
     assert "1.73" in html
     assert "1.83" in html
     assert "Brak" in html
-    assert "Ostatnie 5" in html
+    assert "Ostatnie 15" in html
     assert "1.6 gola" in html
     assert escape("38'") in html
     assert "0.8 gola" in html
@@ -447,7 +447,7 @@ def test_render_skips_missing_enrichment() -> None:
     assert "Następna bramka" not in html
     assert "Przed meczem" not in html
     assert "Pos." not in html
-    assert "Ostatnie 5" not in html
+    assert "Ostatnie 15" not in html
     assert "Regular Season - 4" in html
 
 
