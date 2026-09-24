@@ -52,6 +52,24 @@ def test_tight_reserve_slows_details_and_drops_oneshots() -> None:
     assert plan.score_poll_seconds == 60.0
 
 
+def test_matches_still_to_play_today_are_reserved_before_kickoff() -> None:
+    now = datetime(2026, 9, 24, 8, 0, tzinfo=UTC)
+    plan = plan_live_budget(
+        live_matches=0,
+        matches_left_today=40,
+        remaining=2000,
+        now=now,
+        target_seconds=60,
+    )
+    assert plan.detail_need == 40 * 2 * 12
+    assert plan.odds_need > 0
+    assert plan.score_poll_seconds == 300.0
+    assert plan.poll_odds is False
+    snap = QuotaSnapshot(current=5500, limit_day=7500, remaining=2000, source="api")
+    assert quota_allows(8, snap, plan) is False
+    assert quota_allows(2, snap, plan) is True
+
+
 def test_empty_board_polls_scores_every_five_minutes() -> None:
     now = datetime(2026, 9, 23, 3, 0, tzinfo=UTC)
     plan = _plan(0, 7000, now)

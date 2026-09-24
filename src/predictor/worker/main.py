@@ -7,6 +7,7 @@ import logging
 import signal
 import sys
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -24,6 +25,7 @@ from predictor.services.ingest import (
     LiveIngest,
     PrematchIngest,
 )
+from predictor.services.ingest.fixtures import count_matches_left_today
 from predictor.services.lock import LockBusyError, WriterLock, lock_busy_message
 from predictor.services.queue import (
     ensure_cursors,
@@ -116,6 +118,9 @@ async def run_locked_loop(
             client,
             session_factory,
             live_match_count=lambda: len(live.last_live_fixture_ids),
+            matches_left_today=lambda: count_matches_left_today(
+                session_factory, datetime.now(UTC)
+            ),
             gate=gate,
             handlers={
                 1: catalog.refresh_priority_one,

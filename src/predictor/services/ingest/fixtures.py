@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from pydantic import ValidationError
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from predictor.client.errors import (
@@ -17,9 +18,14 @@ from predictor.client.errors import (
     RetryableHttpError,
 )
 from predictor.client.football import FootballClient
-from predictor.constants import HISTORICAL_BACKLOG_MAX_AGE_SECONDS
+from predictor.constants import (
+    FINISHED_FIXTURE_STATUSES,
+    HISTORICAL_BACKLOG_MAX_AGE_SECONDS,
+    IRREGULAR_FIXTURE_STATUSES,
+)
 from predictor.logutil import log_json
 from predictor.models.etl import EtlTask
+from predictor.models.fixtures import Fixture
 from predictor.schemas.fixtures import FixtureItem
 from predictor.services.completeness import day_is_complete
 from predictor.services.ingest.drift import warn_model_extra
@@ -40,6 +46,30 @@ from predictor.services.queue import (
 )
 
 _ROUNDS_PER_TICK = 8
+_NOT_TO_PLAY = FINISHED_FIXTURE_STATUSES | IRREGULAR_FIXTURE_STATUSES
+
+
+async def count_matches_left_today(
+    session_factory: async_sessionmaker[AsyncSession], now: datetime
+) -> int:
+    """Kickoffs on this UTC day that are not finished or cancelled."""
+    start = datetime(now.year, now.month, now.day, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    async with session_factory() as session:
+        counted = await session.scalar(
+            select(func.count())
+            .select_from(Fixture)
+            .where(Fixture.date.is_not(None))
+            .where(Fixture.date >= start)
+            .where(Fixture.date < end)
+            .where(
+                or_(
+                    Fixture.status_short.is_(None),
+                    Fixture.status_short.not_in(tuple(_NOT_TO_PLAY)),
+                )
+            )
+        )
+    return int(counted or 0)
 
 
 class FixtureIngest:

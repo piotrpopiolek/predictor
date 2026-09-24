@@ -81,6 +81,7 @@ class Scheduler:
         status_refresh_seconds: float = STATUS_REFRESH_SECONDS,
         now_fn: Callable[[], datetime] | None = None,
         live_match_count: Callable[[], int] | None = None,
+        matches_left_today: Callable[[], Awaitable[int]] | None = None,
         gate: LiveSpendGate | None = None,
     ) -> None:
         self._settings = settings
@@ -91,6 +92,8 @@ class Scheduler:
         self._status_refresh_seconds = status_refresh_seconds
         self._now = now_fn or (lambda: datetime.now(UTC))
         self._live_match_count = live_match_count or (lambda: 0)
+        self._matches_left_today = matches_left_today
+        self._left_today: int | None = None
         self._gate = gate or LiveSpendGate()
         self._quota: QuotaSnapshot | None = None
         self._live_interval_seconds: float | None = None
@@ -128,6 +131,7 @@ class Scheduler:
                     remaining=0,
                 )
                 return
+            await self._refresh_matches_left()
             target = float(self._settings.live_poll_target_seconds)
             plan = self._apply_budget(quota.remaining)
             if plan.score_poll_seconds > target and self._live_match_count() > 0:
@@ -212,9 +216,24 @@ class Scheduler:
                 day=yesterday.isoformat(),
             )
 
+    async def _refresh_matches_left(self) -> None:
+        if self._matches_left_today is None:
+            self._left_today = None
+            return
+        try:
+            self._left_today = max(0, int(await self._matches_left_today()))
+        except Exception:
+            log_json(
+                logging.WARNING,
+                service="worker",
+                event="matches_left_today_failed",
+            )
+            self._left_today = None
+
     def _apply_budget(self, remaining: int) -> LiveBudgetPlan:
         plan = plan_live_budget(
             live_matches=max(0, self._live_match_count()),
+            matches_left_today=self._left_today,
             remaining=remaining,
             now=self._now(),
             target_seconds=int(self._settings.live_poll_target_seconds),

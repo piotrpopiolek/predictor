@@ -23,6 +23,7 @@ from predictor.constants import (
     LIVE_DETAIL_REFRESH_MAX_SECONDS,
     LIVE_DETAIL_REFRESH_SECONDS,
     LIVE_REQUESTS_PER_TICK,
+    MATCH_LIVE_HOURS,
     QUOTA_SNAPSHOT_ENDPOINT,
 )
 from predictor.models.etl import EtlTask
@@ -38,6 +39,7 @@ class LiveBudgetPlan:
     detail_refresh_seconds: int
     oneshot_calls: int
     score_poll_seconds: float
+    poll_odds: bool
 
     @property
     def full_reserve(self) -> int:
@@ -58,23 +60,35 @@ def plan_live_budget(
     remaining: int,
     now: datetime,
     target_seconds: int = 60,
+    matches_left_today: int | None = None,
 ) -> LiveBudgetPlan:
-    """Reserve score, detail and odds calls for the matches in play."""
+    """Reserve calls for matches in play and those still to be played today.
+
+    ``live_matches`` is the board right now. ``matches_left_today`` also
+    counts kickoffs later today that have not finished. Details are reserved
+    per match for ``MATCH_LIVE_HOURS``, not as if every one of them stayed
+    live until midnight. Shared score and odds polls are reserved until
+    reset whenever any such match remains. The score poll itself stays on
+    the slow idle cadence until something is actually in play.
+    """
     hours = seconds_until_utc_midnight(now) / 3600.0
-    idle = live_matches <= 0
-    score_target = IDLE_SCORE_POLL_SECONDS if idle else target_seconds
+    covered = max(0, live_matches)
+    if matches_left_today is not None:
+        covered = max(covered, matches_left_today)
+    in_play = live_matches > 0
+    score_target = target_seconds if covered > 0 else IDLE_SCORE_POLL_SECONDS
     score_per_hour = 3600.0 / score_target
     score_need = math.ceil(hours * score_per_hour)
     detail_need = 0
-    if not idle:
+    if covered > 0:
         detail_need = math.ceil(
-            hours * live_matches * (3600.0 / LIVE_DETAIL_REFRESH_SECONDS)
+            covered * MATCH_LIVE_HOURS * (3600.0 / LIVE_DETAIL_REFRESH_SECONDS)
         )
-    odds_need = 0 if idle else math.ceil(hours * (3600.0 / target_seconds))
+    odds_need = 0 if covered == 0 else math.ceil(hours * (3600.0 / target_seconds))
     score_poll = _score_poll_seconds(
         remaining=remaining,
-        score_need=score_need,
-        target_seconds=score_target,
+        score_need=score_need if in_play or covered == 0 else 0,
+        target_seconds=target_seconds if in_play else IDLE_SCORE_POLL_SECONDS,
         now=now,
     )
     return LiveBudgetPlan(
@@ -82,11 +96,11 @@ def plan_live_budget(
         detail_need=detail_need,
         odds_need=odds_need,
         detail_refresh_seconds=_detail_refresh_seconds(
-            live_matches=live_matches,
+            covered=covered,
+            in_play=in_play,
             remaining=remaining,
             score_need=score_need,
             detail_need=detail_need,
-            hours=hours,
         ),
         oneshot_calls=(
             LIVE_CONTEXT_ONESHOT_CALLS
@@ -94,6 +108,7 @@ def plan_live_budget(
             else 0
         ),
         score_poll_seconds=score_poll,
+        poll_odds=in_play and odds_need > 0,
     )
 
 
@@ -109,7 +124,7 @@ def quota_allows(priority: int, snapshot: QuotaSnapshot, plan: LiveBudgetPlan) -
     if priority == 3:
         return remaining > plan.score_need
     if priority == 4:
-        return plan.odds_need > 0 and remaining > plan.score_need + plan.detail_need
+        return plan.poll_odds and remaining > plan.score_need + plan.detail_need
     return remaining > plan.full_reserve
 
 
@@ -131,22 +146,22 @@ def _score_poll_seconds(
 
 def _detail_refresh_seconds(
     *,
-    live_matches: int,
+    covered: int,
+    in_play: bool,
     remaining: int,
     score_need: int,
     detail_need: int,
-    hours: float,
 ) -> int:
     slowest = LIVE_DETAIL_REFRESH_MAX_SECONDS
     fastest = LIVE_DETAIL_REFRESH_SECONDS
-    if live_matches <= 0:
+    if not in_play or covered <= 0:
         return fastest
     budget = remaining - score_need
     if budget >= detail_need:
         return fastest
     if budget <= 0:
         return slowest
-    raw = (hours * live_matches * 3600.0) / budget
+    raw = (covered * MATCH_LIVE_HOURS * 3600.0) / budget
     return int(min(slowest, max(fastest, math.ceil(raw))))
 
 

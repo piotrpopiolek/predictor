@@ -23,6 +23,8 @@ LIVE_REQUESTS_PER_TICK = 2
 # One-shots (odds, predictions, H2H, squads, season stats) run once, a few per tick.
 LIVE_DETAIL_REFRESH_SECONDS = 5 * 60
 LIVE_DETAIL_REFRESH_MAX_SECONDS = 15 * 60
+# A match still to be played is reserved for about two hours of detail polls.
+MATCH_LIVE_HOURS = 2
 IDLE_SCORE_POLL_SECONDS = 5 * 60
 # Do not enqueue another historical wave while an open task is older than this.
 HISTORICAL_BACKLOG_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
