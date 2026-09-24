@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tenacity import RetryCallState
 from tenacity.wait import wait_base
 
-from predictor.client.errors import FootballHttpError
+from predictor.client.errors import FootballHttpError, QuotaExhaustedError
 from predictor.client.football import FootballClient
 from predictor.client.quota import QuotaSnapshot
 from predictor.schemas.settings import load_settings
@@ -305,3 +305,40 @@ async def test_odds_live_waits_when_context_uses_the_tick(valid_env: None) -> No
     )
     await scheduler._tick(asyncio.Event())
     assert called == [3]
+
+
+@pytest.mark.asyncio
+async def test_tick_stops_when_a_handler_hits_the_daily_limit(valid_env: None) -> None:
+    called: list[int] = []
+
+    async def dictionaries() -> None:
+        called.append(1)
+        raise QuotaExhaustedError("daily limit")
+
+    async def scores() -> None:
+        called.append(2)
+
+    class _Client:
+        quota = QuotaSnapshot(
+            current=100,
+            limit_day=7500,
+            remaining=50,
+            fetched_at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
+            source="api",
+        )
+
+        async def get_status(self) -> QuotaSnapshot:
+            return self.quota
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        cast(Any, _Client()),
+        _unused_factory(),
+        handlers={1: dictionaries, 2: scores},
+        now_fn=lambda: datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
+    )
+    await scheduler._tick(asyncio.Event())
+    assert called == [1]
+    assert scheduler.quota is not None
+    assert scheduler.quota.remaining == 50

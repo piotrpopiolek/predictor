@@ -258,6 +258,20 @@ def test_live_day_pages(valid_env: None, monkeypatch: pytest.MonkeyPatch) -> Non
     assert missing.status_code in {200, 307, 404}
 
 
+def test_live_day_returns_503_when_postgres_fails(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(engine: object, day: object) -> list[object]:
+        del engine, day
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("predictor.api.main.list_day_matches", broken)
+    with TestClient(create_app()) as client:
+        response = client.get("/live/day")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "postgres_unavailable"
+
+
 def test_metrics_unauthorized_without_token(valid_env: None) -> None:
     with TestClient(create_app()) as client:
         response = client.get("/metrics")
