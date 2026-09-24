@@ -235,6 +235,29 @@ def test_place_and_settle_bet_json(
     assert settle.json()["status"] == "won"
 
 
+def test_live_day_pages(valid_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_day(engine: object, day: object) -> list[object]:
+        del engine, day
+        return []
+
+    monkeypatch.setattr("predictor.api.main.list_day_matches", fake_day)
+    with TestClient(create_app()) as client:
+        today = client.get("/live/day")
+        dated = client.get("/live/day/2026-09-22")
+        query = client.get("/live/day", params={"day": "2026-09-20"})
+        bad = client.get("/live/day", params={"day": "not-a-date"})
+        missing = client.get("/live/day/")
+    assert today.status_code == 200
+    assert "Mecze" in today.text
+    assert dated.status_code == 200
+    assert "22.09.2026" in dated.text
+    assert query.status_code == 200
+    assert "20.09.2026" in query.text
+    assert bad.status_code == 200
+    assert "Nie rozpoznaję tej daty" in bad.text
+    assert missing.status_code in {200, 307, 404}
+
+
 def test_metrics_unauthorized_without_token(valid_env: None) -> None:
     with TestClient(create_app()) as client:
         response = client.get("/metrics")

@@ -12,6 +12,7 @@ from predictor.models.fixtures import Fixture
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.fixtures import FixtureItem
 from predictor.schemas.settings import load_settings
+from predictor.services.ingest.fixtures import count_matches_left_today
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.queue import (
     claim_live_fixture_task,
@@ -235,6 +236,54 @@ async def _drop_marker(factory, marker: int) -> None:
                 )
             )
             await session.execute(delete(Fixture).where(Fixture.id == marker))
+
+
+@pytest.mark.asyncio
+async def test_count_matches_left_today_skips_finished() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    open_id = 92092
+    done_id = 92093
+    kickoff = datetime(2026, 9, 24, 18, 0, tzinfo=UTC)
+    try:
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(EtlTask).where(EtlTask.fixture_id.in_((open_id, done_id)))
+                )
+                await session.execute(
+                    delete(Fixture).where(Fixture.id.in_((open_id, done_id)))
+                )
+                await upsert_fixtures(
+                    session,
+                    [
+                        FixtureItem.model_validate(
+                            _fixture_payload(open_id, kickoff=kickoff, status="NS")
+                        ),
+                        FixtureItem.model_validate(
+                            _fixture_payload(
+                                done_id,
+                                kickoff=kickoff,
+                                status="FT",
+                                home_id=35,
+                                away_id=36,
+                            )
+                        ),
+                    ],
+                )
+        left = await count_matches_left_today(factory, kickoff)
+        assert left >= 1
+    finally:
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(EtlTask).where(EtlTask.fixture_id.in_((open_id, done_id)))
+                )
+                await session.execute(
+                    delete(Fixture).where(Fixture.id.in_((open_id, done_id)))
+                )
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

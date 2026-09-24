@@ -154,6 +154,51 @@ async def test_daily_limit_body_stops_the_scheduler(valid_env: None) -> None:
 
 
 @pytest.mark.asyncio
+async def test_matches_left_today_feeds_the_budget(valid_env: None) -> None:
+    start = datetime(2026, 9, 24, 8, 0, tzinfo=UTC)
+
+    class _Client:
+        async def get_status(self) -> QuotaSnapshot:
+            return QuotaSnapshot(
+                current=1000,
+                limit_day=7500,
+                remaining=2000,
+                fetched_at=start,
+                source="api",
+            )
+
+    async def left() -> int:
+        return 40
+
+    called = {"history": 0}
+
+    async def history() -> None:
+        called["history"] += 1
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        cast(Any, _Client()),
+        _unused_factory(),
+        handlers={8: history},
+        now_fn=lambda: start,
+        live_match_count=lambda: 0,
+        matches_left_today=left,
+    )
+    await scheduler._tick(asyncio.Event())
+    assert called["history"] == 0
+    assert scheduler._gate.oneshot_calls == 0
+
+    async def broken() -> int:
+        raise RuntimeError("db")
+
+    scheduler._matches_left_today = broken
+    scheduler._quota = None
+    await scheduler._tick(asyncio.Event())
+    assert scheduler._left_today is None
+
+
+@pytest.mark.asyncio
 async def test_priority_order_matches_fr023() -> None:
     assert [slot.priority for slot in PRIORITY_ORDER] == list(range(1, 10))
     assert PRIORITY_ORDER[0].name == "quota_and_live_dictionaries"

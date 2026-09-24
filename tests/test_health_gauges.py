@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from predictor.services.health import live_poll_gauges
+from predictor.services.health import _score_poll_seconds, live_poll_gauges
 from predictor.services.metrics import render_metrics
 
 
@@ -85,3 +85,11 @@ def test_render_metrics_includes_etl_queue() -> None:
     )
     assert 'endpoint=""' not in skipped
     assert 'endpoint="/odds"' not in skipped
+
+
+def test_score_poll_seconds_from_quota_snapshot() -> None:
+    assert _score_poll_seconds(None) == 0.0
+    assert _score_poll_seconds({}) == 0.0
+    assert _score_poll_seconds({"score_poll_seconds": "300"}) == 300.0
+    assert _score_poll_seconds({"score_poll_seconds": 0}) == 0.0
+    assert _score_poll_seconds({"score_poll_seconds": "nope"}) == 0.0

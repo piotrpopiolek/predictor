@@ -4,7 +4,14 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from predictor.services.live_board import LiveMatch, PrematchOdds, TeamGoalForm
+import pytest
+
+from predictor.services.live_board import (
+    LiveMatch,
+    NextGoalOdds,
+    PrematchOdds,
+    TeamGoalForm,
+)
 from predictor.services.match_detail import (
     DetailEvent,
     DetailH2H,
@@ -12,6 +19,10 @@ from predictor.services.match_detail import (
     DetailStat,
     MatchDetail,
     StandingSlot,
+    _goal_price,
+    _live_markets,
+    _none_odd,
+    _over_odd,
     _snapshot_includes_match,
     build_group_table,
     read_goal_price,
@@ -384,3 +395,160 @@ def test_render_match_html_shows_table_movement() -> None:
     assert "Korea DPR U23 awansuje na 1." in html
     assert "Iran U23 spada na 3." in html
     assert 'class="split-card active"' in html
+
+
+def test_goal_price_and_live_markets_render() -> None:
+    rows = [
+        (
+            "Which team will score the 2nd goal?",
+            "No goal",
+            "",
+            Decimal("2.40"),
+            None,
+            False,
+        ),
+        ("Which team will score the 2nd goal?", "1", "", Decimal("1.80"), None, False),
+        ("Over/Under Line", "Over", "1.5", Decimal("1.70"), True, False),
+        ("Over/Under Line", "Under", "1.5", Decimal("2.10"), True, False),
+        ("Match Goals", "Over", "2.5", Decimal("1.90"), False, False),
+        ("Fulltime Result", "Home", "", Decimal("1.50"), True, False),
+        ("Fulltime Result", "Draw", "", Decimal("3.40"), True, False),
+        ("Fulltime Result", "Away", "", Decimal("6.00"), True, False),
+        ("Both Teams To Score", "Yes", "", Decimal("1.80"), True, False),
+        ("Both Teams To Score", "No", "", Decimal("1.95"), True, False),
+        ("Double Chance", "Home/Draw", "", Decimal("1.20"), True, False),
+        ("Asian Handicap", "Home", "-0.5", Decimal("1.90"), True, False),
+        ("Suspended Market", "Home", "", Decimal("1.10"), True, True),
+    ]
+    markets = select_display_markets(
+        rows, home="Iran", away="Korea", goals_home=1, goals_away=0
+    )
+    assert any(market.title == "Wynik" for market in markets)
+    assert any("gola" in market.title for market in markets)
+    assert _none_odd(
+        [
+            (
+                "Which team will score the 2nd goal?",
+                "No goal",
+                "",
+                Decimal("2.40"),
+                False,
+            )
+        ],
+        1,
+    ) == Decimal("2.40")
+    assert (
+        _none_odd(
+            [
+                (
+                    "Which team will score the 2nd goal?",
+                    "No goal",
+                    "",
+                    Decimal("2.40"),
+                    True,
+                )
+            ],
+            1,
+        )
+        is None
+    )
+    assert _over_odd(
+        [("Over/Under Line", "Over", "1.5", Decimal("1.70"), False)],
+        1.5,
+    ) == Decimal("1.70")
+    price = read_goal_price(
+        none_odd=Decimal("2.40"),
+        over_odd=Decimal("1.70"),
+        line=1.5,
+        ht_odd=Decimal("2.10"),
+        ht_elapsed=67,
+    )
+    assert price is not None
+    assert "więcej sytuacji" in (price.move or "")
+    quieter = read_goal_price(
+        none_odd=None,
+        over_odd=Decimal("2.20"),
+        line=1.5,
+        ht_odd=Decimal("1.70"),
+        ht_elapsed=None,
+    )
+    assert quieter is not None
+    assert "mniej sytuacji" in (quieter.move or "")
+    assert (
+        read_goal_price(
+            none_odd=None, over_odd=None, line=1.5, ht_odd=None, ht_elapsed=None
+        )
+        is None
+    )
+    detail = replace(
+        _detail(),
+        match=replace(
+            _detail().match,
+            goals_home=1,
+            goals_away=0,
+            next_goal=NextGoalOdds("1.80", "2.40", "3.10", "2nd goal"),
+            prematch=PrematchOdds("2.10", "3.20", "3.40", "Match Winner", "Bet365"),
+        ),
+        markets=markets,
+        goal_price=price,
+    )
+    html = render_match_html(
+        detail, generated_at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+    )
+    assert "Czy padnie gol" in html
+    assert "Brak gola" in html
+    assert "Powyżej" in html
+    assert "Otwarcie" in html
+    assert "Wynik" in html
+
+
+class _Rows:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[object]:
+        return self._rows
+
+
+class _PriceSession:
+    def __init__(self, latest: datetime | None, batches: list[list[object]]) -> None:
+        self._latest = latest
+        self._batches = batches
+
+    async def scalar(self, stmt: object) -> datetime | None:
+        del stmt
+        return self._latest
+
+    async def execute(self, stmt: object) -> _Rows:
+        del stmt
+        if not self._batches:
+            return _Rows([])
+        return _Rows(self._batches.pop(0))
+
+
+@pytest.mark.asyncio
+async def test_goal_price_reads_live_rows_and_halftime_line() -> None:
+    match = replace(_detail().match, goals_home=0, goals_away=0, next_goal=None)
+    session = _PriceSession(
+        datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
+        [
+            [
+                (
+                    "Which team will score the 1st goal?",
+                    "No goal",
+                    "",
+                    Decimal("3.20"),
+                    False,
+                ),
+                ("Over/Under Line", "Over", "0.5", Decimal("1.40"), False),
+                (None, "Over", "0.5", Decimal("1.10"), False),
+            ],
+            [(Decimal("1.90"), "0.5", 45), (Decimal("1.80"), "bad", 50)],
+        ],
+    )
+    price = await _goal_price(session, match)  # type: ignore[arg-type]
+    assert price is not None
+    assert price.none_odd == "3.20"
+    assert price.over_odd == "1.40"
+    markets = await _live_markets(session, match)  # type: ignore[arg-type]
+    assert markets == []
