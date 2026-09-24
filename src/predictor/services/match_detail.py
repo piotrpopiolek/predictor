@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -1811,7 +1812,7 @@ def _none_from_next_goal(match: LiveMatch) -> Decimal | None:
         return None
 
 
-def _none_odd(rows: list[Any], total: int) -> Decimal | None:
+def _none_odd(rows: Sequence[Any], total: int) -> Decimal | None:
     target = f"which team will score the {_ordinal(total + 1)} goal?"
     for market, label, _handicap, odd, suspended in rows:
         if suspended or not market or not label:
@@ -1823,7 +1824,7 @@ def _none_odd(rows: list[Any], total: int) -> Decimal | None:
     return None
 
 
-def _over_odd(rows: list[Any], line: float) -> Decimal | None:
+def _over_odd(rows: Sequence[Any], line: float) -> Decimal | None:
     for market, label, handicap, odd, suspended in rows:
         if suspended or not market or not label:
             continue
