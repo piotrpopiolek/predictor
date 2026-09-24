@@ -1231,7 +1231,6 @@ def _events_card(detail: MatchDetail) -> str:
         inner = f'<ol class="timeline">{"".join(rows)}</ol>'
     return f'<section class="card"><h2>Zdarzenia</h2>{inner}</section>'
 
-
     return f'<section class="card"><h2>Zdarzenia</h2>{inner}</section>'
 
 
@@ -1856,9 +1855,7 @@ async def _ht_over(
             .where(func.lower(OddsLiveBet.name).in_(tuple(_OVER_MARKETS)))
             .where(func.lower(FixtureOddsLive.value_label) == "over")
             .where(FixtureOddsLive.elapsed_minutes >= 45)
-            .where(
-                FixtureOddsLive.home_goals + FixtureOddsLive.away_goals == total
-            )
+            .where(FixtureOddsLive.home_goals + FixtureOddsLive.away_goals == total)
             .order_by(FixtureOddsLive.captured_at.asc())
         )
     ).all()
