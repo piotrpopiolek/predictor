@@ -20,6 +20,19 @@ datasources:
           matcherRegex: '"trace_id":"([0-9a-f]+)"'
           name: TraceID
           url: "$${__value.raw}"
+  - name: Postgres
+    uid: postgres
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    user: postgres
+    editable: false
+    jsonData:
+      database: $PREDICTOR_METRICS_DB
+      sslmode: disable
+      postgresVersion: 1700
+    secureJsonData:
+      password: $POSTGRES_SUPERUSER_PASSWORD
   - name: Tempo
     uid: tempo
     type: tempo

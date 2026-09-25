@@ -757,9 +757,9 @@ async def test_all_children_coverage_false_still_gets_id() -> None:
             half_task = await session.scalar(
                 select(EtlTask).where(EtlTask.endpoint == "/fixtures/statistics")
             )
-        assert events == 0
+        assert events == 1
         assert task is not None
-        assert task.status == "coverage_empty"
+        assert task.status == "complete"
         assert half_task is None
         assert any(p.startswith("/fixtures?id=") for p in paths)
         assert not any("half=true" in p for p in paths)

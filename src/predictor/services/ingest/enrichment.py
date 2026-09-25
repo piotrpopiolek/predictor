@@ -168,10 +168,10 @@ class EnrichmentIngest:
                     counts = await persist_fixture_detail(
                         session,
                         detail,
-                        include_events=_allowed(coverage["events"]),
-                        include_lineups=_allowed(coverage["lineups"]),
-                        include_statistics=_allowed(coverage["statistics"]),
-                        include_players=_allowed(coverage["players"]),
+                        include_events=True,
+                        include_lineups=True,
+                        include_statistics=True,
+                        include_players=True,
                     )
                     if (
                         _allowed(coverage["statistics"])
@@ -199,13 +199,24 @@ class EnrichmentIngest:
                     cursor_params["last_fixture_id"] = fixture.id
                     cursor.params = cursor_params
                     cursor.updated_at = now
-                    status = (
-                        "coverage_empty"
-                        if not any(
-                            _allowed(coverage[key])
-                            for key in ("events", "lineups", "statistics", "players")
+                    stored_children = any(
+                        int(counts.get(key) or 0) > 0
+                        for key in (
+                            "events",
+                            "lineups",
+                            "statistics",
+                            "player_stats",
+                            "lineup_players",
                         )
-                        else "complete"
+                    )
+                    coverage_allows = any(
+                        _allowed(coverage[key])
+                        for key in ("events", "lineups", "statistics", "players")
+                    )
+                    status = (
+                        "complete"
+                        if stored_children or coverage_allows
+                        else "coverage_empty"
                     )
                     await complete_task(
                         session,

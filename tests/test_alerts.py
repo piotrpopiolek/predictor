@@ -121,12 +121,24 @@ def test_provisioned_grafana_dashboards() -> None:
                 'sum(deriv(predictor_etl_queue{status="pending"}[15m])) * 60' in joined
             )
             assert "predictor_etl_tasks{" not in joined
+        if data["uid"] == "predictor-database":
+            kinds = {panel["type"] for panel in data["panels"]}
+            assert kinds == {"table", "piechart"}
+            sql = " ".join(
+                str(target.get("rawSql", ""))
+                for panel in data["panels"]
+                for target in panel.get("targets", [])
+            )
+            assert "count(*)" in sql
+            assert "pg_total_relation_size" in sql
+            assert data["panels"][1]["options"]["displayLabels"] == ["name", "percent"]
     assert uids == {
         "predictor-infra",
         "predictor-api-live",
         "predictor-backfill",
         "predictor-quota",
         "predictor-etl-queue",
+        "predictor-database",
     }
 
 
