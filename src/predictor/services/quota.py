@@ -103,9 +103,7 @@ def plan_live_budget(
             detail_need=detail_need,
         ),
         oneshot_calls=(
-            LIVE_CONTEXT_ONESHOT_CALLS
-            if remaining > score_need + detail_need + odds_need
-            else 0
+            LIVE_CONTEXT_ONESHOT_CALLS if in_play and remaining > score_need else 0
         ),
         score_poll_seconds=score_poll,
         poll_odds=in_play and odds_need > 0,

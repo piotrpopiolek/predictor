@@ -68,6 +68,7 @@ class PrematchIngest:
         self._session_factory = session_factory
         self._now = now_fn or (lambda: datetime.now(UTC))
         self._per_tick = per_tick
+        self.used_http = False
 
     def _quota_left(self) -> bool:
         snapshot = self._client.quota
@@ -224,6 +225,7 @@ class PrematchIngest:
     ) -> bool:
         if fixture_ids is not None and not fixture_ids:
             return False
+        self.used_http = False
         task_id = await self._claim_predictions_id(
             urgent=urgent, fixture_ids=fixture_ids
         )
@@ -247,6 +249,7 @@ class PrematchIngest:
                     params={"fixture": loaded.id, "reason": "coverage_false"},
                 )
             return True
+        self.used_http = True
         try:
             items, current, total = await fetch_all_pages(
                 self._client, "/predictions", params={"fixture": loaded.id}
@@ -325,6 +328,7 @@ class PrematchIngest:
     ) -> bool:
         if fixture_ids is not None and not fixture_ids:
             return False
+        self.used_http = False
         task_id = await self._claim_odds_id(urgent=urgent, fixture_ids=fixture_ids)
         if task_id is None:
             return False
@@ -344,6 +348,7 @@ class PrematchIngest:
                     params={"fixture": loaded.id, "reason": "coverage_false"},
                 )
             return True
+        self.used_http = True
         try:
             items, current, total = await fetch_all_pages(
                 self._client, "/odds", params={"fixture": loaded.id}

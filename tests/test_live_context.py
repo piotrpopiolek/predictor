@@ -252,7 +252,8 @@ async def test_live_context_prefers_live_fixture_and_retries_empty_odds() -> Non
         assert other_odds is not None
         assert other_odds.status == "pending"
         assert live_pred is not None
-        assert live_pred.status == "pending"
+        assert live_pred.status == "retryable_error"
+        assert live_pred.params.get("next_attempt_at")
     finally:
         async with factory() as session:
             async with session.begin():

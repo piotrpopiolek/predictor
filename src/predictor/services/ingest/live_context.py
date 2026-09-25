@@ -181,6 +181,14 @@ class LiveContextIngest:
             now_fn=self._now,
             quota_fn=self._quota_left,
         )
+        urgent, later = await self._deadline_groups(live)
+        oneshot_left = oneshot_calls
+        for stage in ("odds", "predictions", "rest"):
+            for group in (urgent, later, finishing):
+                if group and spend.left() and oneshot_left:
+                    oneshot_left = await self._drain(
+                        group, spend, limit=oneshot_left, stage=stage
+                    )
         await self._refresh_details(
             live,
             spend,
@@ -195,14 +203,6 @@ class LiveContextIngest:
             limit=LIVE_CONTEXT_FINAL_CALLS,
             refresh_seconds=detail_refresh_seconds,
         )
-        urgent, later = await self._deadline_groups(live)
-        oneshot_left = oneshot_calls
-        if urgent:
-            oneshot_left = await self._drain(urgent, spend, limit=oneshot_left)
-        if later and spend.left() and oneshot_left:
-            oneshot_left = await self._drain(later, spend, limit=oneshot_left)
-        if finishing and spend.left() and oneshot_left:
-            await self._drain(finishing, spend, limit=oneshot_left)
         still = await self._prune_finishing(finishing)
         log_json(
             logging.INFO,
@@ -246,22 +246,35 @@ class LiveContextIngest:
             async with session.begin():
                 await ensure_live_followups(session, fixture_ids)
 
-    async def _drain(self, fixture_ids: list[int], spend: _Spend, *, limit: int) -> int:
+    async def _drain(
+        self,
+        fixture_ids: list[int],
+        spend: _Spend,
+        *,
+        limit: int,
+        stage: str,
+    ) -> int:
         scope = await self._load_scope(fixture_ids)
         used = 0
         while spend.left() and used < limit:
-            if await self._prematch._one_odds(
-                fixture_ids=scope.fixture_ids, retry_empty=True
-            ):
-                spend.take()
-                used += 1
-                continue
-            if await self._prematch._one_predictions(
-                fixture_ids=scope.fixture_ids, retry_empty=True
-            ):
-                spend.take()
-                used += 1
-                continue
+            if stage == "odds":
+                if await self._prematch._one_odds(
+                    fixture_ids=scope.fixture_ids, retry_empty=True
+                ):
+                    if self._prematch.used_http:
+                        spend.take()
+                        used += 1
+                    continue
+                break
+            if stage == "predictions":
+                if await self._prematch._one_predictions(
+                    fixture_ids=scope.fixture_ids, retry_empty=True
+                ):
+                    if self._prematch.used_http:
+                        spend.take()
+                        used += 1
+                    continue
+                break
             if await self._prematch._one_h2h(h2h_keys=scope.h2h_keys, retry_empty=True):
                 spend.take()
                 used += 1

@@ -48,8 +48,15 @@ def test_tight_reserve_slows_details_and_drops_oneshots() -> None:
     now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     plan = _plan(30, 400, now)
     assert plan.detail_refresh_seconds == 900
-    assert plan.oneshot_calls == 0
+    assert plan.oneshot_calls == 12
     assert plan.score_poll_seconds == 60.0
+
+
+def test_oneshots_stop_when_score_reserve_is_the_whole_budget() -> None:
+    now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
+    plan = _plan(30, 200, now)
+    assert plan.score_need > 200
+    assert plan.oneshot_calls == 0
 
 
 def test_matches_still_to_play_today_are_reserved_before_kickoff() -> None:
