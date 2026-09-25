@@ -230,10 +230,7 @@ class LiveContextIngest:
                 )
             ).all()
         ranked = deadline_order(
-            [
-                (int(fixture_id), status, elapsed)
-                for fixture_id, status, elapsed in rows
-            ]
+            [(int(fixture_id), status, elapsed) for fixture_id, status, elapsed in rows]
         )
         status_by_id = {int(fixture_id): status for fixture_id, status, _ in rows}
         urgent = [
