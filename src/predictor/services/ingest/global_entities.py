@@ -153,7 +153,9 @@ class GlobalIngest:
                 task_id, "not_supported", params={"reason": "reconstructable_lookup"}
             )
             return True
-        if await self._coverage_blocked(endpoint, params):
+        if await self._coverage_blocked(endpoint, params) and not (
+            retry_empty and endpoint == "/standings"
+        ):
             if retry_empty:
                 await self._retry_or_empty(
                     task_id, {**params, "reason": "coverage_false"}

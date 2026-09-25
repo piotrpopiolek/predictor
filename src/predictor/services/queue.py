@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from predictor.constants import (
@@ -710,6 +710,10 @@ async def claim_live_fixture_task(
     if not ids:
         return None
     stamp = now or datetime.now(UTC)
+    priority = case(
+        *[(EtlTask.fixture_id == fid, index) for index, fid in enumerate(ids)],
+        else_=len(ids),
+    )
     stmt = (
         select(EtlTask)
         .where(EtlTask.endpoint == endpoint)
@@ -717,7 +721,7 @@ async def claim_live_fixture_task(
         .where(EtlTask.cursor_kind.is_(None))
         .where(EtlTask.status.in_(("pending", "retryable_error")))
         .where(_due_clause(stamp))
-        .order_by(EtlTask.id)
+        .order_by(priority, EtlTask.id)
         .with_for_update(skip_locked=True)
         .limit(1)
     )

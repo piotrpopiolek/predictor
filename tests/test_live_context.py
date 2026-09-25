@@ -21,6 +21,7 @@ from predictor.services.ingest.live_context import (
     LiveContextIngest,
     context_budget_left,
     context_call_budget,
+    deadline_order,
     detail_refresh_due,
 )
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
@@ -35,6 +36,18 @@ FID_OTHER = 93022
 class WaitZero(wait_base):
     def __call__(self, retry_state: RetryCallState) -> float:
         return 0.0
+
+
+def test_deadline_order_puts_halftime_before_late_first_half() -> None:
+    ordered = deadline_order(
+        [
+            (1, "1H", 12),
+            (2, "HT", 45),
+            (3, "1H", 40),
+            (4, "2H", 70),
+        ]
+    )
+    assert ordered == [2, 3, 1, 4]
 
 
 def test_context_call_budget_caps_detail_and_oneshots() -> None:

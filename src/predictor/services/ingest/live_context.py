@@ -85,6 +85,23 @@ def detail_refresh_due(
     return (now - last).total_seconds() >= refresh_seconds
 
 
+def deadline_order(
+    rows: Sequence[tuple[int, str | None, int | None]],
+) -> list[int]:
+    """Halftime first, then the latest minute of the first half, then the rest."""
+
+    def key(row: tuple[int, str | None, int | None]) -> tuple[int, int, int]:
+        fixture_id, status, elapsed = row
+        minute = int(elapsed or 0)
+        if status == "HT":
+            return (0, 0, fixture_id)
+        if status == "1H":
+            return (1, -minute, fixture_id)
+        return (2, -minute, fixture_id)
+
+    return [fixture_id for fixture_id, _, _ in sorted(rows, key=key)]
+
+
 def context_budget_left(
     *,
     calls: int,
@@ -178,11 +195,14 @@ class LiveContextIngest:
             limit=LIVE_CONTEXT_FINAL_CALLS,
             refresh_seconds=detail_refresh_seconds,
         )
+        urgent, later = await self._deadline_groups(live)
         oneshot_left = oneshot_calls
-        if finishing:
-            oneshot_left = await self._drain(finishing, spend, limit=oneshot_left)
-        if live and spend.left() and oneshot_left:
-            await self._drain(live, spend, limit=oneshot_left)
+        if urgent:
+            oneshot_left = await self._drain(urgent, spend, limit=oneshot_left)
+        if later and spend.left() and oneshot_left:
+            oneshot_left = await self._drain(later, spend, limit=oneshot_left)
+        if finishing and spend.left() and oneshot_left:
+            await self._drain(finishing, spend, limit=oneshot_left)
         still = await self._prune_finishing(finishing)
         log_json(
             logging.INFO,
@@ -193,6 +213,36 @@ class LiveContextIngest:
             finishing=len(still),
         )
         return still
+
+    async def _deadline_groups(
+        self, fixture_ids: list[int]
+    ) -> tuple[list[int], list[int]]:
+        if not fixture_ids:
+            return [], []
+        async with self._session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        Fixture.id,
+                        Fixture.status_short,
+                        Fixture.elapsed_minutes,
+                    ).where(Fixture.id.in_(fixture_ids))
+                )
+            ).all()
+        ranked = deadline_order(
+            [
+                (int(fixture_id), status, elapsed)
+                for fixture_id, status, elapsed in rows
+            ]
+        )
+        status_by_id = {int(fixture_id): status for fixture_id, status, _ in rows}
+        urgent = [
+            fixture_id
+            for fixture_id in ranked
+            if status_by_id.get(fixture_id) in {"HT", "1H"}
+        ]
+        later = [fixture_id for fixture_id in ranked if fixture_id not in set(urgent)]
+        return urgent, later
 
     async def _enqueue(self, fixture_ids: list[int]) -> None:
         async with self._session_factory() as session:

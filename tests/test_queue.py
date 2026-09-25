@@ -816,3 +816,79 @@ async def test_live_claim_respects_backoff_and_finishing() -> None:
                 )
                 await session.execute(delete(Fixture).where(Fixture.id == FID_LIVE))
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_live_claim_follows_fixture_list_order() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    first = 93031
+    second = 93032
+    try:
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(EtlTask).where(EtlTask.fixture_id.in_((first, second)))
+                )
+                await session.execute(
+                    delete(Fixture).where(Fixture.id.in_((first, second)))
+                )
+                await upsert_fixtures(
+                    session,
+                    [
+                        FixtureItem.model_validate(
+                            _fixture_payload(
+                                first,
+                                kickoff=NOW,
+                                status="1H",
+                                home_id=321,
+                                away_id=322,
+                            )
+                        ),
+                        FixtureItem.model_validate(
+                            _fixture_payload(
+                                second,
+                                kickoff=NOW,
+                                status="HT",
+                                home_id=323,
+                                away_id=324,
+                            )
+                        ),
+                    ],
+                )
+                session.add(
+                    EtlTask(
+                        endpoint="/odds",
+                        fixture_id=first,
+                        params={"fixture": first},
+                        status="pending",
+                    )
+                )
+                await session.flush()
+                session.add(
+                    EtlTask(
+                        endpoint="/odds",
+                        fixture_id=second,
+                        params={"fixture": second},
+                        status="pending",
+                    )
+                )
+        async with factory() as session:
+            async with session.begin():
+                claimed = await claim_live_fixture_task(
+                    session, "/odds", [second, first], now=NOW
+                )
+                assert claimed is not None
+                assert claimed.fixture_id == second
+                await complete_task(session, claimed, "complete")
+    finally:
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(EtlTask).where(EtlTask.fixture_id.in_((first, second)))
+                )
+                await session.execute(
+                    delete(Fixture).where(Fixture.id.in_((first, second)))
+                )
+        await engine.dispose()
