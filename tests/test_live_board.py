@@ -14,6 +14,7 @@ from predictor.services.live_board import (
     NextGoalOdds,
     PrematchOdds,
     TeamGoalForm,
+    avg_minute_from_goal_bins,
     clock_label,
     clock_sort_key,
     event_kind,
@@ -121,6 +122,22 @@ def test_goal_form_uses_scored_goals_and_clock_minutes() -> None:
     assert blank.avg_goals == 0
     assert blank.avg_minute is None
     assert blank.minute_label is None
+
+
+def test_avg_minute_from_goal_bins_weights_midpoints() -> None:
+    assert avg_minute_from_goal_bins(None) is None
+    assert avg_minute_from_goal_bins({}) is None
+    avg = avg_minute_from_goal_bins(
+        {
+            "16-30": {"total": 3, "percentage": "33.33%"},
+            "31-45": {"total": 1, "percentage": "11.11%"},
+            "46-60": {"total": 3, "percentage": "33.33%"},
+            "61-75": {"total": 1, "percentage": "11.11%"},
+            "76-90": {"total": 1, "percentage": "11.11%"},
+            "0-15": {"total": None, "percentage": None},
+        }
+    )
+    assert abs(avg - (3 * 23 + 38 + 3 * 53 + 68 + 83) / 9) < 1e-9
 
 
 def test_next_goal_target_uses_score_and_period() -> None:

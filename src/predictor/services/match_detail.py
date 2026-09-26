@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from html import escape
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -29,6 +29,7 @@ from predictor.services.live_board import (
     REFRESH_SECONDS,
     LiveMatch,
     PrematchOdds,
+    TeamGoalForm,
     _img,
     _live_nav,
     _score,
@@ -220,6 +221,7 @@ class MatchDetail:
     markets: tuple[OddsMarket, ...] = ()
     attack_subs: tuple[AttackChange, ...] = ()
     goal_price: GoalPrice | None = None
+    form_results: tuple[tuple[str, tuple[DetailH2H, ...]], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -262,6 +264,7 @@ async def load_match_detail(engine: AsyncEngine, fixture_id: int) -> MatchDetail
         home_xi, away_xi, home_bench, away_bench = await _lineup(session, match)
         prediction = await session.get(Prediction, fixture_id)
         h2h = await _h2h(session, fixture_id)
+        form_results = await _recent_results(session, match)
         table = await _group_table(session, match)
         markets = await _live_markets(session, match)
         attack_subs = await _attack_subs(session, match)
@@ -295,6 +298,7 @@ async def load_match_detail(engine: AsyncEngine, fixture_id: int) -> MatchDetail
         markets=tuple(markets),
         attack_subs=tuple(attack_subs),
         goal_price=goal_price,
+        form_results=form_results,
     )
 
 
@@ -1050,6 +1054,65 @@ async def _h2h(session: AsyncSession, fixture_id: int) -> list[DetailH2H]:
     return items
 
 
+async def _recent_results(
+    session: AsyncSession, match: LiveMatch
+) -> tuple[tuple[str, tuple[DetailH2H, ...]], ...]:
+    groups: list[tuple[str, tuple[DetailH2H, ...]]] = []
+    for team_id, name in (
+        (match.home_team_id, match.home),
+        (match.away_team_id, match.away),
+    ):
+        if not team_id:
+            continue
+        groups.append((name, tuple(await _team_results(session, match, team_id))))
+    return tuple(group for group in groups if group[1])
+
+
+async def _team_results(
+    session: AsyncSession, match: LiveMatch, team_id: int
+) -> list[DetailH2H]:
+    home = aliased(Team)
+    away = aliased(Team)
+    rows = (
+        await session.execute(
+            select(
+                Fixture.date,
+                home.name,
+                away.name,
+                Fixture.goals_home,
+                Fixture.goals_away,
+            )
+            .join(home, home.id == Fixture.home_team_id)
+            .join(away, away.id == Fixture.away_team_id)
+            .where(
+                or_(
+                    Fixture.home_team_id == team_id,
+                    Fixture.away_team_id == team_id,
+                )
+            )
+            .where(Fixture.status_short.in_(tuple(FINISHED_FIXTURE_STATUSES)))
+            .where(Fixture.id != match.fixture_id)
+            .order_by(Fixture.date.desc().nulls_last(), Fixture.id.desc())
+            .limit(FORM_LAST_MATCHES)
+        )
+    ).all()
+    items: list[DetailH2H] = []
+    for kickoff, home_name, away_name, goals_home, goals_away in rows:
+        when = kickoff.date().isoformat() if isinstance(kickoff, datetime) else ""
+        score = "–"
+        if goals_home is not None and goals_away is not None:
+            score = f"{goals_home}–{goals_away}"
+        items.append(
+            DetailH2H(
+                when=when,
+                home=_blank(home_name) or "—",
+                away=_blank(away_name) or "—",
+                score=score,
+            )
+        )
+    return items
+
+
 def _comparison_rows(raw: object) -> tuple[tuple[str, str, str], ...]:
     if not isinstance(raw, dict):
         return ()
@@ -1161,12 +1224,11 @@ def _body(detail: MatchDetail, generated_at: datetime) -> str:
   {periods}
 </section>
 {_table_card(detail)}
-<div class="grid">
-  {_events_card(detail)}
-  {_stats_card(detail)}
-</div>
+{_events_card(detail)}
+{_stats_card(detail)}
 {_attack_subs_card(detail)}
 {_goal_price_card(detail)}
+{_form_card(detail)}
 {_lineups_card(detail)}
 {_odds_card(detail)}
 {_prediction_card(detail)}
@@ -1260,6 +1322,7 @@ def _events_card(detail: MatchDetail) -> str:
     if not detail.events:
         inner = '<p class="muted">Brak zdarzeń.</p>'
     else:
+        match = detail.match
         rows = []
         for event in detail.events:
             who = event.player or ""
@@ -1267,17 +1330,21 @@ def _events_card(detail: MatchDetail) -> str:
                 who = f"{who} ({event.assist})" if who else event.assist
             label = _EVENT_LABELS.get(event.event_type, event.event_type)
             detail_text = event.detail or ""
+            club = match.home if event.side == "home" else match.away
             side = "home" if event.side == "home" else "away"
+            what = escape(label)
+            if detail_text:
+                what = f"{what} <em>{escape(detail_text)}</em>"
+            who_html = f'<span class="who">{escape(who)}</span>' if who else ""
             rows.append(
                 f'<li class="{side}">'
                 f'<span class="minute">{escape(event.clock)}</span>'
-                f'<span class="what">{escape(label)}'
-                + (f" <em>{escape(detail_text)}</em>" if detail_text else "")
-                + f'</span><span class="who">{escape(who)}</span></li>'
+                f'<span class="ev">'
+                f'<span class="club">{escape(club)}</span>'
+                f'<span class="what">{what}</span>'
+                f"{who_html}</span></li>"
             )
         inner = f'<ol class="timeline">{"".join(rows)}</ol>'
-    return f'<section class="card"><h2>Zdarzenia</h2>{inner}</section>'
-
     return f'<section class="card"><h2>Zdarzenia</h2>{inner}</section>'
 
 
@@ -1985,9 +2052,6 @@ def _odds_card(detail: MatchDetail) -> str:
                     next_goal.away,
                 )
             )
-    form = _form(match)
-    if form:
-        blocks.append(form)
     if not blocks:
         return ""
     return f'<section class="card"><h2>Kursy</h2>{"".join(blocks)}</section>'
@@ -2026,28 +2090,40 @@ def _odd_row(
     )
 
 
-def _form(match: LiveMatch) -> str:
-    parts: list[str] = []
-    for name, form in ((match.home, match.form_home), (match.away, match.form_away)):
-        if form is None:
-            continue
-        minute = "" if form.minute_label is None else f", gol {form.minute_label}"
-        sample = "" if form.matches == FORM_LAST_MATCHES else f" ({form.matches} m.)"
-        parts.append(
-            f"{escape(name)} {form.avg_goals:.2f} gola{minute}{escape(sample)}"
-        )
-    if not parts:
+def _form_bits(form: TeamGoalForm | None) -> str:
+    if form is None:
         return ""
+    bits = [f"{form.avg_goals:.2f} gola"]
+    if form.minute_label is not None:
+        bits.append(f"śr. {form.minute_label}")
+    if form.matches != FORM_LAST_MATCHES:
+        bits.append(f"{form.matches} m.")
+    return " · ".join(escape(bit) for bit in bits)
+
+
+def _form_card(detail: MatchDetail) -> str:
+    match = detail.match
+    by_name = {name: rows for name, rows in detail.form_results if rows}
+    columns: list[str] = []
+    for name, form in ((match.home, match.form_home), (match.away, match.form_away)):
+        rows = by_name.get(name, ())
+        bits = _form_bits(form)
+        if not bits and not rows:
+            continue
+        summary = f'<p class="muted">{bits}</p>' if bits else ""
+        listing = f"<ul class='h2h'>{_h2h_rows(rows)}</ul>" if rows else ""
+        columns.append(f"<div><h3>{escape(name)}</h3>{summary}{listing}</div>")
+    if not columns:
+        return ""
+    body = f'<div class="form-cols">{"".join(columns)}</div>'
     return (
-        f'<p class="muted">Ostatnie {FORM_LAST_MATCHES} meczów · '
-        f"{' · '.join(parts)}</p>"
+        '<section class="card"><h2>Ostatnie '
+        f"{FORM_LAST_MATCHES} meczów</h2>{body}</section>"
     )
 
 
-def _h2h_card(detail: MatchDetail) -> str:
-    if not detail.h2h:
-        return ""
-    rows = "".join(
+def _h2h_rows(items: tuple[DetailH2H, ...] | list[DetailH2H]) -> str:
+    return "".join(
         "<li><span class='when'>"
         + escape(item.when)
         + "</span><span>"
@@ -2057,11 +2133,16 @@ def _h2h_card(detail: MatchDetail) -> str:
         + " "
         + escape(item.away)
         + "</span></li>"
-        for item in detail.h2h
+        for item in items
     )
+
+
+def _h2h_card(detail: MatchDetail) -> str:
+    if not detail.h2h:
+        return ""
     return (
         '<section class="card"><h2>Bezpośrednie</h2>'
-        f'<ul class="h2h">{rows}</ul></section>'
+        f"<ul class='h2h'>{_h2h_rows(detail.h2h)}</ul></section>"
     )
 
 
@@ -2211,7 +2292,33 @@ _DETAIL_CSS = """
   .timeline, .xi-list, .h2h, .compare {
     list-style: none; margin: 0; padding: 0;
   }
-  .timeline li, .h2h li, .compare li, .xi-list li {
+  .timeline li {
+    display: grid;
+    grid-template-columns: 3.2rem 1fr;
+    gap: 10px;
+    padding: 8px 0;
+    border-top: 1px solid var(--line);
+    font-size: 0.88rem;
+    align-items: start;
+  }
+  .timeline li.away {
+    grid-template-columns: 1fr 3.2rem;
+  }
+  .timeline li.away .minute { order: 2; text-align: right; }
+  .timeline li.away .ev { order: 1; text-align: right; }
+  .timeline .ev {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .timeline .club {
+    font-weight: 650;
+    font-size: 0.82rem;
+  }
+  .timeline li.home .club { color: var(--text); }
+  .timeline li.away .club { color: var(--muted); }
+  .h2h li, .compare li, .xi-list li {
     display: grid;
     grid-template-columns: 3.2rem 1fr auto;
     gap: 8px;
@@ -2224,7 +2331,6 @@ _DETAIL_CSS = """
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
-  .timeline li.away .who { color: var(--text); }
   .what em { color: var(--muted); font-style: normal; }
   .stat { margin: 10px 0 14px; }
   .stat-top, .pct, .odds, .compare li {
@@ -2241,8 +2347,10 @@ _DETAIL_CSS = """
   }
   .bars i.away { background: var(--bar-away); margin-left: auto; }
   .xi { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-  .tables { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .tables, .form-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
   .tables .kicker { margin-bottom: 8px; }
+  .form-cols h3 { margin-bottom: 4px; }
+  .form-cols .muted { margin: 0 0 8px; font-size: 0.82rem; }
   table.stand { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
   table.stand th {
     color: var(--muted); font-weight: 500; text-align: right;
@@ -2322,7 +2430,7 @@ _DETAIL_CSS = """
   .empty { text-align: center; color: var(--muted); padding: 48px 16px; }
   .sub { font-size: 0.78rem; text-align: right; }
   @media (max-width: 720px) {
-    .grid, .xi, .headline, .tables, .split-grid { grid-template-columns: 1fr; }
+    .grid, .xi, .headline, .tables, .form-cols, .split-grid { grid-template-columns: 1fr; }
     .team.away { flex-direction: row; text-align: left; }
     .team.away .team-id { align-items: flex-start; }
     .scoreblock { order: -1; }

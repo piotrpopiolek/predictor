@@ -23,6 +23,7 @@ from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture, Team, Venue
 from predictor.models.odds import FixtureOdds, FixtureOddsLive
 from predictor.models.predictions import Prediction
+from predictor.models.seasonal import TeamSeasonStatistics
 from predictor.services.ingest.next_goal import (
     is_next_goal_market,
     normalized_bet_name,
@@ -37,6 +38,16 @@ _HT_STATUSES = frozenset({"HT", "2H", "ET", "BT", "P", "AET", "PEN", "FT"})
 _ET_STATUSES = frozenset({"ET", "BT", "AET", "PEN"})
 _PEN_STATUSES = frozenset({"P", "PEN"})
 _EXTRA_LIVE = frozenset({"ET", "BT"})
+_GOAL_MINUTE_BIN_MID = {
+    "0-15": 7.5,
+    "16-30": 23.0,
+    "31-45": 38.0,
+    "46-60": 53.0,
+    "61-75": 68.0,
+    "76-90": 83.0,
+    "91-105": 98.0,
+    "106-120": 113.0,
+}
 _SECOND_LEG_MARKERS = (
     "2nd leg",
     "second leg",
@@ -425,6 +436,32 @@ def summarize_team_goal_form(
         avg_goals=sum(scored) / len(scored),
         avg_minute=avg_minute,
     )
+
+
+def avg_minute_from_goal_bins(raw: object) -> float | None:
+    """Weighted midpoint of API goal-for minute bins (0-15, 16-30, …)."""
+    if not isinstance(raw, dict):
+        return None
+    total = 0
+    weighted = 0.0
+    for key, mid in _GOAL_MINUTE_BIN_MID.items():
+        cell = raw.get(key)
+        if not isinstance(cell, dict):
+            continue
+        value = cell.get("total")
+        if value is None:
+            continue
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            continue
+        if count <= 0:
+            continue
+        total += count
+        weighted += count * mid
+    if not total:
+        return None
+    return weighted / total
 
 
 def next_goal_target(
@@ -1139,6 +1176,12 @@ async def _load_extras(
         return {}
     ids = [int(row[0]) for row in rows]
     teams = {int(row[0]): (int(row[14]), int(row[15])) for row in rows}
+    team_context: dict[int, tuple[int, int]] = {}
+    for row in rows:
+        league_id = int(row[29])
+        season = int(row[30])
+        for team_id in (int(row[14]), int(row[15])):
+            team_context[team_id] = (league_id, season)
     extras = {fid: _empty_extras() for fid in ids}
     await _fill_events(session, ids, teams, extras)
     await _fill_stats(session, ids, teams, extras)
@@ -1146,7 +1189,7 @@ async def _load_extras(
     await _fill_prematch(session, ids, extras)
     await _fill_predictions(session, ids, extras)
     await _fill_next_goal(session, rows, extras)
-    await _fill_goal_form(session, ids, teams, extras)
+    await _fill_goal_form(session, ids, teams, extras, team_context)
     return extras
 
 
@@ -1256,6 +1299,7 @@ async def _fill_goal_form(
     ids: list[int],
     teams: dict[int, tuple[int, int]],
     extras: dict[int, dict[str, Any]],
+    team_context: dict[int, tuple[int, int]] | None = None,
 ) -> None:
     team_ids = sorted({tid for pair in teams.values() for tid in pair})
     if not team_ids:
@@ -1312,9 +1356,65 @@ async def _fill_goal_form(
         )
         for team_id, rows in appearances.items()
     }
+    await _apply_season_goal_minute_fallback(session, forms, team_context or {})
     for fixture_id, (home_id, away_id) in teams.items():
         extras[fixture_id]["form_home"] = forms.get(home_id)
         extras[fixture_id]["form_away"] = forms.get(away_id)
+
+
+async def _apply_season_goal_minute_fallback(
+    session: AsyncSession,
+    forms: dict[int, TeamGoalForm | None],
+    team_context: dict[int, tuple[int, int]],
+) -> None:
+    """When last-15 events lack Goal minutes, use season gf_minute bins."""
+    missing = [
+        team_id
+        for team_id, form in forms.items()
+        if form is not None and form.avg_minute is None and team_id in team_context
+    ]
+    if not missing:
+        return
+    keys = {(team_id, *team_context[team_id]) for team_id in missing}
+    league_ids = sorted({league for _, league, _ in keys})
+    seasons = sorted({season for _, _, season in keys})
+    rows = (
+        await session.execute(
+            select(
+                TeamSeasonStatistics.team_id,
+                TeamSeasonStatistics.league_id,
+                TeamSeasonStatistics.season,
+                TeamSeasonStatistics.as_of_date,
+                TeamSeasonStatistics.gf_minute,
+            )
+            .where(TeamSeasonStatistics.team_id.in_(missing))
+            .where(TeamSeasonStatistics.league_id.in_(league_ids))
+            .where(TeamSeasonStatistics.season.in_(seasons))
+            .order_by(TeamSeasonStatistics.as_of_date.desc())
+        )
+    ).all()
+    bins_by_team: dict[int, object] = {}
+    for row in rows:
+        team_id = int(row.team_id)
+        if team_id in bins_by_team:
+            continue
+        expected = team_context.get(team_id)
+        if expected is None:
+            continue
+        if (int(row.league_id), int(row.season)) != expected:
+            continue
+        bins_by_team[team_id] = row.gf_minute
+    for team_id, form in list(forms.items()):
+        if form is None or form.avg_minute is not None:
+            continue
+        avg_minute = avg_minute_from_goal_bins(bins_by_team.get(team_id))
+        if avg_minute is None:
+            continue
+        forms[team_id] = TeamGoalForm(
+            matches=form.matches,
+            avg_goals=form.avg_goals,
+            avg_minute=avg_minute,
+        )
 
 
 async def _fill_stats(

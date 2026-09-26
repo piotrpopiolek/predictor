@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from html import escape
 
 import pytest
 
@@ -74,6 +75,12 @@ def _detail() -> MatchDetail:
         pct_draw="27%",
         comparison=(("Forma", "40%", "60%"),),
         h2h=(DetailH2H("2026-05-01", "Saipa", "Mes Kerman", "1–0"),),
+        form_results=(
+            (
+                "Mes Kerman",
+                (DetailH2H("2019-08-14", "Jubilo Iwata", "Vanraure Hachinohe", "6–0"),),
+            ),
+        ),
     )
 
 
@@ -181,8 +188,22 @@ def test_render_match_html_shows_collected_sections() -> None:
     assert "HT 0–1" in html
     assert "Zdarzenia" in html
     assert "Normal Goal" in html
+    assert 'class="club">Saipa</span>' in html
+    assert 'class="away"' in html
     assert "Posiadanie" in html
     assert "Składy" in html
+    assert "Ostatnie 15 meczów" in html
+    assert "0.40 gola" in html
+    assert escape("śr. 40'") in html
+    assert 'class="form-cols"' in html
+    form_start = html.index('class="form-cols"')
+    assert html.index("<h3>Mes Kerman</h3>", form_start) < html.index(
+        "0.40 gola", form_start
+    )
+    assert "2019-08-14" in html
+    assert "Jubilo Iwata 6–0 Vanraure Hachinohe" in html
+    assert html.index("Ostatnie 15 meczów") < html.index("Składy")
+    assert html.index("Składy") < html.index(">Kursy<")
     assert "Ali" in html
     assert "Ławka" in html
     assert "Prognoza" in html
