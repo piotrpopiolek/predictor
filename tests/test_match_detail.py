@@ -188,6 +188,9 @@ def test_render_match_html_shows_collected_sections() -> None:
     assert "Prognoza" in html
     assert "Double chance" in html
     assert "Otwarcie" in html
+    assert 'class="team-odd">2.10' in html
+    assert 'class="score-odd">3.20' in html
+    assert 'class="team-odd">3.40' in html
     assert "Bezpośrednie" in html
     assert 'href="/live"' in html
 

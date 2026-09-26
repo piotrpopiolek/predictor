@@ -18,6 +18,7 @@ from predictor.models.odds import FixtureOdds, FixtureOddsLive, OddsFixtureMappi
 from predictor.models.predictions import Prediction, PredictionH2H
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.fixtures import FixtureItem
+from predictor.schemas.odds import PrematchOddsItem
 from predictor.schemas.settings import Settings, load_settings
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.ingest.prematch import PrematchIngest
@@ -27,6 +28,38 @@ from predictor.services.queue import ensure_cursors, ensure_odds_task
 class WaitZero(wait_base):
     def __call__(self, retry_state: RetryCallState) -> float:
         return 0.0
+
+
+def test_prematch_odds_accept_numeric_bet_labels() -> None:
+    item = PrematchOddsItem.model_validate(
+        {
+            "fixture": {"id": 1606666},
+            "bookmakers": [
+                {
+                    "id": 8,
+                    "name": "Bet365",
+                    "bets": [
+                        {
+                            "id": 1,
+                            "name": "Match Winner",
+                            "values": [{"value": "Home", "odd": "1.87"}],
+                        },
+                        {
+                            "id": 31,
+                            "name": "Exact Goals Number",
+                            "values": [
+                                {"value": 0, "odd": "8.00"},
+                                {"value": 2.5, "odd": "3.10"},
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    labels = [value.value for bet in item.bookmakers[0].bets for value in bet.values]
+    assert labels == ["Home", "0", "2.5"]
+    assert item.bookmakers[0].bets[0].values[0].odd == "1.87"
 
 
 NOW = datetime(2026, 9, 13, 15, 0, tzinfo=UTC)

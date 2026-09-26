@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from html import escape
 from typing import Any
 
@@ -28,6 +28,7 @@ from predictor.services.live_board import (
     FORM_LAST_MATCHES,
     REFRESH_SECONDS,
     LiveMatch,
+    PrematchOdds,
     _img,
     _live_nav,
     _score,
@@ -1147,15 +1148,14 @@ def _body(detail: MatchDetail, generated_at: datetime) -> str:
 <section class="hero">
   <p class="kicker">{escape(match.country)} · {escape(match.league)}</p>
   <div class="headline">
-    <div class="team home">{_img(match.home_logo, match.home)}
-      <span>{escape(match.home)}</span></div>
+    {_team_side(match.home_logo, match.home, _opening_odd(match, "home"), home=True)}
     <div class="scoreblock">
       <div class="score">{_score(match.goals_home)}–{_score(match.goals_away)}</div>
+      {_draw_odd(match)}
       <div class="meta"><span class="clock">{escape(match.clock)}</span>
         <span>{escape(match.status_short)}</span></div>
     </div>
-    <div class="team away"><span>{escape(match.away)}</span>
-      {_img(match.away_logo, match.away)}</div>
+    {_team_side(match.away_logo, match.away, _opening_odd(match, "away"), home=False)}
   </div>
   {chips}
   {periods}
@@ -1173,6 +1173,52 @@ def _body(detail: MatchDetail, generated_at: datetime) -> str:
 {_h2h_card(detail)}
 <p class="sub">Odświeżono {escape(generated_at.strftime("%H:%M:%S UTC"))}</p>
 """
+
+
+def _opening_quote(match: LiveMatch) -> PrematchOdds | None:
+    quote = match.prematch
+    if quote is None or quote.source != "prematch":
+        return None
+    return quote
+
+
+def _price(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    try:
+        return _fmt_odd(Decimal(raw))
+    except InvalidOperation:
+        return raw
+
+
+def _opening_odd(match: LiveMatch, side: str) -> str | None:
+    quote = _opening_quote(match)
+    if quote is None:
+        return None
+    raw = quote.home if side == "home" else quote.away
+    return _price(raw)
+
+
+def _draw_odd(match: LiveMatch) -> str:
+    quote = _opening_quote(match)
+    if quote is None:
+        return ""
+    priced = _price(quote.draw)
+    if not priced:
+        return ""
+    return f'<div class="score-odd">{escape(priced)}</div>'
+
+
+def _team_side(logo: str | None, name: str, odd: str | None, *, home: bool) -> str:
+    price = f'<span class="team-odd">{escape(odd)}</span>' if odd else ""
+    identity = (
+        f'<span class="team-id"><span class="team-name">{escape(name)}</span>'
+        f"{price}</span>"
+    )
+    mark = _img(logo, name)
+    side = "home" if home else "away"
+    inner = f"{mark}{identity}" if home else f"{identity}{mark}"
+    return f'<div class="team {side}">{inner}</div>'
 
 
 def _chips(match: LiveMatch) -> str:
@@ -2116,7 +2162,19 @@ _DETAIL_CSS = """
     font-weight: 650; min-width: 0;
   }
   .team.away { flex-direction: row-reverse; text-align: right; }
-  .team span { overflow: hidden; text-overflow: ellipsis; }
+  .team-id {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .team.away .team-id { align-items: flex-end; }
+  .team-name { overflow: hidden; text-overflow: ellipsis; }
+  .team-odd, .score-odd {
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+    font-size: 0.95rem;
+  }
   .logo {
     width: 36px; height: 36px; object-fit: contain; flex-shrink: 0;
   }
@@ -2266,6 +2324,7 @@ _DETAIL_CSS = """
   @media (max-width: 720px) {
     .grid, .xi, .headline, .tables, .split-grid { grid-template-columns: 1fr; }
     .team.away { flex-direction: row; text-align: left; }
+    .team.away .team-id { align-items: flex-start; }
     .scoreblock { order: -1; }
   }
 """

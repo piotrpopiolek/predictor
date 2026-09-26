@@ -6,11 +6,11 @@ from datetime import datetime
 
 from pydantic import Field
 
-from predictor.schemas.catalog import ExtraAllow
+from predictor.schemas.catalog import ExtraAllow, OddLabel
 
 
 class OddsValue(ExtraAllow):
-    value: str | None = None
+    value: OddLabel = None
     odd: str | int | float | None = None
 
 

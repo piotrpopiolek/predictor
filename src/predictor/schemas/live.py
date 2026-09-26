@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import Field
 
-from predictor.schemas.catalog import ExtraAllow
+from predictor.schemas.catalog import ExtraAllow, OddLabel
 
 
 class LiveFixtureStatus(ExtraAllow):
@@ -43,7 +43,7 @@ class LiveMatchFlags(ExtraAllow):
 
 
 class LiveOddValue(ExtraAllow):
-    value: str | None = None
+    value: OddLabel = None
     odd: str | int | float | None = None
     handicap: str | int | float | None = None
     main: bool | None = None

@@ -17,7 +17,17 @@ def _empty_to_none(value: Any) -> Any:
     return value
 
 
+def _label_text(value: Any) -> Any:
+    """Odds labels arrive as text or as a bare number (exact goals, handicaps)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    return value
+
+
 OptionalDate = Annotated[date | None, BeforeValidator(_empty_to_none)]
+OddLabel = Annotated[str | None, BeforeValidator(_label_text)]
 
 
 class ExtraAllow(BaseModel):

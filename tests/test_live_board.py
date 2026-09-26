@@ -424,9 +424,9 @@ def test_render_match_facts_from_database_fields() -> None:
     assert "Pos. 58%–42%" in html
     assert "Celne 4–2" in html
     assert "Następna bramka" in html
-    assert "Przed meczem" in html
-    assert "Remis" in html
-    assert "1.73" in html
+    assert 'class="team-odd">1.73' in html
+    assert 'class="score-odd">3.50' in html
+    assert 'class="team-odd">5.00' in html
     assert "1.83" in html
     assert "Brak" in html
     assert "Ostatnie 15" in html

@@ -1748,27 +1748,32 @@ def _odds_cells(
     return cells
 
 
-def _prematch_line(match: LiveMatch) -> str:
+def _board_price(raw: str | None) -> str:
+    if not raw:
+        return ""
+    try:
+        text = f"{Decimal(raw).quantize(Decimal('0.01')):.2f}"
+    except InvalidOperation:
+        text = raw
+    return f'<span class="team-odd">{escape(text)}</span>'
+
+
+def _opening_price(match: LiveMatch, side: str) -> str:
     quote = match.prematch
     if quote is None:
         return ""
-    cells = _odds_cells(
-        [
-            ("ng-home", match.home, quote.home),
-            ("ng-draw", "Remis", quote.draw),
-            ("ng-away", match.away, quote.away),
-        ]
-    )
-    if not cells:
+    raw = quote.home if side == "home" else quote.away
+    return _board_price(raw)
+
+
+def _opening_draw(match: LiveMatch) -> str:
+    quote = match.prematch
+    if quote is None:
         return ""
-    hint = " · ".join(part for part in (quote.market, quote.bookmaker) if part)
-    title = f' title="{escape(hint, quote=True)}"' if hint else ""
-    label = "Przed meczem" if quote.source == "prematch" else "Otwarcie live"
-    return (
-        f'<p class="next-goal"{title}>'
-        f'<span class="ng-label">{label}</span>'
-        f"{''.join(cells)}</p>"
-    )
+    price = _board_price(quote.draw)
+    if not price:
+        return ""
+    return price.replace('class="team-odd"', 'class="score-odd"', 1)
 
 
 def _next_goal_line(match: LiveMatch) -> str:
@@ -1929,6 +1934,14 @@ _LIVE_CSS = """
     max-width: 100%;
   }
   .team.away .name { flex-direction: row-reverse; }
+  .team-odd, .score-odd {
+    display: block;
+    margin-top: 2px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.92rem;
+  }
+  .score-odd { text-align: center; }
   .logo {
     width: 28px;
     height: 28px;
@@ -2164,11 +2177,13 @@ def _match_card(
       {_img(match.home_logo, match.home)}
       <div class="team-text">
         <span class="name">{home}{_reds(match.home_reds)}</span>
+        {_opening_price(match, "home")}
         {_formation(match.home_formation)}
       </div>
     </div>
     <div class="scoreblock">
       <div class="score">{_score(match.goals_home)}–{_score(match.goals_away)}</div>
+      {_opening_draw(match)}
       <div class="meta" title="{long_status}">
         {kickoff_html}<span class="clock">{clock}</span>
         <span class="status">{status}</span>
@@ -2178,6 +2193,7 @@ def _match_card(
       {_img(match.away_logo, match.away)}
       <div class="team-text">
         <span class="name">{_reds(match.away_reds)}{away}</span>
+        {_opening_price(match, "away")}
         {_formation(match.away_formation)}
       </div>
     </div>
@@ -2186,7 +2202,6 @@ def _match_card(
   {_facts(match)}
   {_stats_line(match)}
   {_form_line(match)}
-  {_prematch_line(match)}
   {_next_goal_line(match)}
   </a>
   {bet_block}
