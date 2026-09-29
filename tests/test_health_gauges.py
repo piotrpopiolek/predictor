@@ -56,6 +56,25 @@ def test_render_metrics_includes_live_poll_interval() -> None:
     assert "467.676" in body
 
 
+def test_render_metrics_includes_live_budget_gauges() -> None:
+    body = render_metrics(
+        environment="local",
+        lock_held=True,
+        task_counts={},
+        detail_refresh_seconds=844,
+        context_call_cap=2.5,
+        quota_overloaded=1,
+        quota_allowed_per_minute=3.25,
+    )
+    assert "predictor_detail_refresh_seconds" in body
+    assert "844" in body
+    assert "predictor_context_call_cap" in body
+    assert "2.5" in body
+    assert "predictor_quota_overloaded" in body
+    assert "predictor_quota_allowed_per_minute" in body
+    assert "3.25" in body
+
+
 def test_render_metrics_includes_quota_seconds_until_reset() -> None:
     body = render_metrics(
         environment="local",

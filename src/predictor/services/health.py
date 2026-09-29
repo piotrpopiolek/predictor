@@ -222,18 +222,36 @@ async def scrape_gauges(engine: AsyncEngine) -> dict[str, float]:
         "quota_remaining": float(remaining),
         "quota_used": float(used),
         "score_poll_seconds": _score_poll_seconds(quota_params),
+        "detail_refresh_seconds": _non_negative_float(
+            quota_params, "detail_refresh_seconds"
+        ),
+        "context_call_cap": _non_negative_float(quota_params, "context_call_cap"),
+        "quota_overloaded": _flag(quota_params, "overloaded"),
+        "quota_allowed_per_minute": _non_negative_float(
+            quota_params, "allowed_per_minute"
+        ),
     }
 
 
 def _score_poll_seconds(params: dict[str, Any] | None) -> float:
+    return _non_negative_float(params, "score_poll_seconds")
+
+
+def _non_negative_float(params: dict[str, Any] | None, key: str) -> float:
     if not params:
         return 0.0
-    raw = params.get("score_poll_seconds")
+    raw = params.get(key)
     try:
         value = float(raw) if raw is not None else 0.0
     except (TypeError, ValueError):
         return 0.0
     return value if value > 0 else 0.0
+
+
+def _flag(params: dict[str, Any] | None, key: str) -> float:
+    if not params or key not in params:
+        return 0.0
+    return 1.0 if params.get(key) else 0.0
 
 
 def _holder_payload(holder: HolderInfo | None) -> dict[str, Any]:

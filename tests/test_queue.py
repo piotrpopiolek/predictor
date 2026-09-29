@@ -12,7 +12,10 @@ from predictor.models.fixtures import Fixture
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.fixtures import FixtureItem
 from predictor.schemas.settings import load_settings
-from predictor.services.ingest.fixtures import count_matches_left_today
+from predictor.services.ingest.fixtures import (
+    count_matches_left_today,
+    forecast_day_load,
+)
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.queue import (
     claim_live_fixture_task,
@@ -282,6 +285,69 @@ async def test_count_matches_left_today_skips_finished() -> None:
                 )
                 await session.execute(
                     delete(Fixture).where(Fixture.id.in_((open_id, done_id)))
+                )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_forecast_day_load_skips_expired_windows_and_in_play() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    now = datetime(2026, 9, 24, 18, 0, tzinfo=UTC)
+    future_id = 92094
+    expired_id = 92095
+    live_id = 92096
+    try:
+        before = await forecast_day_load(factory, now)
+        async with factory() as session:
+            async with session.begin():
+                await upsert_fixtures(
+                    session,
+                    [
+                        FixtureItem.model_validate(
+                            _fixture_payload(
+                                future_id,
+                                kickoff=now + timedelta(hours=1),
+                                status="NS",
+                                home_id=41,
+                                away_id=42,
+                            )
+                        ),
+                        FixtureItem.model_validate(
+                            _fixture_payload(
+                                expired_id,
+                                kickoff=now - timedelta(hours=3),
+                                status="NS",
+                                home_id=43,
+                                away_id=44,
+                            )
+                        ),
+                        FixtureItem.model_validate(
+                            _fixture_payload(
+                                live_id,
+                                kickoff=now - timedelta(minutes=30),
+                                status="1H",
+                                home_id=45,
+                                away_id=46,
+                            )
+                        ),
+                    ],
+                )
+        after = await forecast_day_load(factory, now)
+        assert after.matches == before.matches + 1
+    finally:
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(EtlTask).where(
+                        EtlTask.fixture_id.in_((future_id, expired_id, live_id))
+                    )
+                )
+                await session.execute(
+                    delete(Fixture).where(
+                        Fixture.id.in_((future_id, expired_id, live_id))
+                    )
                 )
         await engine.dispose()
 

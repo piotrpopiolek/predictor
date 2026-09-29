@@ -168,7 +168,7 @@ async def test_matches_left_today_feeds_the_budget(valid_env: None) -> None:
             )
 
     async def left() -> int:
-        return 40
+        return 800
 
     called = {"history": 0}
 
@@ -263,7 +263,7 @@ async def test_scheduler_logs_when_live_interval_must_stretch(
     with caplog.at_level("WARNING"):
         await scheduler._tick(asyncio.Event())
     assert "live_freshness_missed" in caplog.text
-    assert scheduler.live_interval_seconds == 900.0
+    assert scheduler.live_interval_seconds == 3600.0
 
 
 @pytest.mark.asyncio
@@ -320,9 +320,9 @@ async def test_tick_stops_when_a_handler_hits_the_daily_limit(valid_env: None) -
 
     class _Client:
         quota = QuotaSnapshot(
-            current=100,
+            current=2500,
             limit_day=7500,
-            remaining=50,
+            remaining=5000,
             fetched_at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
             source="api",
         )
@@ -341,4 +341,107 @@ async def test_tick_stops_when_a_handler_hits_the_daily_limit(valid_env: None) -
     await scheduler._tick(asyncio.Event())
     assert called == [1]
     assert scheduler.quota is not None
-    assert scheduler.quota.remaining == 50
+    assert scheduler.quota.remaining == 5000
+
+
+@pytest.mark.asyncio
+async def test_planning_uses_newer_client_headers(valid_env: None) -> None:
+    start = datetime(2026, 9, 26, 18, 0, tzinfo=UTC)
+    calls = {"status": 0}
+
+    class _Client:
+        quota = QuotaSnapshot(
+            current=7420,
+            limit_day=7500,
+            remaining=80,
+            fetched_at=start + timedelta(seconds=1),
+            source="api",
+        )
+
+        async def get_status(self) -> QuotaSnapshot:
+            calls["status"] += 1
+            return QuotaSnapshot(
+                current=500,
+                limit_day=7500,
+                remaining=7000,
+                fetched_at=start,
+                source="api",
+            )
+
+    called = {"history": 0, "odds": 0}
+
+    async def history() -> None:
+        called["history"] += 1
+
+    async def odds_live() -> None:
+        called["odds"] += 1
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        cast(Any, _Client()),
+        _unused_factory(),
+        handlers={4: odds_live, 8: history},
+        now_fn=lambda: start,
+        live_match_count=lambda: 30,
+        status_refresh_seconds=3600,
+    )
+    scheduler._quota = QuotaSnapshot(
+        current=500,
+        limit_day=7500,
+        remaining=7000,
+        fetched_at=start,
+        source="api",
+    )
+    await scheduler._tick(asyncio.Event())
+    assert calls["status"] == 0
+    assert called == {"history": 0, "odds": 0}
+    assert scheduler._plan is not None
+    assert scheduler._plan.overloaded is True
+
+
+@pytest.mark.asyncio
+async def test_overload_blocks_lower_priorities_until_the_slate_shrinks(
+    valid_env: None,
+) -> None:
+    start = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
+    board = {"live": 400}
+
+    class _Client:
+        async def get_status(self) -> QuotaSnapshot:
+            return QuotaSnapshot(
+                current=0,
+                limit_day=7500,
+                remaining=7500,
+                fetched_at=start,
+                source="api",
+            )
+
+    called: list[int] = []
+
+    async def history() -> None:
+        called.append(8)
+
+    async def odds_live() -> None:
+        called.append(4)
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        cast(Any, _Client()),
+        _unused_factory(),
+        handlers={4: odds_live, 8: history},
+        now_fn=lambda: start,
+        live_match_count=lambda: board["live"],
+    )
+    await scheduler._tick(asyncio.Event())
+    assert called == []
+    assert scheduler._plan is not None
+    assert scheduler._plan.overloaded is True
+
+    board["live"] = 1
+    scheduler._quota = None
+    await scheduler._tick(asyncio.Event())
+    assert 8 in called
+    assert scheduler._plan is not None
+    assert scheduler._plan.overloaded is False

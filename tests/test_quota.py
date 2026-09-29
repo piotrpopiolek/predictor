@@ -6,11 +6,16 @@ import pytest
 
 from predictor.client.quota import QuotaSnapshot
 from predictor.services.quota import (
+    ContextCredit,
+    DayLoadForecast,
+    KickoffLoad,
+    context_allowance,
     live_poll_interval_gauge,
     live_poll_interval_seconds,
     plan_live_budget,
     quota_allows,
     quota_gauges_from_params,
+    safety_buffer_requests,
     seconds_until_utc_midnight,
 )
 
@@ -25,7 +30,8 @@ def test_history_stops_when_live_reserve_is_touched() -> None:
     now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     snap = QuotaSnapshot(current=7100, limit_day=7500, remaining=400, source="api")
     plan = _plan(30, snap.remaining, now)
-    assert plan.full_reserve > 400
+    assert plan.overloaded is True
+    assert plan.full_reserve >= 400
     assert quota_allows(1, snap, plan) is True
     assert quota_allows(2, snap, plan) is True
     assert quota_allows(5, snap, plan) is False
@@ -47,16 +53,19 @@ def test_surplus_allows_history_and_five_minute_details() -> None:
 def test_tight_reserve_slows_details_and_drops_oneshots() -> None:
     now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     plan = _plan(30, 400, now)
-    assert plan.detail_refresh_seconds == 900
-    assert plan.oneshot_calls == 12
+    assert plan.detail_refresh_seconds == 844
+    assert plan.oneshot_calls == 0
+    assert plan.overloaded is True
     assert plan.score_poll_seconds == 60.0
 
 
 def test_oneshots_stop_when_score_reserve_is_the_whole_budget() -> None:
     now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     plan = _plan(30, 200, now)
-    assert plan.score_need > 200
+    assert plan.score_need == 144
+    assert plan.detail_need == 56
     assert plan.oneshot_calls == 0
+    assert plan.overloaded is True
 
 
 def test_matches_still_to_play_today_are_reserved_before_kickoff() -> None:
@@ -69,11 +78,17 @@ def test_matches_still_to_play_today_are_reserved_before_kickoff() -> None:
         target_seconds=60,
     )
     assert plan.detail_need == 40 * 2 * 12
-    assert plan.odds_need > 0
+    assert plan.score_need == 288
+    assert plan.odds_need == 120
+    assert plan.detail_refresh_seconds == 300
     assert plan.score_poll_seconds == 300.0
     assert plan.poll_odds is False
+    assert plan.oneshot_calls == 0
+    assert plan.overloaded is False
     snap = QuotaSnapshot(current=5500, limit_day=7500, remaining=2000, source="api")
-    assert quota_allows(8, snap, plan) is False
+    assert quota_allows(8, snap, plan) is True
+    tight = QuotaSnapshot(current=6500, limit_day=7500, remaining=1000, source="api")
+    assert quota_allows(8, tight, plan) is False
     assert quota_allows(2, snap, plan) is True
 
 
@@ -164,3 +179,361 @@ def test_quota_gauges_from_params() -> None:
     remaining, used = quota_gauges_from_params({"remaining": 1200, "current": 6300})
     assert remaining == 1200
     assert used == 6300
+
+
+def test_idle_fresh_start_keeps_the_usable_plan() -> None:
+    now = datetime(2026, 9, 26, 9, 38, tzinfo=UTC)
+    assert safety_buffer_requests(7500, 5) == 375
+    plan = plan_live_budget(
+        live_matches=0,
+        remaining=7500,
+        now=now,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    assert plan.safety_buffer == 375
+    assert 7500 - plan.safety_buffer == 7125
+    assert plan.reserved_calls <= 7125
+
+
+def test_restart_uses_remaining_instead_of_recreating_the_plan() -> None:
+    now = datetime(2026, 9, 26, 15, 0, tzinfo=UTC)
+    plan = plan_live_budget(
+        live_matches=12,
+        remaining=4000,
+        now=now,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    assert plan.safety_buffer == 375
+    assert plan.reserved_calls <= 4000 - 375
+
+
+def test_large_future_slate_does_not_clamp_detail_to_fifteen_minutes() -> None:
+    now = datetime(2026, 9, 26, 9, 38, tzinfo=UTC)
+    later = DayLoadForecast(
+        kickoffs=(KickoffLoad(datetime(2026, 9, 26, 13, 0, tzinfo=UTC), 1000),)
+    )
+    crowded = plan_live_budget(
+        live_matches=40,
+        forecast=later,
+        remaining=6315,
+        now=now,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    assert crowded.overloaded is True
+    assert crowded.detail_refresh_seconds != 900
+    assert crowded.reserved_calls <= 6315 - 375
+    calm = plan_live_budget(
+        live_matches=40,
+        remaining=6315,
+        now=now,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    assert calm.detail_refresh_seconds == 300
+    assert calm.overloaded is False
+
+
+def test_same_budget_changes_with_kickoff_distribution() -> None:
+    now = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
+    short = plan_live_budget(
+        live_matches=0,
+        forecast=DayLoadForecast(
+            kickoffs=(KickoffLoad(datetime(2026, 9, 26, 23, 0, tzinfo=UTC), 80),)
+        ),
+        remaining=7500,
+        now=now,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    full = plan_live_budget(
+        live_matches=0,
+        forecast=DayLoadForecast(
+            kickoffs=(KickoffLoad(datetime(2026, 9, 26, 18, 0, tzinfo=UTC), 80),)
+        ),
+        remaining=7500,
+        now=now,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    assert short.detail_need < full.detail_need
+    assert short.score_need < full.score_need
+
+
+def test_low_day_keeps_five_minute_detail_and_oneshots() -> None:
+    now = datetime(2026, 9, 23, 18, 0, tzinfo=UTC)
+    plan = plan_live_budget(
+        live_matches=5,
+        remaining=7000,
+        now=now,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    assert plan.detail_refresh_seconds == 300
+    assert plan.oneshot_calls == 12
+    assert plan.overloaded is False
+    assert plan.score_poll_seconds == 60.0
+    assert plan.reserved_calls <= 7000 - plan.safety_buffer
+
+
+def test_buffer_blocks_every_priority_including_scores() -> None:
+    now = datetime(2026, 9, 26, 20, 0, tzinfo=UTC)
+    snap = QuotaSnapshot(current=7200, limit_day=7500, remaining=300, source="api")
+    plan = plan_live_budget(
+        live_matches=8,
+        remaining=snap.remaining,
+        now=now,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    assert plan.safety_buffer == 375
+    for priority in range(1, 10):
+        assert quota_allows(priority, snap, plan) is False
+
+
+def test_context_credit_smooths_fractional_ticks_and_respects_room() -> None:
+    credit = ContextCredit()
+    assert context_allowance(credit, 2.5, room=10) == 2
+    assert context_allowance(credit, 2.5, room=10) == 3
+    blocked = ContextCredit()
+    assert context_allowance(blocked, 5, room=0) == 0
+    assert context_allowance(blocked, 5, room=10) == 10
+
+
+def test_heavy_day_simulation_stays_above_the_safety_buffer() -> None:
+    start = datetime(2026, 9, 26, 9, 0, tzinfo=UTC)
+    midnight = datetime(2026, 9, 27, 0, 0, tzinfo=UTC)
+    schedule = (
+        (datetime(2026, 9, 26, 13, 0, tzinfo=UTC), 400),
+        (datetime(2026, 9, 26, 15, 0, tzinfo=UTC), 400),
+        (datetime(2026, 9, 26, 18, 0, tzinfo=UTC), 200),
+    )
+    remaining = 7500
+    buffer = safety_buffer_requests(7500, 5)
+    credit = ContextCredit()
+    now = start
+    steps = 0
+    while now < midnight and steps < 2000:
+        steps += 1
+        live = 0
+        future: list[KickoffLoad] = []
+        for kickoff, count in schedule:
+            if kickoff <= now < kickoff + timedelta(hours=2):
+                live += count
+            elif now < kickoff:
+                future.append(KickoffLoad(kickoff, count))
+        plan = plan_live_budget(
+            live_matches=live,
+            forecast=DayLoadForecast(tuple(future)),
+            remaining=remaining,
+            now=now,
+            target_seconds=60,
+            limit_day=7500,
+            buffer_percent=5,
+        )
+        assert plan.reserved_calls <= max(0, remaining - buffer)
+        if remaining <= buffer:
+            break
+        score = 1 if remaining - 1 >= buffer else 0
+        room = remaining - score - buffer
+        context = context_allowance(
+            credit, plan.context_calls_per_tick, room=max(0, room)
+        )
+        odds = 1 if plan.poll_odds and not plan.overloaded and room - context > 0 else 0
+        spent = score + context + odds
+        assert remaining - spent >= buffer
+        remaining -= spent
+        now += timedelta(seconds=max(1.0, plan.score_poll_seconds))
+    assert remaining >= buffer
+    assert steps < 2000
+
+
+def test_future_slate_does_not_force_the_old_fifteen_minute_ceiling() -> None:
+    now = datetime(2026, 9, 26, 10, 0, tzinfo=UTC)
+    later = datetime(2026, 9, 26, 18, 0, tzinfo=UTC)
+    plan = plan_live_budget(
+        live_matches=40,
+        forecast=DayLoadForecast(kickoffs=(KickoffLoad(later, 800),)),
+        remaining=7500,
+        now=now,
+        target_seconds=60,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    assert plan.detail_refresh_seconds > 300
+    assert plan.detail_refresh_seconds != 900
+    assert plan.overloaded is True
+    assert plan.safety_buffer == 375
+    assert plan.reserved_calls <= 7500 - 375
+
+
+def test_fresh_start_allocates_the_plan_above_the_buffer() -> None:
+    now = datetime(2026, 9, 26, 9, 38, tzinfo=UTC)
+    assert safety_buffer_requests(7500, 5) == 375
+    plan = plan_live_budget(
+        live_matches=40,
+        forecast=DayLoadForecast(
+            kickoffs=(KickoffLoad(datetime(2026, 9, 26, 18, 0, tzinfo=UTC), 800),)
+        ),
+        remaining=7500,
+        now=now,
+        target_seconds=60,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    assert plan.safety_buffer == 375
+    assert plan.reserved_calls <= 7125
+    restart = plan_live_budget(
+        live_matches=40,
+        forecast=DayLoadForecast(
+            kickoffs=(KickoffLoad(datetime(2026, 9, 26, 18, 0, tzinfo=UTC), 800),)
+        ),
+        remaining=4000,
+        now=now,
+        target_seconds=60,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    assert restart.safety_buffer == 375
+    assert restart.reserved_calls <= 4000 - 375
+    assert restart.reserved_calls < plan.reserved_calls
+
+
+def test_same_budget_changes_cap_when_later_kickoffs_change() -> None:
+    now = datetime(2026, 9, 26, 10, 0, tzinfo=UTC)
+    common = {
+        "live_matches": 40,
+        "remaining": 7500,
+        "now": now,
+        "target_seconds": 60,
+        "limit_day": 7500,
+        "buffer_percent": 5,
+    }
+    light = plan_live_budget(
+        **common,
+        forecast=DayLoadForecast(
+            kickoffs=(KickoffLoad(datetime(2026, 9, 26, 18, 0, tzinfo=UTC), 30),)
+        ),
+    )
+    heavy = plan_live_budget(
+        **common,
+        forecast=DayLoadForecast(
+            kickoffs=(KickoffLoad(datetime(2026, 9, 26, 18, 0, tzinfo=UTC), 800),)
+        ),
+    )
+    assert light.detail_refresh_seconds == 300
+    assert light.oneshot_calls == 12
+    assert light.overloaded is False
+    assert heavy.detail_refresh_seconds > light.detail_refresh_seconds
+    assert heavy.context_calls_per_tick < light.context_calls_per_tick
+
+
+def test_light_day_keeps_five_minute_details_and_oneshots() -> None:
+    now = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
+    plan = plan_live_budget(
+        live_matches=8,
+        remaining=7000,
+        now=now,
+        target_seconds=60,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    assert plan.detail_refresh_seconds == 300
+    assert plan.oneshot_calls == 12
+    assert plan.score_poll_seconds == 60.0
+    assert plan.overloaded is False
+    assert plan.poll_odds is True
+
+
+def test_buffer_blocks_work_that_would_spend_it() -> None:
+    now = datetime(2026, 9, 26, 18, 0, tzinfo=UTC)
+    plan = plan_live_budget(
+        live_matches=10,
+        remaining=375,
+        now=now,
+        target_seconds=60,
+        limit_day=7500,
+        buffer_percent=5,
+    )
+    snap = QuotaSnapshot(current=7125, limit_day=7500, remaining=375, source="api")
+    assert plan.safety_buffer == 375
+    for priority in range(1, 10):
+        assert quota_allows(priority, snap, plan) is False
+
+
+def _spend_day(
+    start: datetime,
+    kickoffs: list[tuple[datetime, int]],
+    remaining: int = 7500,
+) -> tuple[int, bool]:
+    credit = ContextCredit()
+    now = start
+    midnight = datetime(start.year, start.month, start.day, tzinfo=UTC) + timedelta(
+        days=1
+    )
+    overloaded = False
+    for _ in range(6000):
+        if now >= midnight:
+            break
+        live = 0
+        future: list[KickoffLoad] = []
+        for kickoff, count in kickoffs:
+            if kickoff <= now < kickoff + timedelta(hours=2):
+                live += count
+            elif kickoff > now:
+                future.append(KickoffLoad(kickoff, count))
+        plan = plan_live_budget(
+            live_matches=live,
+            forecast=DayLoadForecast(tuple(future)),
+            remaining=remaining,
+            now=now,
+            target_seconds=60,
+            limit_day=7500,
+            buffer_percent=5,
+        )
+        overloaded = overloaded or plan.overloaded
+        snap = QuotaSnapshot(
+            current=7500 - remaining,
+            limit_day=7500,
+            remaining=remaining,
+            source="api",
+        )
+        room = remaining - plan.safety_buffer
+        if room <= 0:
+            break
+        score = 1 if quota_allows(2, snap, plan) else 0
+        odds = 1 if quota_allows(4, snap, plan) else 0
+        if score + odds > room:
+            odds = 0
+        context = 0
+        if quota_allows(3, snap, plan):
+            context = context_allowance(
+                credit,
+                plan.context_calls_per_tick,
+                room=room - score - odds,
+            )
+        remaining -= score + odds + context
+        assert remaining >= plan.safety_buffer
+        now += timedelta(seconds=max(1.0, plan.score_poll_seconds))
+    return remaining, overloaded
+
+
+def test_heavy_day_from_a_fresh_plan_stays_above_the_buffer() -> None:
+    day = datetime(2026, 9, 26, tzinfo=UTC)
+    kickoffs = [
+        (day.replace(hour=11), 200),
+        (day.replace(hour=14), 300),
+        (day.replace(hour=16), 300),
+        (day.replace(hour=19), 200),
+    ]
+    from_midnight, overloaded = _spend_day(day, kickoffs)
+    assert overloaded is True
+    assert from_midnight >= 375
+    assert from_midnight < 7500
+    from_midday, midday_overloaded = _spend_day(
+        day.replace(hour=9, minute=38), kickoffs
+    )
+    assert midday_overloaded is True
+    assert from_midday >= 375

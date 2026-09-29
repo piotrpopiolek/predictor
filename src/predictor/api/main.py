@@ -168,8 +168,7 @@ def create_app() -> FastAPI:
             generated_at=datetime.now(UTC),
             title="Następny gol",
             empty=(
-                "Brak meczów, w których faworyt przegrywa "
-                "lub musi odrabiać w dwumeczu."
+                "Brak meczów, w których faworyt przegrywa lub musi odrabiać w dwumeczu."
             ),
             active_nav="next_goal",
             open_bets={fid: bet_as_dict(bet) for fid, bet in open_bets.items()},
@@ -382,6 +381,10 @@ def create_app() -> FastAPI:
             quota_used=used,
             quota_seconds_until_reset=seconds_until_utc_midnight(now),
             live_poll_interval_seconds=interval,
+            detail_refresh_seconds=gauges.get("detail_refresh_seconds", 0.0),
+            context_call_cap=gauges.get("context_call_cap", 0.0),
+            quota_overloaded=gauges.get("quota_overloaded", 0.0),
+            quota_allowed_per_minute=gauges.get("quota_allowed_per_minute", 0.0),
             queue_counts=tuple(queue_rows),
         )
         return PlainTextResponse(

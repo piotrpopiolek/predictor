@@ -25,7 +25,7 @@ from predictor.services.ingest import (
     LiveIngest,
     PrematchIngest,
 )
-from predictor.services.ingest.fixtures import count_matches_left_today
+from predictor.services.ingest.fixtures import forecast_day_load
 from predictor.services.lock import LockBusyError, WriterLock, lock_busy_message
 from predictor.services.queue import (
     ensure_cursors,
@@ -99,12 +99,15 @@ async def run_locked_loop(
         gate = LiveSpendGate()
 
         async def priority_three() -> None:
-            live.finishing_fixture_ids = await live_context.refresh(
+            tick = await live_context.refresh(
                 live.last_live_fixture_ids,
                 finishing_ids=live.finishing_fixture_ids,
                 detail_refresh_seconds=gate.detail_refresh_seconds,
                 oneshot_calls=gate.oneshot_calls,
+                max_context_calls=gate.max_context_calls,
             )
+            live.finishing_fixture_ids = tick.finishing_ids
+            gate.spent_calls = tick.calls
 
         async def priority_four() -> None:
             await live.refresh_next_goal_snapshots()
@@ -118,7 +121,8 @@ async def run_locked_loop(
             client,
             session_factory,
             live_match_count=lambda: len(live.last_live_fixture_ids),
-            matches_left_today=lambda: count_matches_left_today(
+            finishing_match_count=lambda: len(live.finishing_fixture_ids),
+            matches_left_today=lambda: forecast_day_load(
                 session_factory, datetime.now(UTC)
             ),
             gate=gate,

@@ -51,8 +51,18 @@ def context_call_budget(
     hard_cap: int,
 ) -> int:
     """Ceiling for one tick: due match refreshes plus a short one-shot tail."""
+    if hard_cap <= 0:
+        return 0
     needed = max(0, detail_calls) + max(0, oneshot_calls)
-    return max(1, min(hard_cap, needed))
+    return min(hard_cap, needed)
+
+
+@dataclass(frozen=True, slots=True)
+class LiveContextResult:
+    """Finishing matches still open, and vendor calls spent this tick."""
+
+    finishing_ids: list[int]
+    calls: int
 
 
 def detail_refresh_due(
@@ -83,6 +93,46 @@ def detail_refresh_due(
     if last is None:
         return True
     return (now - last).total_seconds() >= refresh_seconds
+
+
+_LATE_FIRST_HALF_MINUTE = 40
+
+
+def detail_service_order(
+    rows: Sequence[tuple[int, str | None, int | None, datetime | None]],
+    *,
+    now: datetime,
+    refresh_seconds: int,
+    cursor: int = 0,
+) -> list[int]:
+    """Prefer halftime and a late first half, then the stalest detail.
+
+    The freshness bonus is one refresh interval, so a match left untouched
+    for longer than that still moves ahead of a recently fetched favourite.
+    Equal ages rotate with ``cursor`` so the same id is not always first.
+    """
+    bonus_window = float(max(1, refresh_seconds))
+    indexed = list(enumerate(rows))
+    count = len(indexed)
+
+    def key(
+        item: tuple[int, tuple[int, str | None, int | None, datetime | None]],
+    ) -> tuple[float, int, int]:
+        index, row = item
+        fixture_id, status, elapsed, last = row
+        if last is None:
+            age = bonus_window * 4
+        else:
+            age = max(0.0, (now - last).total_seconds())
+        bonus = 0.0
+        if status == "HT":
+            bonus = bonus_window
+        elif status == "1H" and int(elapsed or 0) >= _LATE_FIRST_HALF_MINUTE:
+            bonus = bonus_window / 2
+        rotate = (index - cursor) % count if count else 0
+        return (-(age + bonus), rotate, fixture_id)
+
+    return [row[0] for _, row in sorted(indexed, key=key)]
 
 
 def deadline_order(
@@ -162,47 +212,52 @@ class LiveContextIngest:
         finishing_ids: Sequence[int] | None = None,
         detail_refresh_seconds: int = LIVE_DETAIL_REFRESH_SECONDS,
         oneshot_calls: int = LIVE_CONTEXT_ONESHOT_CALLS,
-    ) -> list[int]:
+        max_context_calls: int | None = None,
+    ) -> LiveContextResult:
         live = _unique(live_ids)
         live_set = set(live)
         finishing = [fid for fid in _unique(finishing_ids or []) if fid not in live_set]
         if not live and not finishing:
-            return []
+            return LiveContextResult(finishing_ids=[], calls=0)
         await self._enqueue([*finishing, *live])
-        spend = _Spend(
-            started=self._now(),
-            max_calls=context_call_budget(
+        if max_context_calls is None:
+            cap = context_call_budget(
                 detail_calls=LIVE_CONTEXT_DETAIL_CALLS + LIVE_CONTEXT_FINAL_CALLS,
                 oneshot_calls=oneshot_calls,
                 hard_cap=self._max_calls,
-            ),
+            )
+        else:
+            cap = max(0, min(self._max_calls, max_context_calls))
+        spend = _Spend(
+            started=self._now(),
+            max_calls=cap,
             target=self._target_seconds,
             fraction=self._time_fraction,
             now_fn=self._now,
             quota_fn=self._quota_left,
         )
-        urgent, later = await self._deadline_groups(live)
-        oneshot_left = oneshot_calls
-        for stage in ("odds", "predictions", "rest"):
-            for group in (urgent, later, finishing):
-                if group and spend.left() and oneshot_left:
-                    oneshot_left = await self._drain(
-                        group, spend, limit=oneshot_left, stage=stage
-                    )
         await self._refresh_details(
             live,
             spend,
             final=False,
-            limit=LIVE_CONTEXT_DETAIL_CALLS,
+            limit=min(LIVE_CONTEXT_DETAIL_CALLS, cap),
             refresh_seconds=detail_refresh_seconds,
         )
         await self._refresh_details(
             finishing,
             spend,
             final=True,
-            limit=LIVE_CONTEXT_FINAL_CALLS,
+            limit=min(LIVE_CONTEXT_FINAL_CALLS, max(0, cap - spend.calls)),
             refresh_seconds=detail_refresh_seconds,
         )
+        urgent, later = await self._deadline_groups(live)
+        oneshot_left = min(max(0, oneshot_calls), max(0, cap - spend.calls))
+        for stage in ("odds", "predictions", "rest"):
+            for group in (urgent, later, finishing):
+                if group and spend.left() and oneshot_left:
+                    oneshot_left = await self._drain(
+                        group, spend, limit=oneshot_left, stage=stage
+                    )
         still = await self._prune_finishing(finishing)
         log_json(
             logging.INFO,
@@ -211,8 +266,9 @@ class LiveContextIngest:
             calls=spend.calls,
             live=len(live),
             finishing=len(still),
+            cap=cap,
         )
-        return still
+        return LiveContextResult(finishing_ids=still, calls=spend.calls)
 
     async def _deadline_groups(
         self, fixture_ids: list[int]
@@ -303,18 +359,22 @@ class LiveContextIngest:
         limit: int,
         refresh_seconds: int = LIVE_DETAIL_REFRESH_SECONDS,
     ) -> None:
-        if not live_ids or limit <= 0:
+        if not live_ids or limit <= 0 or not spend.left():
             return
         state = await self._detail_state(live_ids)
-        start = self._detail_cursor % len(live_ids)
-        ordered = live_ids[start:] + live_ids[:start]
-        visited = 0
+        ordered = detail_service_order(
+            [_detail_row(fixture_id, state.get(fixture_id)) for fixture_id in live_ids],
+            now=self._now(),
+            refresh_seconds=refresh_seconds,
+            cursor=0 if final else self._detail_cursor,
+        )
         fetched = 0
         for fixture_id in ordered:
             if not spend.left() or fetched >= limit:
                 break
-            visited += 1
-            task_status, params, match_status = state.get(fixture_id, (None, {}, None))
+            task_status, params, match_status, _elapsed = state.get(
+                fixture_id, (None, {}, None, None)
+            )
             if not detail_refresh_due(
                 task_status=task_status,
                 params=params,
@@ -333,17 +393,21 @@ class LiveContextIngest:
                 spend.take()
                 fetched += 1
         if not final:
-            self._detail_cursor = (start + visited) % len(live_ids)
+            self._detail_cursor = (self._detail_cursor + max(1, fetched)) % len(
+                live_ids
+            )
 
     async def _detail_state(
         self, fixture_ids: list[int]
-    ) -> dict[int, tuple[str | None, dict[str, Any], str | None]]:
+    ) -> dict[int, tuple[str | None, dict[str, Any], str | None, int | None]]:
         async with self._session_factory() as session:
             fixtures = (
                 await session.execute(
-                    select(Fixture.id, Fixture.status_short).where(
-                        Fixture.id.in_(fixture_ids)
-                    )
+                    select(
+                        Fixture.id,
+                        Fixture.status_short,
+                        Fixture.elapsed_minutes,
+                    ).where(Fixture.id.in_(fixture_ids))
                 )
             ).all()
             tasks = (
@@ -354,16 +418,24 @@ class LiveContextIngest:
                     .where(EtlTask.cursor_kind.is_(None))
                 )
             ).all()
-        state: dict[int, tuple[str | None, dict[str, Any], str | None]] = {
-            int(fixture_id): (None, {}, None if status is None else str(status))
-            for fixture_id, status in fixtures
+        state: dict[int, tuple[str | None, dict[str, Any], str | None, int | None]] = {
+            int(fixture_id): (
+                None,
+                {},
+                None if status is None else str(status),
+                None if elapsed is None else int(elapsed),
+            )
+            for fixture_id, status, elapsed in fixtures
         }
         for fixture_id, task_status, params in tasks:
-            match_status = state.get(int(fixture_id), (None, {}, None))[2]
+            match_status, elapsed = state.get(int(fixture_id), (None, {}, None, None))[
+                2:
+            ]
             state[int(fixture_id)] = (
                 None if task_status is None else str(task_status),
                 dict(params or {}),
                 match_status,
+                elapsed,
             )
         return state
 
@@ -535,6 +607,19 @@ class _Spend:
 
     def take(self) -> None:
         self.calls += 1
+
+
+def _detail_row(
+    fixture_id: int,
+    stored: tuple[str | None, dict[str, Any], str | None, int | None] | None,
+) -> tuple[int, str | None, int | None, datetime | None]:
+    if stored is None:
+        return fixture_id, None, None, None
+    _task_status, params, match_status, elapsed = stored
+    raw = (params or {}).get("last_live_detail_at") or (params or {}).get(
+        "ft_refresh_at"
+    )
+    return fixture_id, match_status, elapsed, _parse_stamp(raw)
 
 
 def _parse_stamp(raw: object) -> datetime | None:

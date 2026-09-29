@@ -23,6 +23,7 @@ from predictor.services.ingest.live_context import (
     context_call_budget,
     deadline_order,
     detail_refresh_due,
+    detail_service_order,
 )
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.ingest.prematch import PrematchIngest
@@ -36,6 +37,35 @@ FID_OTHER = 93022
 class WaitZero(wait_base):
     def __call__(self, retry_state: RetryCallState) -> float:
         return 0.0
+
+
+def test_detail_service_order_prefers_halftime_without_starving_stale_matches() -> None:
+    now = datetime(2026, 9, 22, 18, 0, tzinfo=UTC)
+    fresh = now - timedelta(seconds=30)
+    stale = now - timedelta(minutes=20)
+    ordered = detail_service_order(
+        [
+            (1, "2H", 70, fresh),
+            (2, "HT", 45, fresh),
+            (3, "1H", 42, fresh),
+            (4, "2H", 80, stale),
+        ],
+        now=now,
+        refresh_seconds=300,
+    )
+    assert ordered[:2] == [4, 2]
+    again = detail_service_order(
+        [
+            (4, "2H", 80, now),
+            (1, "2H", 70, fresh),
+        ],
+        now=now,
+        refresh_seconds=300,
+    )
+    assert again == [1, 4]
+    tied = [(1, "2H", 70, fresh), (2, "2H", 70, fresh)]
+    assert detail_service_order(tied, now=now, refresh_seconds=300, cursor=0)[0] == 1
+    assert detail_service_order(tied, now=now, refresh_seconds=300, cursor=1)[0] == 2
 
 
 def test_deadline_order_puts_halftime_before_late_first_half() -> None:
@@ -53,6 +83,8 @@ def test_deadline_order_puts_halftime_before_late_first_half() -> None:
 def test_context_call_budget_caps_detail_and_oneshots() -> None:
     assert context_call_budget(detail_calls=40, oneshot_calls=12, hard_cap=80) == 52
     assert context_call_budget(detail_calls=40, oneshot_calls=12, hard_cap=30) == 30
+    assert context_call_budget(detail_calls=0, oneshot_calls=0, hard_cap=10) == 0
+    assert context_call_budget(detail_calls=4, oneshot_calls=2, hard_cap=0) == 0
 
 
 def test_detail_refresh_waits_five_minutes_then_closes_once() -> None:
@@ -155,6 +187,92 @@ def test_context_budget_stops_on_calls_time_and_quota() -> None:
 
 
 @pytest.mark.asyncio
+async def test_refresh_fetches_detail_before_oneshots_and_obeys_the_cap() -> None:
+    from types import SimpleNamespace
+
+    events: list[tuple[object, ...]] = []
+    context = LiveContextIngest(
+        cast_factory(),
+        enrichment=SimpleNamespace(_client=SimpleNamespace(quota=None)),  # type: ignore[arg-type]
+        prematch=SimpleNamespace(),  # type: ignore[arg-type]
+        global_ingest=SimpleNamespace(),  # type: ignore[arg-type]
+        fixtures=SimpleNamespace(),  # type: ignore[arg-type]
+        now_fn=lambda: NOW,
+        target_seconds=60,
+        max_calls=30,
+    )
+
+    async def enqueue(_ids: list[int]) -> None:
+        return None
+
+    async def details(
+        _ids: list[int],
+        spend: object,
+        *,
+        final: bool,
+        limit: int,
+        refresh_seconds: int,
+    ) -> None:
+        del refresh_seconds
+        if not spend.left() or limit <= 0:  # type: ignore[attr-defined]
+            return
+        events.append(("final" if final else "detail", limit))
+        steps = min(limit, 1 if final else 3)
+        for _ in range(steps):
+            if not spend.left():  # type: ignore[attr-defined]
+                break
+            spend.take()  # type: ignore[attr-defined]
+
+    async def groups(_ids: list[int]) -> tuple[list[int], list[int]]:
+        return [1], [2]
+
+    async def drain(
+        _ids: list[int],
+        spend: object,
+        *,
+        limit: int,
+        stage: str,
+    ) -> int:
+        events.append(("oneshot", stage, limit))
+        if limit > 0 and spend.left():  # type: ignore[attr-defined]
+            spend.take()  # type: ignore[attr-defined]
+            return limit - 1
+        return limit
+
+    async def prune(ids: list[int]) -> list[int]:
+        return list(ids)
+
+    context._enqueue = enqueue  # type: ignore[method-assign]
+    context._refresh_details = details  # type: ignore[method-assign]
+    context._deadline_groups = groups  # type: ignore[method-assign]
+    context._drain = drain  # type: ignore[method-assign]
+    context._prune_finishing = prune  # type: ignore[method-assign]
+
+    stopped = await context.refresh(
+        [1, 2],
+        finishing_ids=[9],
+        max_context_calls=0,
+        oneshot_calls=12,
+    )
+    assert stopped.calls == 0
+    assert events == []
+
+    paced = await context.refresh(
+        [1, 2],
+        finishing_ids=[9],
+        max_context_calls=5,
+        oneshot_calls=12,
+    )
+    assert [item[0] for item in events] == ["detail", "final", "oneshot"]
+    assert paced.calls == 5
+    assert paced.finishing_ids == [9]
+
+
+def cast_factory() -> object:
+    return object()
+
+
+@pytest.mark.asyncio
 async def test_live_context_prefers_live_fixture_and_retries_empty_odds() -> None:
     settings = load_settings()
     seen: list[str] = []
@@ -203,6 +321,18 @@ async def test_live_context_prefers_live_fixture_and_retries_empty_odds() -> Non
                     )
                 )
                 await upsert_fixtures(session, [other, live])
+                session.add(
+                    EtlTask(
+                        endpoint="/fixtures",
+                        fixture_id=FID_LIVE,
+                        params={
+                            "id": FID_LIVE,
+                            "last_live_detail_at": NOW.isoformat(),
+                        },
+                        status="complete",
+                        completed_at=NOW,
+                    )
+                )
                 session.add(
                     EtlTask(
                         endpoint="/odds",

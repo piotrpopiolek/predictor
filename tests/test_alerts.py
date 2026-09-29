@@ -98,6 +98,10 @@ def test_provisioned_grafana_dashboards() -> None:
             assert "predictor_quota_used" in joined
             assert "deriv(predictor_quota_remaining" in joined
             assert "predictor_quota_seconds_until_reset" in joined
+            assert "predictor_quota_overloaded" in joined
+            assert "predictor_context_call_cap" in joined
+            assert "predictor_detail_refresh_seconds" in joined
+            assert "predictor_quota_allowed_per_minute" in joined
             assert "time() % 86400" not in joined
             percent = next(
                 str(t.get("expr", ""))

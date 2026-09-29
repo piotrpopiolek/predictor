@@ -32,6 +32,10 @@ def render_metrics(
     quota_used: int = 0,
     quota_seconds_until_reset: float = 0,
     live_poll_interval_seconds: float = 60,
+    detail_refresh_seconds: float = 0,
+    context_call_cap: float = 0,
+    quota_overloaded: float = 0,
+    quota_allowed_per_minute: float = 0,
     queue_counts: tuple[tuple[str, str, int], ...] = (),
 ) -> str:
     labels = f'service="status",environment="{environment}"'
@@ -96,6 +100,30 @@ def render_metrics(
             "predictor_live_poll_interval_seconds{"
             f"{labels}}} {live_poll_interval_seconds}"
         ),
+        (
+            "# HELP predictor_detail_refresh_seconds "
+            "Planned seconds between live match detail fetches."
+        ),
+        "# TYPE predictor_detail_refresh_seconds gauge",
+        f"predictor_detail_refresh_seconds{{{labels}}} {detail_refresh_seconds}",
+        (
+            "# HELP predictor_context_call_cap "
+            "Planned live-context calls per scheduler tick."
+        ),
+        "# TYPE predictor_context_call_cap gauge",
+        f"predictor_context_call_cap{{{labels}}} {context_call_cap}",
+        (
+            "# HELP predictor_quota_overloaded "
+            "1 when detail or odds no longer fit above the safety buffer."
+        ),
+        "# TYPE predictor_quota_overloaded gauge",
+        f"predictor_quota_overloaded{{{labels}}} {quota_overloaded}",
+        (
+            "# HELP predictor_quota_allowed_per_minute "
+            "Score plus live-context calls the pacer allows per minute."
+        ),
+        "# TYPE predictor_quota_allowed_per_minute gauge",
+        (f"predictor_quota_allowed_per_minute{{{labels}}} {quota_allowed_per_minute}"),
         "# HELP predictor_etl_tasks Number of etl_tasks by status.",
         "# TYPE predictor_etl_tasks gauge",
     ]

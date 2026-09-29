@@ -3,7 +3,7 @@
   "title": "Quota usage",
   "timezone": "utc",
   "schemaVersion": 39,
-  "version": 3,
+  "version": 4,
   "refresh": "30s",
   "tags": ["predictor", "quota"],
   "time": {"from": "now-6h", "to": "now"},
@@ -197,6 +197,129 @@
           "expr": "(predictor_quota_remaining * 60 / clamp_min(predictor_quota_seconds_until_reset, 1)) and on() (predictor_quota_remaining >= 0)",
           "legendFormat": "sustainable to 00:00 UTC",
           "refId": "C"
+        },
+        {
+          "expr": "predictor_quota_allowed_per_minute",
+          "legendFormat": "allowed by pacer",
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Budget mode",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "normal", "color": "green"}}},
+            {"type": "value", "options": {"1": {"text": "overloaded", "color": "red"}}}
+          ],
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {"expr": "predictor_quota_overloaded", "refId": "A", "instant": true}
+      ]
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "P3 cap (calls/tick)",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "blue", "value": null}]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {"expr": "predictor_context_call_cap", "refId": "A", "instant": true}
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Detail interval",
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 301},
+              {"color": "red", "value": 901}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "expr": "predictor_detail_refresh_seconds",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Allowed (req/min)",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "expr": "predictor_quota_allowed_per_minute",
+          "refId": "A",
+          "instant": true
         }
       ]
     }

@@ -23,11 +23,16 @@ from predictor.schemas.settings import Settings
 from predictor.services.completeness import write_daily_report
 from predictor.services.queue import ensure_cursors
 from predictor.services.quota import (
+    ContextCredit,
+    DayLoadForecast,
+    KickoffLoad,
     LiveBudgetPlan,
     LiveSpendGate,
+    context_allowance,
     persist_quota_snapshot,
     plan_live_budget,
     quota_allows,
+    refund_context_credit,
     seconds_until_utc_midnight,
 )
 
@@ -81,7 +86,9 @@ class Scheduler:
         status_refresh_seconds: float = STATUS_REFRESH_SECONDS,
         now_fn: Callable[[], datetime] | None = None,
         live_match_count: Callable[[], int] | None = None,
-        matches_left_today: Callable[[], Awaitable[int]] | None = None,
+        matches_left_today: Callable[[], Awaitable[int | DayLoadForecast]]
+        | None = None,
+        finishing_match_count: Callable[[], int] | None = None,
         gate: LiveSpendGate | None = None,
     ) -> None:
         self._settings = settings
@@ -93,9 +100,13 @@ class Scheduler:
         self._now = now_fn or (lambda: datetime.now(UTC))
         self._live_match_count = live_match_count or (lambda: 0)
         self._matches_left_today = matches_left_today
+        self._finishing_match_count = finishing_match_count or (lambda: 0)
         self._left_today: int | None = None
+        self._forecast: DayLoadForecast | None = None
         self._gate = gate or LiveSpendGate()
+        self._credit = ContextCredit()
         self._quota: QuotaSnapshot | None = None
+        self._plan: LiveBudgetPlan | None = None
         self._live_interval_seconds: float | None = None
 
     @property
@@ -120,7 +131,7 @@ class Scheduler:
             return
         try:
             await self._maybe_daily_report()
-            quota = await self._ensure_quota()
+            quota = self._prefer_observed(await self._ensure_quota())
             self._quota = quota
             if quota.source == "api" and quota.remaining <= 0:
                 await self._persist_cursors()
@@ -133,7 +144,7 @@ class Scheduler:
                 return
             await self._refresh_matches_left()
             target = float(self._settings.live_poll_target_seconds)
-            plan = self._apply_budget(quota.remaining)
+            plan = self._apply_budget(quota)
             if plan.score_poll_seconds > target and self._live_match_count() > 0:
                 log_json(
                     logging.WARNING,
@@ -147,7 +158,9 @@ class Scheduler:
             for slot in PRIORITY_ORDER:
                 if stop.is_set():
                     return
-                plan = self._apply_budget(quota.remaining)
+                quota = self._prefer_observed(quota)
+                self._quota = quota
+                plan = self._apply_budget(quota)
                 if not quota_allows(slot.priority, quota, plan):
                     continue
                 # P1–P3 always (dictionaries, live scores, live context).
@@ -156,6 +169,18 @@ class Scheduler:
                     elapsed = (self._now() - tick_start).total_seconds()
                     if elapsed >= target:
                         break
+                allowance = 0
+                if slot.priority == 3:
+                    room = quota.remaining - plan.safety_buffer - 1
+                    allowance = context_allowance(
+                        self._credit,
+                        plan.context_calls_per_tick,
+                        room=max(0, room),
+                    )
+                    self._gate.max_context_calls = allowance
+                    self._gate.spent_calls = 0
+                    if allowance <= 0:
+                        continue
                 handler = self._handlers.get(slot.priority, _noop)
                 try:
                     await handler()
@@ -164,6 +189,14 @@ class Scheduler:
                     if fresh is not None:
                         self._quota = fresh
                     break
+                finally:
+                    if slot.priority == 3 and allowance > 0:
+                        unused = allowance - max(0, self._gate.spent_calls)
+                        refund_context_credit(
+                            self._credit,
+                            unused,
+                            plan.context_calls_per_tick,
+                        )
         finally:
             await self._persist_quota()
 
@@ -180,10 +213,21 @@ class Scheduler:
         try:
             async with session_cm as session:
                 async with session.begin():
+                    plan = self._plan
                     await persist_quota_snapshot(
                         session,
                         snapshot,
                         score_poll_seconds=self._live_interval_seconds,
+                        detail_refresh_seconds=(
+                            None if plan is None else plan.detail_refresh_seconds
+                        ),
+                        context_call_cap=(
+                            None if plan is None else plan.context_calls_per_tick
+                        ),
+                        overloaded=None if plan is None else plan.overloaded,
+                        allowed_per_minute=(
+                            None if plan is None else plan.allowed_per_minute
+                        ),
                     )
         except (TypeError, AttributeError):
             return
@@ -219,9 +263,10 @@ class Scheduler:
     async def _refresh_matches_left(self) -> None:
         if self._matches_left_today is None:
             self._left_today = None
+            self._forecast = None
             return
         try:
-            self._left_today = max(0, int(await self._matches_left_today()))
+            raw = await self._matches_left_today()
         except Exception:
             log_json(
                 logging.WARNING,
@@ -229,19 +274,54 @@ class Scheduler:
                 event="matches_left_today_failed",
             )
             self._left_today = None
+            self._forecast = None
+            return
+        if isinstance(raw, DayLoadForecast):
+            self._forecast = raw
+            self._left_today = raw.matches
+            return
+        count = max(0, int(raw))
+        self._left_today = count
+        self._forecast = DayLoadForecast(
+            kickoffs=(KickoffLoad(kickoff=self._now(), count=count),) if count else ()
+        )
 
-    def _apply_budget(self, remaining: int) -> LiveBudgetPlan:
+    def _apply_budget(self, snapshot: QuotaSnapshot) -> LiveBudgetPlan:
+        limit = snapshot.limit_day or self._settings.quota_daily_limit
         plan = plan_live_budget(
             live_matches=max(0, self._live_match_count()),
-            matches_left_today=self._left_today,
-            remaining=remaining,
+            finishing_matches=max(0, self._finishing_match_count()),
+            matches_left_today=None,
+            forecast=self._forecast,
+            remaining=max(0, snapshot.remaining),
             now=self._now(),
             target_seconds=int(self._settings.live_poll_target_seconds),
+            limit_day=limit,
+            buffer_percent=self._settings.quota_safety_buffer_percent,
         )
+        self._plan = plan
         self._gate.detail_refresh_seconds = plan.detail_refresh_seconds
         self._gate.oneshot_calls = plan.oneshot_calls
+        self._gate.max_context_calls = plan.max_context_calls
         self._live_interval_seconds = plan.score_poll_seconds
         return plan
+
+    def _prefer_observed(self, quota: QuotaSnapshot) -> QuotaSnapshot:
+        """Plan from response headers once they are newer than ``/status``."""
+        observed = self._client_quota()
+        if observed is None or observed.source != "api":
+            return quota
+        now = self._now()
+        fetched = observed.fetched_at
+        if fetched is not None:
+            if fetched.tzinfo is None:
+                fetched = fetched.replace(tzinfo=UTC)
+            if fetched.astimezone(UTC).date() != now.astimezone(UTC).date():
+                return quota
+        current = quota.fetched_at
+        if fetched is not None and current is not None and fetched < current:
+            return quota
+        return observed
 
     def _client_quota(self) -> QuotaSnapshot | None:
         snapshot = getattr(self._client, "quota", None)

@@ -21,7 +21,9 @@ from predictor.client.football import FootballClient
 from predictor.constants import (
     FINISHED_FIXTURE_STATUSES,
     HISTORICAL_BACKLOG_MAX_AGE_SECONDS,
+    IN_PLAY_FIXTURE_STATUSES,
     IRREGULAR_FIXTURE_STATUSES,
+    MATCH_LIVE_HOURS,
 )
 from predictor.logutil import log_json
 from predictor.models.etl import EtlTask
@@ -44,32 +46,58 @@ from predictor.services.queue import (
     historical_backlog_blocks,
     needs_refresh,
 )
+from predictor.services.quota import DayLoadForecast, KickoffLoad
 
 _ROUNDS_PER_TICK = 8
 _NOT_TO_PLAY = FINISHED_FIXTURE_STATUSES | IRREGULAR_FIXTURE_STATUSES
+_FORECAST_SKIP = _NOT_TO_PLAY | IN_PLAY_FIXTURE_STATUSES
+
+
+async def forecast_day_load(
+    session_factory: async_sessionmaker[AsyncSession], now: datetime
+) -> DayLoadForecast:
+    """Not-yet-live kickoffs whose two-hour window still reaches past ``now``.
+
+    Finished, cancelled, and in-play rows are excluded. A kickoff whose
+    predicted end has already passed does not keep a reserve.
+    """
+    utc_now = now.astimezone(UTC)
+    start = datetime(utc_now.year, utc_now.month, utc_now.day, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    window = timedelta(hours=MATCH_LIVE_HOURS)
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Fixture.date, func.count())
+                .where(Fixture.date.is_not(None))
+                .where(Fixture.date >= start)
+                .where(Fixture.date < end)
+                .where(Fixture.date + window > utc_now)
+                .where(
+                    or_(
+                        Fixture.status_short.is_(None),
+                        Fixture.status_short.not_in(tuple(_FORECAST_SKIP)),
+                    )
+                )
+                .group_by(Fixture.date)
+            )
+        ).all()
+    kickoffs: list[KickoffLoad] = []
+    for kickoff, count in rows:
+        if kickoff is None or not count:
+            continue
+        stamp = kickoff if kickoff.tzinfo is not None else kickoff.replace(tzinfo=UTC)
+        kickoffs.append(KickoffLoad(kickoff=stamp.astimezone(UTC), count=int(count)))
+    kickoffs.sort(key=lambda item: item.kickoff)
+    return DayLoadForecast(kickoffs=tuple(kickoffs))
 
 
 async def count_matches_left_today(
     session_factory: async_sessionmaker[AsyncSession], now: datetime
 ) -> int:
-    """Kickoffs on this UTC day that are not finished or cancelled."""
-    start = datetime(now.year, now.month, now.day, tzinfo=UTC)
-    end = start + timedelta(days=1)
-    async with session_factory() as session:
-        counted = await session.scalar(
-            select(func.count())
-            .select_from(Fixture)
-            .where(Fixture.date.is_not(None))
-            .where(Fixture.date >= start)
-            .where(Fixture.date < end)
-            .where(
-                or_(
-                    Fixture.status_short.is_(None),
-                    Fixture.status_short.not_in(tuple(_NOT_TO_PLAY)),
-                )
-            )
-        )
-    return int(counted or 0)
+    """Future kickoffs on this UTC day that still have a live window ahead."""
+    forecast = await forecast_day_load(session_factory, now)
+    return forecast.matches
 
 
 class FixtureIngest:
