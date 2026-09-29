@@ -86,8 +86,9 @@ class Scheduler:
         status_refresh_seconds: float = STATUS_REFRESH_SECONDS,
         now_fn: Callable[[], datetime] | None = None,
         live_match_count: Callable[[], int] | None = None,
-        matches_left_today: Callable[[], Awaitable[int | DayLoadForecast]]
-        | None = None,
+        matches_left_today: (
+            Callable[[], Awaitable[int | DayLoadForecast]] | None
+        ) = None,
         finishing_match_count: Callable[[], int] | None = None,
         gate: LiveSpendGate | None = None,
     ) -> None:
