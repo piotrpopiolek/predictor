@@ -2430,7 +2430,9 @@ _DETAIL_CSS = """
   .empty { text-align: center; color: var(--muted); padding: 48px 16px; }
   .sub { font-size: 0.78rem; text-align: right; }
   @media (max-width: 720px) {
-    .grid, .xi, .headline, .tables, .form-cols, .split-grid { grid-template-columns: 1fr; }
+    .grid, .xi, .headline, .tables, .form-cols, .split-grid {
+      grid-template-columns: 1fr;
+    }
     .team.away { flex-direction: row; text-align: left; }
     .team.away .team-id { align-items: flex-start; }
     .scoreblock { order: -1; }
