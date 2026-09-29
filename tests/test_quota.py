@@ -53,7 +53,9 @@ def test_surplus_allows_history_and_five_minute_details() -> None:
 def test_tight_reserve_slows_details_and_drops_oneshots() -> None:
     now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     plan = _plan(30, 400, now)
-    assert plan.detail_refresh_seconds == 844
+    assert plan.detail_refresh_seconds == 300
+    assert plan.relaxed_refresh_seconds > plan.detail_refresh_seconds
+    assert plan.relaxed_refresh_seconds != 900
     assert plan.oneshot_calls == 0
     assert plan.overloaded is True
     assert plan.score_poll_seconds == 60.0
@@ -223,7 +225,9 @@ def test_large_future_slate_does_not_clamp_detail_to_fifteen_minutes() -> None:
         buffer_percent=5,
     )
     assert crowded.overloaded is True
-    assert crowded.detail_refresh_seconds != 900
+    assert crowded.relaxed_refresh_seconds > 300
+    assert crowded.relaxed_refresh_seconds != 900
+    assert crowded.detail_refresh_seconds <= crowded.relaxed_refresh_seconds
     assert crowded.reserved_calls <= 6315 - 375
     calm = plan_live_budget(
         live_matches=40,
@@ -362,8 +366,9 @@ def test_future_slate_does_not_force_the_old_fifteen_minute_ceiling() -> None:
         limit_day=7500,
         buffer_percent=5,
     )
-    assert plan.detail_refresh_seconds > 300
-    assert plan.detail_refresh_seconds != 900
+    assert plan.relaxed_refresh_seconds > 300
+    assert plan.relaxed_refresh_seconds != 900
+    assert plan.detail_refresh_seconds <= plan.relaxed_refresh_seconds
     assert plan.overloaded is True
     assert plan.safety_buffer == 375
     assert plan.reserved_calls <= 7500 - 375
@@ -426,7 +431,7 @@ def test_same_budget_changes_cap_when_later_kickoffs_change() -> None:
     assert light.detail_refresh_seconds == 300
     assert light.oneshot_calls == 12
     assert light.overloaded is False
-    assert heavy.detail_refresh_seconds > light.detail_refresh_seconds
+    assert heavy.relaxed_refresh_seconds > light.relaxed_refresh_seconds
     assert heavy.context_calls_per_tick < light.context_calls_per_tick
 
 

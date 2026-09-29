@@ -24,6 +24,7 @@ from predictor.services.ingest.live_context import (
     deadline_order,
     detail_refresh_due,
     detail_service_order,
+    match_refresh_seconds,
 )
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.ingest.prematch import PrematchIngest
@@ -37,6 +38,13 @@ FID_OTHER = 93022
 class WaitZero(wait_base):
     def __call__(self, retry_state: RetryCallState) -> float:
         return 0.0
+
+
+def test_match_refresh_keeps_halftime_faster_than_the_second_half() -> None:
+    assert match_refresh_seconds("HT", 45, urgent=300, relaxed=1200) == 300
+    assert match_refresh_seconds("1H", 42, urgent=300, relaxed=1200) == 300
+    assert match_refresh_seconds("1H", 12, urgent=300, relaxed=1200) == 1200
+    assert match_refresh_seconds("2H", 70, urgent=300, relaxed=1200) == 1200
 
 
 def test_detail_service_order_prefers_halftime_without_starving_stale_matches() -> None:
@@ -212,8 +220,9 @@ async def test_refresh_fetches_detail_before_oneshots_and_obeys_the_cap() -> Non
         final: bool,
         limit: int,
         refresh_seconds: int,
+        relaxed_refresh_seconds: int | None = None,
     ) -> None:
-        del refresh_seconds
+        del refresh_seconds, relaxed_refresh_seconds
         if not spend.left() or limit <= 0:  # type: ignore[attr-defined]
             return
         events.append(("final" if final else "detail", limit))

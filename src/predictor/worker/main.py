@@ -103,6 +103,7 @@ async def run_locked_loop(
                 live.last_live_fixture_ids,
                 finishing_ids=live.finishing_fixture_ids,
                 detail_refresh_seconds=gate.detail_refresh_seconds,
+                relaxed_refresh_seconds=gate.relaxed_refresh_seconds,
                 oneshot_calls=gate.oneshot_calls,
                 max_context_calls=gate.max_context_calls,
             )

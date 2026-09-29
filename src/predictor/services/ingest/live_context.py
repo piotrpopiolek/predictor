@@ -98,6 +98,21 @@ def detail_refresh_due(
 _LATE_FIRST_HALF_MINUTE = 40
 
 
+def match_refresh_seconds(
+    status: str | None,
+    elapsed: int | None,
+    *,
+    urgent: int,
+    relaxed: int,
+) -> int:
+    """Halftime and a late first half keep the faster detail cadence."""
+    if status == "HT" or (
+        status == "1H" and int(elapsed or 0) >= _LATE_FIRST_HALF_MINUTE
+    ):
+        return urgent
+    return max(urgent, relaxed)
+
+
 def detail_service_order(
     rows: Sequence[tuple[int, str | None, int | None, datetime | None]],
     *,
@@ -211,6 +226,7 @@ class LiveContextIngest:
         *,
         finishing_ids: Sequence[int] | None = None,
         detail_refresh_seconds: int = LIVE_DETAIL_REFRESH_SECONDS,
+        relaxed_refresh_seconds: int | None = None,
         oneshot_calls: int = LIVE_CONTEXT_ONESHOT_CALLS,
         max_context_calls: int | None = None,
     ) -> LiveContextResult:
@@ -236,12 +252,18 @@ class LiveContextIngest:
             now_fn=self._now,
             quota_fn=self._quota_left,
         )
+        relaxed = (
+            detail_refresh_seconds
+            if relaxed_refresh_seconds is None
+            else max(detail_refresh_seconds, relaxed_refresh_seconds)
+        )
         await self._refresh_details(
             live,
             spend,
             final=False,
             limit=min(LIVE_CONTEXT_DETAIL_CALLS, cap),
             refresh_seconds=detail_refresh_seconds,
+            relaxed_refresh_seconds=relaxed,
         )
         await self._refresh_details(
             finishing,
@@ -249,6 +271,7 @@ class LiveContextIngest:
             final=True,
             limit=min(LIVE_CONTEXT_FINAL_CALLS, max(0, cap - spend.calls)),
             refresh_seconds=detail_refresh_seconds,
+            relaxed_refresh_seconds=relaxed,
         )
         urgent, later = await self._deadline_groups(live)
         oneshot_left = min(max(0, oneshot_calls), max(0, cap - spend.calls))
@@ -358,6 +381,7 @@ class LiveContextIngest:
         final: bool,
         limit: int,
         refresh_seconds: int = LIVE_DETAIL_REFRESH_SECONDS,
+        relaxed_refresh_seconds: int | None = None,
     ) -> None:
         if not live_ids or limit <= 0 or not spend.left():
             return
@@ -372,8 +396,18 @@ class LiveContextIngest:
         for fixture_id in ordered:
             if not spend.left() or fetched >= limit:
                 break
-            task_status, params, match_status, _elapsed = state.get(
+            task_status, params, match_status, elapsed = state.get(
                 fixture_id, (None, {}, None, None)
+            )
+            due_after = match_refresh_seconds(
+                match_status,
+                elapsed,
+                urgent=refresh_seconds,
+                relaxed=(
+                    refresh_seconds
+                    if relaxed_refresh_seconds is None
+                    else relaxed_refresh_seconds
+                ),
             )
             if not detail_refresh_due(
                 task_status=task_status,
@@ -381,14 +415,14 @@ class LiveContextIngest:
                 match_status=match_status,
                 now=self._now(),
                 final=final,
-                refresh_seconds=refresh_seconds,
+                refresh_seconds=due_after,
             ):
                 continue
             if await self._refresh_detail(
                 fixture_id,
                 final=final,
                 match_status=match_status,
-                refresh_seconds=refresh_seconds,
+                refresh_seconds=due_after,
             ):
                 spend.take()
                 fetched += 1

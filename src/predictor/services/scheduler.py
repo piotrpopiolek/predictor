@@ -219,7 +219,7 @@ class Scheduler:
                         snapshot,
                         score_poll_seconds=self._live_interval_seconds,
                         detail_refresh_seconds=(
-                            None if plan is None else plan.detail_refresh_seconds
+                            None if plan is None else plan.relaxed_refresh_seconds
                         ),
                         context_call_cap=(
                             None if plan is None else plan.context_calls_per_tick
@@ -301,6 +301,7 @@ class Scheduler:
         )
         self._plan = plan
         self._gate.detail_refresh_seconds = plan.detail_refresh_seconds
+        self._gate.relaxed_refresh_seconds = plan.relaxed_refresh_seconds
         self._gate.oneshot_calls = plan.oneshot_calls
         self._gate.max_context_calls = plan.max_context_calls
         self._live_interval_seconds = plan.score_poll_seconds

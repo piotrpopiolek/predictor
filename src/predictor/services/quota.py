@@ -76,6 +76,7 @@ class LiveBudgetPlan:
     oneshot_calls: int
     score_poll_seconds: float
     poll_odds: bool
+    relaxed_refresh_seconds: int = LIVE_DETAIL_REFRESH_SECONDS
     overloaded: bool = False
     safety_buffer: int = 0
     oneshot_reserve: int = 0
@@ -98,6 +99,7 @@ class LiveSpendGate:
     """Mutable view of the latest plan, read by the live-context handler."""
 
     detail_refresh_seconds: int = LIVE_DETAIL_REFRESH_SECONDS
+    relaxed_refresh_seconds: int = LIVE_DETAIL_REFRESH_SECONDS
     oneshot_calls: int = LIVE_CONTEXT_ONESHOT_CALLS
     max_context_calls: int = LIVE_CONTEXT_MAX_CALLS_PER_TICK
     spent_calls: int = 0
@@ -220,6 +222,7 @@ def plan_live_budget(
         detail_need=choice.detail_need,
         odds_need=choice.odds_need,
         interval=choice.interval,
+        relaxed_interval=choice.relaxed_interval,
         oneshot_calls=choice.oneshot_calls if in_play else 0,
         oneshot_reserve=choice.oneshot_reserve,
         sleep=sleep,
@@ -236,11 +239,16 @@ def plan_live_budget(
 @dataclass(frozen=True, slots=True)
 class _Quality:
     interval: int
+    relaxed_interval: int
     detail_need: int
     odds_need: int
     oneshot_calls: int
     oneshot_reserve: int
     overloaded: bool
+
+
+# Share of a match spent at halftime or in the last minutes of the first half.
+_URGENT_MATCH_SHARE = 0.25
 
 
 def quota_allows(priority: int, snapshot: QuotaSnapshot, plan: LiveBudgetPlan) -> bool:
@@ -315,6 +323,7 @@ def _assemble_plan(
     detail_need: int,
     odds_need: int,
     interval: int,
+    relaxed_interval: int | None = None,
     oneshot_calls: int,
     oneshot_reserve: int,
     sleep: float,
@@ -326,9 +335,15 @@ def _assemble_plan(
     finishing: int,
     tick: float,
 ) -> LiveBudgetPlan:
+    relaxed = interval if relaxed_interval is None else relaxed_interval
+    if relaxed < interval:
+        relaxed = interval
     rate = 0.0
-    if in_play and live_matches > 0 and interval > 0 and tick > 0:
-        rate += live_matches * tick / float(interval)
+    if in_play and live_matches > 0 and tick > 0:
+        if interval > 0:
+            rate += live_matches * _URGENT_MATCH_SHARE * tick / float(interval)
+        if relaxed > 0:
+            rate += live_matches * (1.0 - _URGENT_MATCH_SHARE) * tick / float(relaxed)
     if finishing > 0 and interval > 0 and tick > 0 and detail_need > 0:
         paced = finishing * tick / float(interval)
         rate += min(float(LIVE_CONTEXT_FINAL_CALLS), paced)
@@ -341,6 +356,7 @@ def _assemble_plan(
         detail_need=detail_need,
         odds_need=odds_need,
         detail_refresh_seconds=max(1, int(interval)),
+        relaxed_refresh_seconds=max(1, int(relaxed)),
         oneshot_calls=max(0, oneshot_calls),
         score_poll_seconds=sleep,
         poll_odds=poll_odds,
@@ -378,6 +394,7 @@ def _fit_quality(
     if fits(detail_at_fast, ideal_odds, full_oneshots):
         return _Quality(
             interval=fast,
+            relaxed_interval=fast,
             detail_need=detail_at_fast,
             odds_need=ideal_odds,
             oneshot_calls=LIVE_CONTEXT_ONESHOT_CALLS,
@@ -388,6 +405,7 @@ def _fit_quality(
     if fits(detail_at_fast, ideal_odds, reduced_oneshots):
         return _Quality(
             interval=fast,
+            relaxed_interval=fast,
             detail_need=detail_at_fast,
             odds_need=ideal_odds,
             oneshot_calls=4,
@@ -397,6 +415,7 @@ def _fit_quality(
     if fits(detail_at_fast, ideal_odds, 0):
         return _Quality(
             interval=fast,
+            relaxed_interval=fast,
             detail_need=detail_at_fast,
             odds_need=ideal_odds,
             oneshot_calls=0,
@@ -406,6 +425,7 @@ def _fit_quality(
     if fits(detail_at_fast, 0, 0):
         return _Quality(
             interval=fast,
+            relaxed_interval=fast,
             detail_need=detail_at_fast,
             odds_need=0,
             oneshot_calls=0,
@@ -413,14 +433,15 @@ def _fit_quality(
             overloaded=ideal_odds > 0,
         )
     detail_budget = max(0, usable - score_need)
-    interval, detail_need = _interval_for_budget(
+    urgent_interval, relaxed_interval, detail_need = _tiered_intervals(
         match_seconds=match_seconds,
         finishing=finishing,
         call_budget=detail_budget,
         seconds_left=seconds_left,
     )
     return _Quality(
-        interval=interval,
+        interval=urgent_interval,
+        relaxed_interval=relaxed_interval,
         detail_need=detail_need,
         odds_need=0,
         oneshot_calls=0,
@@ -429,28 +450,59 @@ def _fit_quality(
     )
 
 
-def _interval_for_budget(
+def _tiered_intervals(
     *,
     match_seconds: float,
     finishing: int,
     call_budget: int,
     seconds_left: float,
-) -> tuple[int, int]:
-    ceiling = max(LIVE_DETAIL_REFRESH_SECONDS, math.ceil(seconds_left))
+) -> tuple[int, int, int]:
+    """Keep halftime-sized detail faster and stretch the rest of the match."""
+    fast = LIVE_DETAIL_REFRESH_SECONDS
+    ceiling = max(fast, math.ceil(seconds_left))
     if call_budget <= 0:
-        return ceiling, 0
-    body = call_budget - min(finishing, call_budget)
+        return ceiling, ceiling, 0
+    finish = min(max(0, finishing), call_budget)
+    body = call_budget - finish
     if match_seconds <= 0 or body <= 0:
-        detail = min(finishing, call_budget)
-        return LIVE_DETAIL_REFRESH_SECONDS, detail
-    interval = max(LIVE_DETAIL_REFRESH_SECONDS, math.ceil(match_seconds / body))
-    detail = _detail_calls(match_seconds, finishing, interval)
-    while detail > call_budget and interval < ceiling:
+        return fast, fast, finish
+    urgent_seconds = match_seconds * _URGENT_MATCH_SHARE
+    relaxed_seconds = match_seconds - urgent_seconds
+    urgent_fast = _calls_only(urgent_seconds, fast)
+    if urgent_fast <= body:
+        relaxed_body = body - urgent_fast
+        relaxed_interval = _interval_only(relaxed_seconds, relaxed_body, seconds_left)
+        relaxed_calls = min(
+            relaxed_body, _calls_only(relaxed_seconds, relaxed_interval)
+        )
+        return fast, max(fast, relaxed_interval), urgent_fast + relaxed_calls + finish
+    urgent_body = max(1, body // 2)
+    relaxed_body = max(0, body - urgent_body)
+    urgent_interval = _interval_only(urgent_seconds, urgent_body, seconds_left)
+    relaxed_interval = _interval_only(
+        relaxed_seconds, max(1, relaxed_body), seconds_left
+    )
+    if relaxed_interval < urgent_interval:
+        relaxed_interval = urgent_interval
+    urgent_calls = min(urgent_body, _calls_only(urgent_seconds, urgent_interval))
+    relaxed_calls = min(relaxed_body, _calls_only(relaxed_seconds, relaxed_interval))
+    return urgent_interval, relaxed_interval, urgent_calls + relaxed_calls + finish
+
+
+def _calls_only(match_seconds: float, interval: int) -> int:
+    if match_seconds <= 0 or interval <= 0:
+        return 0
+    return math.ceil(match_seconds / float(interval))
+
+
+def _interval_only(match_seconds: float, call_budget: int, seconds_left: float) -> int:
+    ceiling = max(LIVE_DETAIL_REFRESH_SECONDS, math.ceil(seconds_left))
+    if match_seconds <= 0 or call_budget <= 0:
+        return ceiling
+    interval = max(LIVE_DETAIL_REFRESH_SECONDS, math.ceil(match_seconds / call_budget))
+    while _calls_only(match_seconds, interval) > call_budget and interval < ceiling:
         interval += 1
-        detail = _detail_calls(match_seconds, finishing, interval)
-    if detail > call_budget:
-        return ceiling, min(detail, call_budget)
-    return min(interval, ceiling), detail
+    return min(interval, ceiling)
 
 
 def _detail_calls(match_seconds: float, finishing: int, interval: int) -> int:
