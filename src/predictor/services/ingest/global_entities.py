@@ -66,7 +66,8 @@ from predictor.services.queue import (
     empty_retry_status,
     enqueue_coach_catalog,
     enqueue_global_for_match,
-    enqueue_player_catalog,
+    enqueue_player_facts,
+    enqueue_player_profile_if_needed,
     ensure_param_task,
     requeue_stale_global,
     skip_reconstructable_lookups,
@@ -275,7 +276,7 @@ class GlobalIngest:
             extra = await persist_player_bundles(session, parsed_players)
             if endpoint == "/players":
                 for player_id in extra.get("player_ids", []):
-                    await enqueue_player_catalog(session, int(player_id))
+                    await enqueue_player_facts(session, int(player_id))
             return {
                 "players": extra.get("players", 0),
                 "statistics": extra.get("statistics", 0),
@@ -286,7 +287,8 @@ class GlobalIngest:
             for item in parsed_squads:
                 for player in item.players:
                     if player.id is not None:
-                        await enqueue_player_catalog(session, player.id)
+                        await enqueue_player_facts(session, player.id)
+                        await enqueue_player_profile_if_needed(session, player.id)
             return {"count": count}
         if endpoint == "/players/teams":
             player_id = as_int(params.get("player"))

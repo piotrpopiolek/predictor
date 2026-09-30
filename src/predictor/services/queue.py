@@ -7,8 +7,10 @@ import socket
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from typing import cast as cast_type
 
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import Integer, case, cast, func, or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from predictor.constants import (
@@ -29,6 +31,7 @@ from predictor.constants import (
     TOP_PLAYER_ENDPOINTS,
     URGENT_PREMATCH_HORIZON_HOURS,
 )
+from predictor.models.catalog import Player
 from predictor.models.etl import EtlRun, EtlTask
 from predictor.models.fixtures import Fixture
 from predictor.schemas.settings import Settings
@@ -981,14 +984,57 @@ async def enqueue_global_for_match(
         )
 
 
-async def enqueue_player_catalog(session: AsyncSession, player_id: int) -> None:
-    _require_transaction(session, "enqueue player catalog")
+_PLAYER_FACT_ENDPOINTS = (
+    "/players/teams",
+    "/transfers",
+    "/trophies",
+    "/sidelined",
+)
+
+
+async def enqueue_player_facts(session: AsyncSession, player_id: int) -> None:
+    """Queue career, transfers, trophies, and injuries. Not the profile."""
+    _require_transaction(session, "enqueue player facts")
     params = {"player": player_id}
-    await ensure_param_task(session, "/players/profiles", params)
-    await ensure_param_task(session, "/players/teams", params)
-    await ensure_param_task(session, "/transfers", params)
-    await ensure_param_task(session, "/trophies", params)
-    await ensure_param_task(session, "/sidelined", params)
+    for endpoint in _PLAYER_FACT_ENDPOINTS:
+        await ensure_param_task(session, endpoint, params)
+
+
+async def enqueue_player_profile_if_needed(
+    session: AsyncSession, player_id: int
+) -> None:
+    """Queue /players/profiles only when the row is missing or still a stub."""
+    _require_transaction(session, "enqueue player profile")
+    nationality = await session.scalar(
+        select(Player.nationality).where(Player.id == player_id)
+    )
+    if nationality is not None:
+        return
+    await ensure_param_task(session, "/players/profiles", {"player": player_id})
+
+
+async def complete_stored_player_profiles(session: AsyncSession) -> int:
+    """Close pending /players/profiles when players already has a full profile.
+
+    A full profile is a row with nationality set. Missing players and squad stubs
+    stay pending. Tasks that carry params.coach are left alone.
+    """
+    _require_transaction(session, "complete stored player profiles")
+    now = datetime.now(UTC)
+    player_id = cast(EtlTask.params["player"].astext, Integer)
+    result = await session.execute(
+        update(EtlTask)
+        .where(EtlTask.endpoint == "/players/profiles")
+        .where(EtlTask.status == "pending")
+        .where(EtlTask.cursor_kind.is_(None))
+        .where(EtlTask.params.has_key("player"))
+        .where(~EtlTask.params.has_key("coach"))
+        .where(player_id.in_(select(Player.id).where(Player.nationality.is_not(None))))
+        .values(status="complete", updated_at=now, completed_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    updated = cast_type(CursorResult[Any], result)
+    return int(updated.rowcount or 0)
 
 
 async def enqueue_coach_catalog(session: AsyncSession, coach_id: int) -> None:

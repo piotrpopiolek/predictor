@@ -34,6 +34,7 @@ from predictor.schemas.settings import Settings, load_settings
 from predictor.services.ingest.global_entities import GlobalIngest
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.queue import (
+    complete_stored_player_profiles,
     enqueue_fixture_followups,
     enqueue_global_for_match,
     ensure_cursors,
@@ -355,6 +356,7 @@ def _router(
     standings: list[dict[str, Any]] | None = None,
     empty: frozenset[str] = frozenset(),
     player_pages: list[list[dict[str, Any]]] | None = None,
+    squad: dict[str, Any] | None = None,
 ) -> Any:
     first_page: set[str] = set()
 
@@ -406,7 +408,8 @@ def _router(
             return httpx.Response(200, json=_envelope([_player_bundle()]))
         if path == "/players/squads":
             team_id = int(params.get("team") or "33")
-            return httpx.Response(200, json=_envelope([_squad(team_id)]))
+            body = squad if squad is not None else _squad(team_id)
+            return httpx.Response(200, json=_envelope([body]))
         if path == "/players/teams":
             return httpx.Response(200, json=_envelope([_career()]))
         if path in TOP_PLAYER_ENDPOINTS:
@@ -714,8 +717,7 @@ async def test_players_pages_and_catalog_followups() -> None:
         assert len(stats) == 2
         assert stats[0].appearences == 4
         assert stats[0].sub_in == 0
-        assert set(followups) >= {
-            "/players/profiles",
+        assert set(followups) == {
             "/players/teams",
             "/transfers",
             "/trophies",
@@ -727,6 +729,203 @@ async def test_players_pages_and_catalog_followups() -> None:
         assert any("page=2" in p for p in player_gets)
     finally:
         await client.aclose()
+        await engine.dispose()
+
+
+SQUAD_STUB = 92003
+STORED_PROFILE = 92111
+STUB_PROFILE = 92112
+MISSING_PROFILE = 92113
+
+
+@pytest.mark.asyncio
+async def test_squads_queue_profile_only_for_stubs() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    paths: list[str] = []
+    squad = {
+        "team": {"id": 33, "name": "Home FC"},
+        "players": [
+            {
+                "id": PLAYER_ID,
+                "name": "T. Striker",
+                "age": 28,
+                "number": 9,
+                "position": "Attacker",
+                "photo": None,
+            },
+            {
+                "id": SQUAD_STUB,
+                "name": "S. Stub",
+                "age": 20,
+                "number": 7,
+                "position": "Midfielder",
+                "photo": None,
+            },
+        ],
+    }
+    client = _client(settings, httpx.MockTransport(_router(paths, squad=squad)))
+    try:
+        await _reset_w8(factory)
+        await _seed(factory)
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(EtlTask)
+                    .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
+                    .where(EtlTask.cursor_kind.is_(None))
+                )
+                stored = await session.get(Player, PLAYER_ID)
+                if stored is None:
+                    session.add(
+                        Player(
+                            id=PLAYER_ID,
+                            name="Terry Striker",
+                            nationality="England",
+                        )
+                    )
+                else:
+                    stored.nationality = "England"
+                stub = await session.get(Player, SQUAD_STUB)
+                if stub is None:
+                    session.add(Player(id=SQUAD_STUB, name="S. Stub"))
+                else:
+                    stub.nationality = None
+                await ensure_param_task(session, "/players/squads", {"team": 33})
+        ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=1)
+        await ingest.refresh_pending()
+        async with factory() as session:
+            tasks = list(
+                await session.scalars(
+                    select(EtlTask).where(
+                        EtlTask.endpoint.in_(
+                            (
+                                "/players/profiles",
+                                "/players/teams",
+                                "/transfers",
+                                "/trophies",
+                                "/sidelined",
+                            )
+                        )
+                    )
+                )
+            )
+            stub_row = await session.get(Player, SQUAD_STUB)
+        grouped: dict[str, set[int]] = {}
+        for task in tasks:
+            player_id = task.params.get("player")
+            if isinstance(player_id, int):
+                grouped.setdefault(task.endpoint, set()).add(player_id)
+        assert grouped["/players/profiles"] == {SQUAD_STUB}
+        for endpoint in ("/players/teams", "/transfers", "/trophies", "/sidelined"):
+            assert grouped[endpoint] == {PLAYER_ID, SQUAD_STUB}
+        assert stub_row is not None and stub_row.nationality is None
+        assert not any(path.startswith("/players/profiles") for path in paths)
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_complete_stored_player_profiles_without_http() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    try:
+        await _reset_w8(factory)
+        async with factory() as session:
+            async with session.begin():
+                full = await session.get(Player, STORED_PROFILE)
+                if full is None:
+                    session.add(
+                        Player(id=STORED_PROFILE, name="Known", nationality="Poland")
+                    )
+                else:
+                    full.nationality = "Poland"
+                stub = await session.get(Player, STUB_PROFILE)
+                if stub is None:
+                    session.add(Player(id=STUB_PROFILE, name="Stub"))
+                else:
+                    stub.nationality = None
+                session.add(
+                    EtlTask(
+                        endpoint="/players/profiles",
+                        params={"player": STORED_PROFILE},
+                        status="pending",
+                    )
+                )
+                session.add(
+                    EtlTask(
+                        endpoint="/players/profiles",
+                        params={"player": STUB_PROFILE},
+                        status="pending",
+                    )
+                )
+                session.add(
+                    EtlTask(
+                        endpoint="/players/profiles",
+                        params={"player": MISSING_PROFILE},
+                        status="pending",
+                    )
+                )
+                session.add(
+                    EtlTask(
+                        endpoint="/players/profiles",
+                        params={"coach": COACH_ID},
+                        status="pending",
+                    )
+                )
+                session.add(
+                    EtlTask(
+                        endpoint="/players/profiles",
+                        params={"player": STORED_PROFILE},
+                        status="in_progress",
+                    )
+                )
+                session.add(
+                    EtlTask(
+                        endpoint="/trophies",
+                        params={"coach": COACH_ID},
+                        status="pending",
+                    )
+                )
+                closed = await complete_stored_player_profiles(session)
+        assert closed == 1
+        async with factory() as session:
+            tasks = list(
+                await session.scalars(
+                    select(EtlTask).where(
+                        EtlTask.endpoint.in_(("/players/profiles", "/trophies"))
+                    )
+                )
+            )
+
+        def _status(endpoint: str, params: dict[str, int], status: str) -> str | None:
+            for task in tasks:
+                if (
+                    task.endpoint == endpoint
+                    and task.params == params
+                    and task.status == status
+                ):
+                    return task.status
+            return None
+
+        assert _status("/players/profiles", {"player": STORED_PROFILE}, "complete")
+        assert _status("/players/profiles", {"player": STUB_PROFILE}, "pending")
+        assert _status("/players/profiles", {"player": MISSING_PROFILE}, "pending")
+        assert _status("/players/profiles", {"coach": COACH_ID}, "pending")
+        assert _status("/players/profiles", {"player": STORED_PROFILE}, "in_progress")
+        assert _status("/trophies", {"coach": COACH_ID}, "pending")
+        done = next(
+            task
+            for task in tasks
+            if task.endpoint == "/players/profiles"
+            and task.params == {"player": STORED_PROFILE}
+            and task.status == "complete"
+        )
+        assert done.completed_at is not None
+    finally:
         await engine.dispose()
 
 
