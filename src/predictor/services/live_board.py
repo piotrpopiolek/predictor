@@ -1531,7 +1531,7 @@ async def _fill_live_opening_1x2(
     ids: list[int],
     extras: dict[int, dict[str, Any]],
 ) -> None:
-    """Attach earliest live 1X2 only when captured at or before kickoff."""
+    """Attach live 1X2. Prefer a snapshot at or before kickoff; otherwise the latest."""
     bet_rows = (await session.execute(select(OddsLiveBet.id, OddsLiveBet.name))).all()
     bet_ids = [
         int(bet_id)
@@ -1566,6 +1566,24 @@ async def _fill_live_opening_1x2(
         if kickoff is not None and captured > kickoff:
             continue
         pairs.append((int(fid), captured))
+    covered = {fid for fid, _captured in pairs}
+    missing = [fid for fid in ids if fid not in covered]
+    if missing:
+        latest = (
+            select(FixtureOddsLive.fixture_id, FixtureOddsLive.captured_at)
+            .where(FixtureOddsLive.fixture_id.in_(missing))
+            .where(FixtureOddsLive.bet_id.in_(bet_ids))
+            .distinct(FixtureOddsLive.fixture_id)
+            .order_by(
+                FixtureOddsLive.fixture_id,
+                FixtureOddsLive.captured_at.desc(),
+            )
+        )
+        pairs.extend(
+            (int(fid), captured)
+            for fid, captured in (await session.execute(latest)).all()
+            if captured is not None
+        )
     if not pairs:
         return
     stmt = (

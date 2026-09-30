@@ -1239,9 +1239,11 @@ def _body(detail: MatchDetail, generated_at: datetime) -> str:
 
 def _opening_quote(match: LiveMatch) -> PrematchOdds | None:
     quote = match.prematch
-    if quote is None or quote.source != "prematch":
+    if quote is None:
         return None
-    return quote
+    if quote.source == "prematch" or quote.home or quote.away:
+        return quote
+    return None
 
 
 def _price(raw: str | None) -> str | None:

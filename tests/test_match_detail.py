@@ -212,6 +212,25 @@ def test_render_match_html_shows_collected_sections() -> None:
     assert 'class="team-odd">2.10' in html
     assert 'class="score-odd">3.20' in html
     assert 'class="team-odd">3.40' in html
+
+
+def test_render_match_html_shows_live_result_when_opening_is_missing() -> None:
+    detail = replace(
+        _detail(),
+        match=replace(
+            _detail().match,
+            prematch=PrematchOdds(
+                "1.80", "3.00", "6.00", "Fulltime Result", source="live"
+            ),
+        ),
+        markets=(),
+    )
+    html = render_match_html(
+        detail, generated_at=datetime(2026, 9, 30, 11, 52, tzinfo=UTC)
+    )
+    assert 'class="team-odd">1.80' in html
+    assert 'class="score-odd">3.00' in html
+    assert 'class="team-odd">6.00' in html
     assert "Bezpośrednie" in html
     assert 'href="/live"' in html
 
