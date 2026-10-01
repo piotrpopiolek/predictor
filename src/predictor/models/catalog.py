@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from predictor.models.base import Base
@@ -60,6 +60,20 @@ class LeagueSeason(Base):
     cov_injuries: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     cov_predictions: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     cov_odds: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+
+class UntrackedLeague(Base):
+    """Leagues the worker does not follow live and does not build history for."""
+
+    __tablename__ = "untracked_leagues"
+
+    league_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("leagues.id"), primary_key=True
+    )
+    note: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class Bookmaker(Base):

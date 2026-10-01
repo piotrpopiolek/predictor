@@ -9,6 +9,7 @@ from predictor.models.catalog import (
     OddsLiveBet,
     Player,
     Season,
+    UntrackedLeague,
 )
 from predictor.models.catalog_rest import CoachCareer, Sidelined, Transfer, Trophy
 from predictor.models.children import (
@@ -76,5 +77,6 @@ __all__ = [
     "TeamSeasonStatistics",
     "Transfer",
     "Trophy",
+    "UntrackedLeague",
     "Venue",
 ]

@@ -31,6 +31,7 @@ from predictor.services.ingest.persist_live import (
 )
 from predictor.services.queue import (
     complete_task,
+    drop_untracked_fixture_ids,
     enqueue_fixture_followups,
     ensure_prematch_for_fixture_ids,
     get_or_create_endpoint_task,
@@ -86,11 +87,19 @@ class LiveIngest:
                     if task is None:
                         return
                     extra = await upsert_fixtures(session, parsed)
-                    fixture_ids = [int(fid) for fid in extra.get("fixture_ids", [])]
+                    fixture_ids = await drop_untracked_fixture_ids(
+                        session, [int(fid) for fid in extra.get("fixture_ids", [])]
+                    )
                     await enqueue_fixture_followups(session, extra)
                     params = dict(task.params)
-                    previous = _int_ids(params.get("fixture_ids"))
-                    finishing = set(_int_ids(params.get("finishing_ids")))
+                    previous = await drop_untracked_fixture_ids(
+                        session, _int_ids(params.get("fixture_ids"))
+                    )
+                    finishing = set(
+                        await drop_untracked_fixture_ids(
+                            session, _int_ids(params.get("finishing_ids"))
+                        )
+                    )
                     current_ids = set(fixture_ids)
                     finishing |= set(previous) - current_ids
                     finishing -= current_ids

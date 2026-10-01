@@ -26,6 +26,7 @@ from predictor.constants import (
     MATCH_LIVE_HOURS,
 )
 from predictor.logutil import log_json
+from predictor.models.catalog import UntrackedLeague
 from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture
 from predictor.schemas.fixtures import FixtureItem
@@ -73,6 +74,7 @@ async def forecast_day_load(
                 .where(Fixture.date >= start)
                 .where(Fixture.date < end)
                 .where(Fixture.date + window > utc_now)
+                .where(~Fixture.league_id.in_(select(UntrackedLeague.league_id)))
                 .where(
                     or_(
                         Fixture.status_short.is_(None),

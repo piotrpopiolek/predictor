@@ -31,7 +31,7 @@ from predictor.constants import (
     TOP_PLAYER_ENDPOINTS,
     URGENT_PREMATCH_HORIZON_HOURS,
 )
-from predictor.models.catalog import Player
+from predictor.models.catalog import Player, UntrackedLeague
 from predictor.models.etl import EtlRun, EtlTask
 from predictor.models.fixtures import Fixture
 from predictor.schemas.settings import Settings
@@ -535,10 +535,68 @@ async def historical_backlog_blocks(
     return age.total_seconds() > HISTORICAL_BACKLOG_MAX_AGE_SECONDS
 
 
+async def untracked_league_ids(session: AsyncSession) -> set[int]:
+    rows = await session.scalars(select(UntrackedLeague.league_id))
+    return {int(league_id) for league_id in rows}
+
+
+async def retire_untracked_tasks(session: AsyncSession) -> set[int]:
+    """Close open tasks for leagues we do not follow. Returns those league ids."""
+    _require_transaction(session, "retire untracked")
+    ignored = await untracked_league_ids(session)
+    if not ignored:
+        return ignored
+    now = datetime.now(UTC)
+    league_text = [str(league_id) for league_id in ignored]
+    open_status = EtlTask.status.in_(tuple(OPEN_ETL_STATUSES))
+    no_cursor = EtlTask.cursor_kind.is_(None)
+    by_fixture = (
+        select(EtlTask.id)
+        .join(Fixture, Fixture.id == EtlTask.fixture_id)
+        .where(no_cursor, open_status, Fixture.league_id.in_(ignored))
+    )
+    by_param = select(EtlTask.id).where(
+        no_cursor,
+        open_status,
+        EtlTask.params["league"].as_string().in_(league_text),
+    )
+    await session.execute(
+        update(EtlTask)
+        .where(EtlTask.id.in_(by_fixture.union(by_param)))
+        .values(
+            status="not_supported",
+            last_error="untracked_league",
+            updated_at=now,
+            completed_at=now,
+        )
+    )
+    return ignored
+
+
+async def drop_untracked_fixture_ids(
+    session: AsyncSession, fixture_ids: Sequence[int]
+) -> list[int]:
+    """Keep ids whose league is still followed. Unknown ids stay."""
+    ids = list(dict.fromkeys(int(fid) for fid in fixture_ids))
+    if not ids:
+        return []
+    ignored = await untracked_league_ids(session)
+    if not ignored:
+        return ids
+    rows = (
+        await session.execute(
+            select(Fixture.id, Fixture.league_id).where(Fixture.id.in_(ids))
+        )
+    ).all()
+    blocked = {int(fid) for fid, league_id in rows if int(league_id) in ignored}
+    return [fid for fid in ids if fid not in blocked]
+
+
 async def enqueue_fixture_followups(
     session: AsyncSession, extra: dict[str, Any], *, historical: bool = False
 ) -> None:
     _require_transaction(session, "enqueue fixture followups")
+    ignored = await retire_untracked_tasks(session)
     if historical and await historical_backlog_blocks(session):
         return
     discovered = extra.get("discovered")
@@ -552,11 +610,13 @@ async def enqueue_fixture_followups(
                 away_id = int(row["away"])
             except (KeyError, TypeError, ValueError):
                 continue
+            league_id = row.get("league")
+            if league_id is not None and int(league_id) in ignored:
+                continue
             await ensure_enrichment_task(session, fixture_id)
             await ensure_h2h_task(session, home_id, away_id)
             await ensure_predictions_task(session, fixture_id)
             await ensure_odds_task(session, fixture_id)
-            league_id = row.get("league")
             season = row.get("season")
             if league_id is not None and season is not None:
                 await enqueue_global_for_match(
@@ -566,20 +626,29 @@ async def enqueue_fixture_followups(
                     team_ids=(home_id, away_id),
                 )
     else:
-        for raw_id in extra.get("fixture_ids", []):
-            fixture_id = int(raw_id)
+        raw_ids = [int(raw_id) for raw_id in extra.get("fixture_ids", [])]
+        kept = set(await drop_untracked_fixture_ids(session, raw_ids))
+        for fixture_id in raw_ids:
+            if fixture_id not in kept:
+                continue
             await ensure_enrichment_task(session, fixture_id)
             await ensure_odds_task(session, fixture_id)
     for pair in extra.get("league_seasons", []):
-        await ensure_rounds_task(session, int(pair["league"]), int(pair["season"]))
-        await ensure_injuries_task(session, int(pair["league"]), int(pair["season"]))
+        league_id = int(pair["league"])
+        if league_id in ignored:
+            continue
+        season = int(pair["season"])
+        await ensure_rounds_task(session, league_id, season)
+        await ensure_injuries_task(session, league_id, season)
 
 
 async def ensure_prematch_for_fixture_ids(
     session: AsyncSession, fixture_ids: list[int]
 ) -> None:
     _require_transaction(session, "ensure prematch for fixtures")
-    ids = sorted({int(fid) for fid in fixture_ids})
+    await retire_untracked_tasks(session)
+    ids = await drop_untracked_fixture_ids(session, fixture_ids)
+    ids = sorted(ids)
     if not ids:
         return
     rows = await session.execute(
