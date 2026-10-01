@@ -24,6 +24,11 @@ from predictor.models.fixtures import Fixture, Team
 from predictor.models.odds import FixtureOddsLive
 from predictor.models.predictions import Prediction, PredictionH2H
 from predictor.models.seasonal import Standing
+from predictor.services.lineup_strength import (
+    XI_SIZE,
+    LineupStrength,
+    load_lineup_strength,
+)
 from predictor.services.live_board import (
     FORM_LAST_MATCHES,
     REFRESH_SECONDS,
@@ -222,6 +227,8 @@ class MatchDetail:
     attack_subs: tuple[AttackChange, ...] = ()
     goal_price: GoalPrice | None = None
     form_results: tuple[tuple[str, tuple[DetailH2H, ...]], ...] = ()
+    home_strength: LineupStrength | None = None
+    away_strength: LineupStrength | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -262,6 +269,8 @@ async def load_match_detail(engine: AsyncEngine, fixture_id: int) -> MatchDetail
         events = await _events(session, match)
         stats = await _stats(session, match)
         home_xi, away_xi, home_bench, away_bench = await _lineup(session, match)
+        home_strength = await _lineup_strength(session, match, len(home_xi), home=True)
+        away_strength = await _lineup_strength(session, match, len(away_xi), home=False)
         prediction = await session.get(Prediction, fixture_id)
         h2h = await _h2h(session, fixture_id)
         form_results = await _recent_results(session, match)
@@ -288,6 +297,8 @@ async def load_match_detail(engine: AsyncEngine, fixture_id: int) -> MatchDetail
         away_xi=tuple(away_xi),
         home_bench=tuple(home_bench),
         away_bench=tuple(away_bench),
+        home_strength=home_strength,
+        away_strength=away_strength,
         advice=advice,
         expected_home=expected_home,
         expected_away=expected_away,
@@ -1011,6 +1022,26 @@ async def _lineup(session: AsyncSession, match: LiveMatch) -> tuple[
     return home_xi, away_xi, home_bench, away_bench
 
 
+async def _lineup_strength(
+    session: AsyncSession,
+    match: LiveMatch,
+    starter_count: int,
+    *,
+    home: bool,
+) -> LineupStrength | None:
+    team_id = match.home_team_id if home else match.away_team_id
+    if team_id <= 0 or starter_count < XI_SIZE:
+        return None
+    return await load_lineup_strength(
+        session,
+        team_id=team_id,
+        fixture_id=match.fixture_id,
+        league_id=match.league_id,
+        season=match.season,
+        kickoff=match.kickoff,
+    )
+
+
 async def _h2h(session: AsyncSession, fixture_id: int) -> list[DetailH2H]:
     home = aliased(Team)
     away = aliased(Team)
@@ -1418,17 +1449,32 @@ def _lineups_card(detail: MatchDetail) -> str:
   <div class="xi">
     <div>
       <h3>{escape(match.home)}</h3>
+      {_strength_block(detail.home_strength)}
       {_player_list(detail.home_xi)}
       {_bench(detail.home_bench)}
     </div>
     <div>
       <h3>{escape(match.away)}</h3>
+      {_strength_block(detail.away_strength)}
       {_player_list(detail.away_xi)}
       {_bench(detail.away_bench)}
     </div>
   </div>
 </section>
 """
+
+
+def _strength_block(strength: LineupStrength | None) -> str:
+    if strength is None or strength.label is None:
+        return ""
+    note = ""
+    if strength.note:
+        note = f'<p class="strength-note">{escape(strength.note)}</p>'
+    missing = ""
+    if strength.missing:
+        text = "Nie gra: " + ", ".join(strength.missing)
+        missing = f'<p class="strength-note">{escape(text)}</p>'
+    return f'<p class="strength">{escape(strength.label)}</p>{note}{missing}'
 
 
 def _player_list(players: tuple[DetailPlayer, ...]) -> str:
@@ -2383,6 +2429,8 @@ _DETAIL_CSS = """
     color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
     font-size: 0.68rem;
   }
+  .strength { margin: 0 0 4px; font-size: 0.82rem; font-weight: 650; }
+  .strength-note { margin: 0 0 8px; color: var(--muted); font-size: 0.75rem; }
   .bench { color: var(--muted); font-size: 0.8rem; margin: 10px 0 0; }
   .bench span {
     display: block; text-transform: uppercase; letter-spacing: 0.05em;

@@ -7,6 +7,7 @@ from html import escape
 
 import pytest
 
+from predictor.services.lineup_strength import LineupStrength
 from predictor.services.live_board import (
     LiveMatch,
     NextGoalOdds,
@@ -21,6 +22,7 @@ from predictor.services.match_detail import (
     MatchDetail,
     StandingSlot,
     _goal_price,
+    _lineup_strength,
     _live_markets,
     _none_odd,
     _over_odd,
@@ -212,6 +214,62 @@ def test_render_match_html_shows_collected_sections() -> None:
     assert 'class="team-odd">2.10' in html
     assert 'class="score-odd">3.20' in html
     assert 'class="team-odd">3.40' in html
+
+
+def test_render_match_html_shows_lineup_strength_for_both_teams() -> None:
+    detail = replace(
+        _detail(),
+        home_strength=LineupStrength(
+            "Najmocniejszy skład",
+            "z ostatnich 8 meczów ligowych",
+            ("Pedri (kontuzja)",),
+        ),
+        away_strength=LineupStrength("Rezerwy", "z ostatnich 8 meczów ligowych", ()),
+    )
+    html = render_match_html(
+        detail, generated_at=datetime(2026, 9, 22, 14, 0, tzinfo=UTC)
+    )
+    assert "Najmocniejszy skład" in html
+    assert "Rezerwy" in html
+    assert "Nie gra: Pedri (kontuzja)" in html
+    assert "z ostatnich 8 meczów ligowych" in html
+    thin = render_match_html(
+        replace(
+            _detail(),
+            home_strength=LineupStrength("Za mało danych", None, ()),
+        ),
+        generated_at=datetime(2026, 9, 22, 14, 0, tzinfo=UTC),
+    )
+    assert "Za mało danych" in thin
+    assert '<p class="strength-note">' not in thin
+
+
+class _Rows:
+    def __init__(self, rows: list[tuple[object, ...]]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[tuple[object, ...]]:
+        return self._rows
+
+
+class _EmptySession:
+    async def scalar(self, _statement: object) -> None:
+        return None
+
+    async def execute(self, _statement: object) -> _Rows:
+        return _Rows([])
+
+
+async def test_lineup_strength_skips_without_a_full_named_side() -> None:
+    match = _detail().match
+    assert await _lineup_strength(None, match, 11, home=True) is None  # type: ignore[arg-type]
+    named = replace(match, home_team_id=1, away_team_id=2)
+    assert await _lineup_strength(None, named, 10, home=True) is None  # type: ignore[arg-type]
+    session = _EmptySession()
+    home = await _lineup_strength(session, named, 11, home=True)  # type: ignore[arg-type]
+    away = await _lineup_strength(session, named, 11, home=False)  # type: ignore[arg-type]
+    assert home is not None and home.label is None
+    assert away is not None and away.label is None
 
 
 def test_render_match_html_shows_live_result_when_opening_is_missing() -> None:
