@@ -247,7 +247,7 @@ async def test_scheduler_logs_when_live_interval_must_stretch(
                 current=7496,
                 limit_day=7500,
                 remaining=4,
-                fetched_at=datetime(2026, 9, 13, 23, 0, tzinfo=UTC),
+                fetched_at=datetime(2026, 9, 13, 19, 0, tzinfo=UTC),
                 source="api",
             )
 
@@ -257,7 +257,7 @@ async def test_scheduler_logs_when_live_interval_must_stretch(
         cast(Any, _Client()),
         _unused_factory(),
         idle_cap_seconds=0.01,
-        now_fn=lambda: datetime(2026, 9, 13, 23, 0, tzinfo=UTC),
+        now_fn=lambda: datetime(2026, 9, 13, 19, 0, tzinfo=UTC),
         live_match_count=lambda: 1,
     )
     with caplog.at_level("WARNING"):
