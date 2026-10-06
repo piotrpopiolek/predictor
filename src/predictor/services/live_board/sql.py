@@ -101,6 +101,7 @@ async def load_live_all_fixture_ids(session: AsyncSession) -> list[int]:
         return []
     return parse_live_fixture_ids(task.params)
 
+
 def _board_stmt() -> Any:
     home = aliased(Team)
     away = aliased(Team)
@@ -145,6 +146,7 @@ def _board_stmt() -> Any:
         .join(away, away.id == Fixture.away_team_id)
         .outerjoin(Venue, Venue.id == Fixture.venue_id)
     )
+
 
 def _assemble_matches(
     rows: Sequence[Any], extras: dict[int, dict[str, Any]]
@@ -204,6 +206,7 @@ def _assemble_matches(
         )
     return matches
 
+
 async def list_day_matches(engine: AsyncEngine, day: date) -> list[LiveMatch]:
     start = datetime(day.year, day.month, day.day, tzinfo=UTC)
     end = start + timedelta(days=1)
@@ -218,6 +221,7 @@ async def list_day_matches(engine: AsyncEngine, day: date) -> list[LiveMatch]:
         rows = (await session.execute(stmt)).all()
         extras = await _load_extras(session, rows)
     return order_day_matches(_assemble_matches(rows, extras))
+
 
 async def list_live_matches(engine: AsyncEngine) -> list[LiveMatch]:
     async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -238,6 +242,7 @@ async def list_live_matches(engine: AsyncEngine) -> list[LiveMatch]:
         extras = await _load_extras(session, rows)
     return sort_matches_by_clock(_assemble_matches(rows, extras))
 
+
 async def load_fixture_match(engine: AsyncEngine, fixture_id: int) -> LiveMatch | None:
     async with AsyncSession(engine, expire_on_commit=False) as session:
         rows = (
@@ -248,6 +253,7 @@ async def load_fixture_match(engine: AsyncEngine, fixture_id: int) -> LiveMatch 
         extras = await _load_extras(session, rows)
     assembled = _assemble_matches(rows, extras)
     return assembled[0] if assembled else None
+
 
 async def load_first_legs(
     engine: AsyncEngine, matches: Sequence[LiveMatch]
@@ -329,12 +335,14 @@ async def load_first_legs(
             break
     return result
 
+
 async def list_next_goal_matches(
     engine: AsyncEngine,
 ) -> list[tuple[LiveMatch, tuple[str, ...]]]:
     matches = await list_live_matches(engine)
     first_legs = await load_first_legs(engine, matches)
     return select_next_goal_matches(matches, first_legs)
+
 
 def _empty_extras() -> dict[str, Any]:
     return {
@@ -352,6 +360,7 @@ def _empty_extras() -> dict[str, Any]:
         "prediction_pct_home": None,
         "prediction_pct_away": None,
     }
+
 
 async def _load_extras(
     session: AsyncSession, rows: Sequence[Any]
@@ -375,6 +384,7 @@ async def _load_extras(
     await _fill_next_goal(session, rows, extras)
     await _fill_goal_form(session, ids, teams, extras, team_context)
     return extras
+
 
 async def _fill_events(
     session: AsyncSession,
@@ -425,12 +435,14 @@ async def _fill_events(
             ),
         )
 
+
 def _team_side(team_id: int, home_id: int, away_id: int) -> str | None:
     if team_id == home_id:
         return "home"
     if team_id == away_id:
         return "away"
     return None
+
 
 def _side_appearances(
     team_ids: list[int],
@@ -467,11 +479,13 @@ def _side_appearances(
         sub.c.kickoff,
     ).where(sub.c.rn <= FORM_LAST_MATCHES)
 
+
 def _appearance_sort_key(row: Any) -> tuple[int, float, int]:
     kickoff = row.kickoff
     if kickoff is None:
         return (1, 0.0, -int(row.fixture_id))
     return (0, -kickoff.timestamp(), -int(row.fixture_id))
+
 
 async def _fill_goal_form(
     session: AsyncSession,
@@ -540,6 +554,7 @@ async def _fill_goal_form(
         extras[fixture_id]["form_home"] = forms.get(home_id)
         extras[fixture_id]["form_away"] = forms.get(away_id)
 
+
 async def _apply_season_goal_minute_fallback(
     session: AsyncSession,
     forms: dict[int, TeamGoalForm | None],
@@ -594,6 +609,7 @@ async def _apply_season_goal_minute_fallback(
             avg_minute=avg_minute,
         )
 
+
 async def _fill_stats(
     session: AsyncSession,
     ids: list[int],
@@ -639,10 +655,12 @@ async def _fill_stats(
         )
         extras[fixture_id]["stats"] = None if live_stats.is_empty() else live_stats
 
+
 def _stat_pair(
     stats: dict[str, dict[str, str | None]], key: str, side: str
 ) -> str | None:
     return stats.get(key, {}).get(side)
+
 
 def _stat_count(raw: str | None) -> int:
     if raw is None:
@@ -651,6 +669,7 @@ def _stat_count(raw: str | None) -> int:
         return max(0, int(raw.strip()))
     except ValueError:
         return 0
+
 
 async def _fill_lineups(
     session: AsyncSession,
@@ -665,6 +684,7 @@ async def _fill_lineups(
     for fixture_id, is_home, formation in (await session.execute(stmt)).all():
         key = "home_formation" if is_home else "away_formation"
         extras[int(fixture_id)][key] = _blank_to_none(formation)
+
 
 async def _fill_prematch(
     session: AsyncSession,
@@ -697,6 +717,7 @@ async def _fill_prematch(
     missing = [fid for fid in ids if extras[fid]["prematch"] is None]
     if missing:
         await _fill_live_opening_1x2(session, missing, extras)
+
 
 async def _fill_live_opening_1x2(
     session: AsyncSession,
@@ -777,6 +798,7 @@ async def _fill_live_opening_1x2(
     for fixture_id, odds_rows in by_fixture.items():
         extras[fixture_id]["prematch"] = select_live_1x2(odds_rows)
 
+
 def _parse_pct(raw: str | None) -> float | None:
     if raw is None:
         return None
@@ -787,6 +809,7 @@ def _parse_pct(raw: str | None) -> float | None:
         return float(text)
     except ValueError:
         return None
+
 
 async def _fill_predictions(
     session: AsyncSession,
@@ -806,6 +829,7 @@ async def _fill_predictions(
         )
         extras[int(fixture_id)]["prediction_pct_home"] = _parse_pct(pct_home)
         extras[int(fixture_id)]["prediction_pct_away"] = _parse_pct(pct_away)
+
 
 async def _fill_next_goal(
     session: AsyncSession,
@@ -860,6 +884,7 @@ async def _fill_next_goal(
         extras[fixture_id]["next_goal"] = select_next_goal_odds(
             odds_rows, status, goals_home, goals_away, et_home, et_away
         )
+
 
 async def _mapped_next_goal_ids(session: AsyncSession) -> set[int]:
     return await mapped_next_goal_ids(session)

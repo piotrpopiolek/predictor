@@ -119,6 +119,7 @@ _COMPARE_LABELS = {
     "total": "Ogółem",
 }
 
+
 async def load_match_detail(engine: AsyncEngine, fixture_id: int) -> MatchDetail | None:
     match = await load_fixture_match(engine, fixture_id)
     if match is None:
@@ -169,6 +170,7 @@ async def load_match_detail(engine: AsyncEngine, fixture_id: int) -> MatchDetail
         goal_price=goal_price,
         form_results=form_results,
     )
+
 
 async def _group_table(session: AsyncSession, match: LiveMatch) -> GroupTable | None:
     rows = (
@@ -248,6 +250,7 @@ async def _group_table(session: AsyncSession, match: LiveMatch) -> GroupTable | 
         captured=captured,
     )
 
+
 async def _events(session: AsyncSession, match: LiveMatch) -> list[DetailEvent]:
     assist = aliased(Player)
     rows = (
@@ -288,6 +291,7 @@ async def _events(session: AsyncSession, match: LiveMatch) -> list[DetailEvent]:
             )
         )
     return events
+
 
 async def _attack_subs(session: AsyncSession, match: LiveMatch) -> list[AttackChange]:
     assist = aliased(Player)
@@ -358,6 +362,7 @@ async def _attack_subs(session: AsyncSession, match: LiveMatch) -> list[AttackCh
         )
     )
 
+
 async def _stats(session: AsyncSession, match: LiveMatch) -> list[DetailStat]:
     rows = (
         await session.execute(
@@ -387,6 +392,7 @@ async def _stats(session: AsyncSession, match: LiveMatch) -> list[DetailStat]:
         )
         for name in ordered
     ]
+
 
 async def _lineup(session: AsyncSession, match: LiveMatch) -> tuple[
     list[DetailPlayer],
@@ -437,6 +443,7 @@ async def _lineup(session: AsyncSession, match: LiveMatch) -> tuple[
             (away_xi if starter else away_bench).append(player)
     return home_xi, away_xi, home_bench, away_bench
 
+
 async def _lineup_strength(
     session: AsyncSession,
     match: LiveMatch,
@@ -455,6 +462,7 @@ async def _lineup_strength(
         season=match.season,
         kickoff=match.kickoff,
     )
+
 
 async def _h2h(session: AsyncSession, fixture_id: int) -> list[DetailH2H]:
     home = aliased(Team)
@@ -498,6 +506,7 @@ async def _h2h(session: AsyncSession, fixture_id: int) -> list[DetailH2H]:
         )
     return items
 
+
 async def _recent_results(
     session: AsyncSession, match: LiveMatch
 ) -> tuple[tuple[str, tuple[DetailH2H, ...]], ...]:
@@ -510,6 +519,7 @@ async def _recent_results(
             continue
         groups.append((name, tuple(await _team_results(session, match, team_id))))
     return tuple(group for group in groups if group[1])
+
 
 async def _team_results(
     session: AsyncSession, match: LiveMatch, team_id: int
@@ -555,6 +565,7 @@ async def _team_results(
         )
     return items
 
+
 def _comparison_rows(raw: object) -> tuple[tuple[str, str, str], ...]:
     if not isinstance(raw, dict):
         return ()
@@ -570,11 +581,13 @@ def _comparison_rows(raw: object) -> tuple[tuple[str, str, str], ...]:
         rows.append((label, str(home or "—"), str(away or "—")))
     return tuple(rows)
 
+
 def _blank(raw: object) -> str | None:
     if raw is None:
         return None
     text = str(raw).strip()
     return text or None
+
 
 def _grid_key(grid: str) -> tuple[int, int]:
     parts = grid.split(":")
@@ -584,6 +597,7 @@ def _grid_key(grid: str) -> tuple[int, int]:
         return (int(parts[0]), int(parts[1]))
     except ValueError:
         return (99, 99)
+
 
 async def _live_markets(session: AsyncSession, match: LiveMatch) -> list[OddsMarket]:
     latest = await session.scalar(
@@ -632,6 +646,7 @@ async def _live_markets(session: AsyncSession, match: LiveMatch) -> list[OddsMar
         )
     )
 
+
 async def _goal_price(session: AsyncSession, match: LiveMatch) -> GoalPrice | None:
     total = (match.goals_home or 0) + (match.goals_away or 0)
     line = total + 0.5
@@ -668,6 +683,7 @@ async def _goal_price(session: AsyncSession, match: LiveMatch) -> GoalPrice | No
         ht_odd=ht_odd,
         ht_elapsed=ht_elapsed,
     )
+
 
 async def _ht_over(
     session: AsyncSession,

@@ -24,6 +24,7 @@ class AttackChange:
     summary: str
     effect: str | None
 
+
 @dataclass(frozen=True, slots=True)
 class GoalPrice:
     none_odd: str | None
@@ -33,7 +34,9 @@ class GoalPrice:
     over_implied: str | None
     move: str | None
 
+
 ATTACK_SUB_WINDOW = 15
+
 
 @dataclass(frozen=True, slots=True)
 class DetailEvent:
@@ -51,11 +54,13 @@ class DetailEvent:
             return f"{self.minute}+{self.extra}'"
         return f"{self.minute}'"
 
+
 @dataclass(frozen=True, slots=True)
 class DetailStat:
     label: str
     home: str | None
     away: str | None
+
 
 @dataclass(frozen=True, slots=True)
 class DetailPlayer:
@@ -64,12 +69,14 @@ class DetailPlayer:
     position: str | None
     starter: bool
 
+
 @dataclass(frozen=True, slots=True)
 class DetailH2H:
     when: str
     home: str
     away: str
     score: str
+
 
 @dataclass(frozen=True, slots=True)
 class StandingSlot:
@@ -85,11 +92,13 @@ class StandingSlot:
     def gd(self) -> int:
         return self.gf - self.ga
 
+
 @dataclass(frozen=True, slots=True)
 class RankedSlot:
     slot: StandingSlot
     rank: int
     delta: int
+
 
 @dataclass(frozen=True, slots=True)
 class SplitPreview:
@@ -104,6 +113,7 @@ class SplitPreview:
     away_delta: int
     active: bool
 
+
 @dataclass(frozen=True, slots=True)
 class GroupTable:
     """Group table before this match, plus the table after its points."""
@@ -116,6 +126,7 @@ class GroupTable:
     split: str | None
     moves: str | None
     captured: str | None
+
 
 @dataclass(frozen=True, slots=True)
 class MatchDetail:
@@ -170,6 +181,7 @@ class MatchDetail:
             ],
         }
 
+
 def points_split(home_goals: int, away_goals: int) -> tuple[int, int]:
     """League points from a score: 3/0, 1/1, or 0/3."""
     if home_goals > away_goals:
@@ -177,6 +189,7 @@ def points_split(home_goals: int, away_goals: int) -> tuple[int, int]:
     if home_goals < away_goals:
         return 0, 3
     return 1, 1
+
 
 def rank_slots(
     slots: tuple[StandingSlot, ...] | list[StandingSlot],
@@ -196,6 +209,7 @@ def rank_slots(
         for index, slot in enumerate(ordered, start=1)
     )
 
+
 def _shifted(
     slot: StandingSlot,
     *,
@@ -213,6 +227,7 @@ def _shifted(
         ga=slot.ga + ga,
         api_rank=slot.api_rank,
     )
+
 
 def apply_score(
     slots: tuple[StandingSlot, ...] | list[StandingSlot],
@@ -251,6 +266,7 @@ def apply_score(
             shifted.append(slot)
     return shifted
 
+
 def _with_deltas(
     before: tuple[RankedSlot, ...], after: tuple[RankedSlot, ...]
 ) -> tuple[RankedSlot, ...]:
@@ -264,6 +280,7 @@ def _with_deltas(
         for row in after
     )
 
+
 def _split_text(home: str, away: str, home_goals: int, away_goals: int) -> str:
     home_points, away_points = points_split(home_goals, away_goals)
     if home_points == away_points:
@@ -271,6 +288,7 @@ def _split_text(home: str, away: str, home_goals: int, away_goals: int) -> str:
     if home_points == 3:
         return f"{home} +3, {away} +0"
     return f"{away} +3, {home} +0"
+
 
 def point_splits(
     rows: list[StandingSlot],
@@ -334,6 +352,7 @@ def point_splits(
         )
     return tuple(previews)
 
+
 def _moves(projected: tuple[RankedSlot, ...]) -> str:
     parts: list[str] = []
     for row in projected:
@@ -344,6 +363,7 @@ def _moves(projected: tuple[RankedSlot, ...]) -> str:
     if not parts:
         return "Miejsca się nie zmieniają."
     return " ".join(parts)
+
 
 def build_group_table(
     *,
@@ -431,6 +451,7 @@ def build_group_table(
         captured=captured,
     )
 
+
 def _snapshot_includes_match(
     *,
     status_short: str,
@@ -447,7 +468,9 @@ def _snapshot_includes_match(
         other_finished.get(away_id, 0) + 1
     )
 
+
 _Sub = tuple[int, int | None, int, int | None, int | None, str | None, str | None]
+
 
 def recent_attack_changes(
     subs: list[_Sub],
@@ -485,6 +508,7 @@ def recent_attack_changes(
         )
     return tuple(changes)
 
+
 def _starter_attack_roles(
     spots: list[tuple[int, int, str | None, str | None, bool]],
 ) -> dict[int, str]:
@@ -515,6 +539,7 @@ def _starter_attack_roles(
             roles[pid] = "cf"
     return roles
 
+
 def _player_role(
     player_id: int | None,
     roles: dict[int, str],
@@ -531,6 +556,7 @@ def _player_role(
         if pid == player_id and _is_forward(position):
             return "napastnik"
     return None
+
 
 def _sub_effect(
     team_id: int,
@@ -560,10 +586,12 @@ def _sub_effect(
         return None
     return " ".join(notes)
 
+
 def _is_forward(position: str | None) -> bool:
     if not position:
         return False
     return position.strip().upper().startswith("F")
+
 
 def _parse_grid(grid: str | None) -> tuple[int, int] | None:
     if not grid or ":" not in grid:
@@ -573,6 +601,7 @@ def _parse_grid(grid: str | None) -> tuple[int, int] | None:
         return int(row_raw), int(col_raw)
     except ValueError:
         return None
+
 
 def _sub_summary(
     off_name: str | None,
@@ -589,15 +618,18 @@ def _sub_summary(
         parts.append(f"wchodzi {on_name}{role}")
     return ", ".join(parts)
 
+
 @dataclass(frozen=True, slots=True)
 class OddsQuote:
     label: str
     odd: str
 
+
 @dataclass(frozen=True, slots=True)
 class OddsMarket:
     title: str
     quotes: tuple[OddsQuote, ...]
+
 
 _ODDS_MARKETS = (
     ("fulltime result", "Wynik"),
@@ -607,6 +639,7 @@ _ODDS_MARKETS = (
     ("match goals", "Liczba goli"),
     ("asian handicap", "Handicap"),
 )
+
 
 def select_display_markets(
     rows: list[tuple[str, str, str, Decimal, bool | None, bool | None]],
@@ -644,6 +677,7 @@ def select_display_markets(
         markets.append(nxt)
     return tuple(markets)
 
+
 def _pick_lines(
     market: str,
     lines: list[tuple[str, str, Decimal, bool | None]],
@@ -653,6 +687,7 @@ def _pick_lines(
     if not mains and market == "match goals":
         chosen = [line for line in lines if _handicap_num(line[1]) in {1.5, 2.5, 3.5}]
     return sorted(chosen, key=lambda line: _line_order(line[0], line[1]))
+
 
 def _line_order(label: str, handicap: str) -> tuple[int, float, str]:
     folded = label.strip().casefold()
@@ -672,6 +707,7 @@ def _line_order(label: str, handicap: str) -> tuple[int, float, str]:
         "draw or away": 2,
     }.get(folded, 3)
     return (rank, _handicap_num(handicap) or 0.0, folded)
+
 
 def _next_goal_market(
     grouped: dict[str, list[tuple[str, str, Decimal, bool | None]]],
@@ -693,12 +729,14 @@ def _next_goal_market(
         return None
     return OddsMarket(title=f"Kto strzeli {scored + 1}. gola", quotes=quotes)
 
+
 def _ordinal(number: int) -> str:
     if 10 <= number % 100 <= 20:
         suffix = "th"
     else:
         suffix = {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
     return f"{number}{suffix}"
+
 
 def _price_label(label: str, handicap: str, home: str, away: str) -> str:
     folded = label.strip().casefold()
@@ -723,6 +761,7 @@ def _price_label(label: str, handicap: str, home: str, away: str) -> str:
         return f"{text} {line}"
     return text
 
+
 def _handicap_num(raw: str) -> float | None:
     text = raw.strip()
     if not text:
@@ -732,12 +771,15 @@ def _handicap_num(raw: str) -> float | None:
     except ValueError:
         return None
 
+
 def _fmt_odd(raw: Decimal) -> str:
     return f"{raw.quantize(Decimal('0.01')):.2f}"
+
 
 _NONE_LABELS = frozenset({"no goal", "none", "no", "neither", "no goals"})
 
 _OVER_MARKETS = frozenset({"over/under line", "match goals"})
+
 
 def read_goal_price(
     *,
@@ -759,14 +801,17 @@ def read_goal_price(
         move=_line_move(over_odd, ht_odd, ht_elapsed),
     )
 
+
 def _implied(odd: Decimal) -> str:
     if odd <= 0:
         return "—"
     return f"{(Decimal(100) / odd).quantize(Decimal('1')):.0f}%"
 
+
 def _line_label(line: float) -> str:
     text = f"{line:.1f}"
     return text.replace(".", ",")
+
 
 def _line_move(
     now_odd: Decimal | None,
@@ -784,6 +829,7 @@ def _line_move(
         return f"{change}. Rynek widzi więcej sytuacji."
     return f"{change}. Rynek widzi mniej sytuacji."
 
+
 def _none_from_next_goal(match: LiveMatch) -> Decimal | None:
     quote = match.next_goal
     if quote is None or not quote.none:
@@ -792,6 +838,7 @@ def _none_from_next_goal(match: LiveMatch) -> Decimal | None:
         return Decimal(quote.none)
     except Exception:
         return None
+
 
 def _none_odd(rows: Sequence[Any], total: int) -> Decimal | None:
     target = f"which team will score the {_ordinal(total + 1)} goal?"
@@ -803,6 +850,7 @@ def _none_odd(rows: Sequence[Any], total: int) -> Decimal | None:
         if str(label).strip().casefold() in _NONE_LABELS:
             return Decimal(odd)
     return None
+
 
 def _over_odd(rows: Sequence[Any], line: float) -> Decimal | None:
     for market, label, handicap, odd, suspended in rows:

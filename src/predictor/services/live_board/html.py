@@ -40,8 +40,10 @@ def _img(url: str | None, label: str, class_name: str = "logo") -> str:
         'loading="lazy" referrerpolicy="no-referrer">'
     )
 
+
 def _score(value: int | None) -> str:
     return "—" if value is None else str(value)
+
 
 def _reds(count: int) -> str:
     if count <= 0:
@@ -53,10 +55,12 @@ def _reds(count: int) -> str:
     label = f"{count} czerwone" if count != 1 else "czerwona"
     return f'<span class="reds" title="{label}">{cards}</span>'
 
+
 def _formation(value: str | None) -> str:
     if not value:
         return ""
     return f'<span class="formation">{escape(value)}</span>'
+
 
 def _scorer_note(kind: str) -> str:
     if kind == "penalty":
@@ -64,6 +68,7 @@ def _scorer_note(kind: str) -> str:
     if kind == "own_goal":
         return " (sam.)"
     return ""
+
 
 def _scorer_list(match: LiveMatch, side: str) -> str:
     items = [item for item in match.scorers if item.side == side]
@@ -76,6 +81,7 @@ def _scorer_list(match: LiveMatch, side: str) -> str:
         note = _scorer_note(item.kind)
         lines.append(f'<li><span class="who">{name}{note}</span> {clock}</li>')
     return f'<ul class="scorer-list">{"".join(lines)}</ul>'
+
 
 def _facts(match: LiveMatch) -> str:
     bits: list[str] = []
@@ -102,6 +108,7 @@ def _facts(match: LiveMatch) -> str:
     if not bits:
         return ""
     return f'<p class="facts">{" · ".join(bits)}</p>'
+
 
 def _stats_line(match: LiveMatch) -> str:
     stats = match.stats
@@ -136,6 +143,7 @@ def _stats_line(match: LiveMatch) -> str:
         return ""
     return f'<p class="stats">{" · ".join(bits)}</p>'
 
+
 def _form_cell(form: TeamGoalForm | None) -> str:
     if form is None:
         return "—"
@@ -145,6 +153,7 @@ def _form_cell(form: TeamGoalForm | None) -> str:
     if form.matches != FORM_LAST_MATCHES:
         bits.append(escape(f"{form.matches} m."))
     return " · ".join(bits)
+
 
 def _form_line(match: LiveMatch) -> str:
     if match.form_home is None and match.form_away is None:
@@ -162,8 +171,10 @@ def _form_line(match: LiveMatch) -> str:
         "</div>"
     )
 
+
 def _score_text(value: str | None) -> str:
     return "—" if value is None else value
+
 
 def _odds_cells(
     parts: list[tuple[str, str, str | None]],
@@ -179,6 +190,7 @@ def _odds_cells(
         )
     return cells
 
+
 def _board_price(raw: str | None) -> str:
     if not raw:
         return ""
@@ -188,12 +200,14 @@ def _board_price(raw: str | None) -> str:
         text = raw
     return f'<span class="team-odd">{escape(text)}</span>'
 
+
 def _opening_price(match: LiveMatch, side: str) -> str:
     quote = match.prematch
     if quote is None:
         return ""
     raw = quote.home if side == "home" else quote.away
     return _board_price(raw)
+
 
 def _opening_draw(match: LiveMatch) -> str:
     quote = match.prematch
@@ -203,6 +217,7 @@ def _opening_draw(match: LiveMatch) -> str:
     if not price:
         return ""
     return price.replace('class="team-odd"', 'class="score-odd"', 1)
+
 
 def _next_goal_line(match: LiveMatch) -> str:
     quote = match.next_goal
@@ -223,6 +238,7 @@ def _next_goal_line(match: LiveMatch) -> str:
         '<span class="ng-label">Następna bramka</span>'
         f"{''.join(cells)}</p>"
     )
+
 
 _LIVE_CSS = """
   :root {
@@ -561,6 +577,7 @@ _LIVE_CSS = """
   }
 """
 
+
 def _token_field(operator_token: str | None) -> str:
     if not operator_token:
         return ""
@@ -649,6 +666,7 @@ def _match_card(
 </article>
 """
 
+
 def _bet_block(
     match: LiveMatch,
     *,
@@ -696,6 +714,7 @@ def _bet_block(
     </form>
   </div>
 """
+
 
 _REFRESH_SCRIPT = f"""
 <script>
@@ -752,6 +771,7 @@ _REFRESH_SCRIPT = f"""
 }})();
 </script>
 """
+
 
 def render_live_html(
     matches: list[LiveMatch],
@@ -823,6 +843,7 @@ def render_live_html(
 </html>
 """
 
+
 _WEEKDAYS_PL = (
     "poniedziałek",
     "wtorek",
@@ -833,9 +854,11 @@ _WEEKDAYS_PL = (
     "niedziela",
 )
 
+
 def format_day_heading(day: date) -> str:
     weekday = _WEEKDAYS_PL[day.weekday()]
     return f"{weekday} {day.strftime('%d.%m.%Y')}"
+
 
 def render_day_html(
     matches: list[LiveMatch],
@@ -913,10 +936,12 @@ def render_day_html(
 </html>
 """
 
+
 def _pct(value: float | None) -> str:
     if value is None:
         return "—"
     return f"{value:.1f}%".replace(".", ",")
+
 
 def _pl_num(raw: str | float | Decimal | None) -> str:
     if raw is None:
@@ -926,6 +951,7 @@ def _pl_num(raw: str | float | Decimal | None) -> str:
         whole, frac = text.split(".", 1)
         return f"{whole},{frac}"
     return text
+
 
 _BETS_CSS = """
   .metrics {
@@ -1058,6 +1084,7 @@ _BETS_CSS = """
   }
 """
 
+
 def _fnum(raw: object) -> float | None:
     if raw is None:
         return None
@@ -1065,6 +1092,7 @@ def _fnum(raw: object) -> float | None:
         return float(str(raw).strip().replace(",", "."))
     except (TypeError, ValueError):
         return None
+
 
 def _svg_polyline(
     xs: list[float],
@@ -1083,6 +1111,7 @@ def _svg_polyline(
         f'opacity="{opacity}" points="{points}"/>'
     )
 
+
 def _moving_average(values: list[float], window: int) -> list[float]:
     if not values:
         return []
@@ -1097,6 +1126,7 @@ def _moving_average(values: list[float], window: int) -> list[float]:
         else:
             out.append(running / (i + 1))
     return out
+
 
 def _chart_layout(
     series: list[list[float]],
@@ -1137,6 +1167,7 @@ def _chart_layout(
         plotted.append([(x_at(i), y_at(v)) for i, v in enumerate(row)])
     return plotted, y_min, y_max, pad_l, pad_t
 
+
 def _y_grid_svg(
     y_min: float,
     y_max: float,
@@ -1175,6 +1206,7 @@ def _y_grid_svg(
         )
     return "".join(parts)
 
+
 def _bets_chart_series(bets: list[dict[str, Any]]) -> list[dict[str, float]]:
     """Chronological points for charts (skip open for pnl/hit progress)."""
     ordered = sorted(
@@ -1212,6 +1244,7 @@ def _bets_chart_series(bets: list[dict[str, Any]]) -> list[dict[str, float]]:
             }
         )
     return points
+
 
 def render_bets_saldo_chart(bets: list[dict[str, Any]]) -> str:
     points = _bets_chart_series(bets)
@@ -1271,6 +1304,7 @@ def render_bets_saldo_chart(bets: list[dict[str, Any]]) -> str:
         f'aria-label="Wykres salda, stawki i zmiany">'
         f"{grid}{''.join(lines)}</svg></section>"
     )
+
 
 def render_bets_hit_chart(bets: list[dict[str, Any]]) -> str:
     points = [p for p in _bets_chart_series(bets) if p["decided"] > 0]
@@ -1332,6 +1366,7 @@ def render_bets_hit_chart(bets: list[dict[str, Any]]) -> str:
         f'aria-label="Wykres skuteczności">'
         f"{grid}{hit_line}{avg_line}</svg></section>"
     )
+
 
 def render_bets_html(
     payload: dict[str, Any],
@@ -1465,6 +1500,7 @@ def render_bets_html(
 </body>
 </html>
 """
+
 
 def _live_nav(active_nav: str) -> str:
     items = (

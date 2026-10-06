@@ -86,6 +86,7 @@ _PREMATCH_MARKETS = ("match winner", "home/away")
 
 _LIVE_1X2_MARKETS = ("fulltime result", "full time result", "1x2")
 
+
 @dataclass(frozen=True, slots=True)
 class LiveScorer:
     side: str
@@ -110,6 +111,7 @@ class LiveScorer:
             "clock": self.clock,
         }
 
+
 @dataclass(frozen=True, slots=True)
 class NextGoalOdds:
     home: str | None
@@ -126,6 +128,7 @@ class NextGoalOdds:
             "market": self.market,
             "suspended": self.suspended,
         }
+
 
 @dataclass(frozen=True, slots=True)
 class PrematchOdds:
@@ -145,6 +148,7 @@ class PrematchOdds:
             "bookmaker": self.bookmaker,
             "source": self.source,
         }
+
 
 @dataclass(frozen=True, slots=True)
 class TeamGoalForm:
@@ -166,6 +170,7 @@ class TeamGoalForm:
         if self.avg_minute is None:
             return None
         return f"{int(round(self.avg_minute))}'"
+
 
 @dataclass(frozen=True, slots=True)
 class LiveStats:
@@ -205,12 +210,14 @@ class LiveStats:
             )
         )
 
+
 @dataclass(frozen=True, slots=True)
 class FirstLegScore:
     home_team_id: int
     away_team_id: int
     goals_home: int
     goals_away: int
+
 
 @dataclass(frozen=True, slots=True)
 class LiveMatch:
@@ -303,6 +310,7 @@ class LiveMatch:
             "form_away": None if self.form_away is None else self.form_away.as_dict(),
         }
 
+
 def clock_label(status_short: str, elapsed: int | None, extra: int | None) -> str:
     if status_short == "HT":
         return "HT"
@@ -311,6 +319,7 @@ def clock_label(status_short: str, elapsed: int | None, extra: int | None) -> st
     if extra:
         return f"{elapsed}+{extra}'"
     return f"{elapsed}'"
+
 
 def clock_sort_key(match: LiveMatch) -> tuple[int, int, int]:
     """Higher tuple sorts first (more match time elapsed)."""
@@ -331,8 +340,10 @@ def clock_sort_key(match: LiveMatch) -> tuple[int, int, int]:
         minute = 0
     return (minute, extra, int(match.fixture_id))
 
+
 def sort_matches_by_clock(matches: Sequence[LiveMatch]) -> list[LiveMatch]:
     return sorted(matches, key=clock_sort_key, reverse=True)
+
 
 def safe_http_url(url: str | None) -> str | None:
     if url is None:
@@ -341,6 +352,7 @@ def safe_http_url(url: str | None) -> str | None:
     if stripped.startswith("https://") or stripped.startswith("http://"):
         return stripped
     return None
+
 
 def parse_int_ids(raw: object) -> list[int]:
     if not isinstance(raw, list):
@@ -358,11 +370,13 @@ def parse_int_ids(raw: object) -> list[int]:
         ids.append(fid)
     return ids
 
+
 def parse_live_fixture_ids(params: dict[str, Any] | None) -> list[int]:
     """Ids from the last `/fixtures?live=all` task. status_short stays 2H after FT."""
     if not params:
         return []
     return parse_int_ids(params.get("fixture_ids"))
+
 
 def pick_venue(
     venue_id: int | None,
@@ -381,6 +395,7 @@ def pick_venue(
         city = _blank_to_none(catalog_city)
     return name, city
 
+
 def event_kind(event_type: str, detail: str | None) -> str | None:
     kind = event_type.strip()
     det = (detail or "").strip().casefold()
@@ -396,8 +411,10 @@ def event_kind(event_type: str, detail: str | None) -> str | None:
         return "red"
     return None
 
+
 def goal_clock_minute(minute: int, extra: int | None) -> int:
     return int(minute) + int(extra or 0)
+
 
 def scoring_team_id(
     event_team_id: int,
@@ -415,6 +432,7 @@ def scoring_team_id(
         return None
     return event_team_id
 
+
 def summarize_team_goal_form(
     goals_for: Sequence[int | None],
     minutes: Sequence[int],
@@ -430,6 +448,7 @@ def summarize_team_goal_form(
         avg_goals=sum(scored) / len(scored),
         avg_minute=avg_minute,
     )
+
 
 def avg_minute_from_goal_bins(raw: object) -> float | None:
     """Weighted midpoint of API goal-for minute bins (0-15, 16-30, …)."""
@@ -456,6 +475,7 @@ def avg_minute_from_goal_bins(raw: object) -> float | None:
         return None
     return weighted / total
 
+
 def next_goal_target(
     status_short: str,
     goals_home: int | None,
@@ -469,6 +489,7 @@ def next_goal_target(
         return (et_home or 0) + (et_away or 0) + 1, True
     return (goals_home or 0) + (goals_away or 0) + 1, False
 
+
 def market_is_next_goal(name: str, ordinal: int, extra_time: bool) -> bool:
     if not is_next_goal_market(name):
         return False
@@ -480,6 +501,7 @@ def market_is_next_goal(name: str, ordinal: int, extra_time: bool) -> bool:
         return False
     return int(match.group(1)) == ordinal and (match.group(2) is not None) == extra_time
 
+
 def odd_side(label: str) -> str | None:
     folded = normalized_bet_name(label)
     if folded in _HOME_ODD_LABELS:
@@ -490,11 +512,13 @@ def odd_side(label: str) -> str | None:
         return "none"
     return None
 
+
 def format_odd(odd: Decimal) -> str:
     text = format(odd, "f")
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text or "0"
+
 
 def select_next_goal_odds(
     rows: list[tuple[str | None, str, Decimal, bool | None]],
@@ -540,11 +564,14 @@ def select_next_goal_odds(
         suspended=suspended,
     )
 
+
 def is_match_winner_market(name: str) -> bool:
     return normalized_bet_name(name) == "match winner"
 
+
 def is_home_away_market(name: str) -> bool:
     return normalized_bet_name(name) == "home/away"
+
 
 def match_winner_side(label: str) -> str | None:
     folded = normalized_bet_name(label)
@@ -555,6 +582,7 @@ def match_winner_side(label: str) -> str | None:
     if folded in _AWAY_ODD_LABELS:
         return "away"
     return None
+
 
 def select_prematch_odds(
     rows: list[tuple[int, str | None, str | None, str, Decimal]],
@@ -587,6 +615,7 @@ def select_prematch_odds(
         picked = _pick_prematch_book(home_away, require_draw=False)
     return picked
 
+
 def _pick_prematch_book(
     by_book: dict[int, dict[str, Any]], *, require_draw: bool
 ) -> PrematchOdds | None:
@@ -614,8 +643,10 @@ def _pick_prematch_book(
         source="prematch",
     )
 
+
 def is_fulltime_1x2_market(name: str) -> bool:
     return normalized_bet_name(name) in _LIVE_1X2_MARKETS
+
 
 def select_live_1x2(
     rows: list[tuple[str | None, str, Decimal]],
@@ -651,6 +682,7 @@ def select_live_1x2(
         source="live",
     )
 
+
 def _parse_odd(raw: str | None) -> Decimal | None:
     if raw is None:
         return None
@@ -658,6 +690,7 @@ def _parse_odd(raw: str | None) -> Decimal | None:
         return Decimal(raw)
     except (InvalidOperation, ValueError):
         return None
+
 
 def favorite_side(odds: PrematchOdds | None) -> str | None:
     """Side with a strictly shorter 1X2 price; draw-shortest or tied → None."""
@@ -674,6 +707,7 @@ def favorite_side(odds: PrematchOdds | None) -> str | None:
         return "away"
     return None
 
+
 def _prediction_favorite(match: LiveMatch) -> str | None:
     winner = match.prediction_winner_team_id
     if winner is not None and match.home_team_id and winner == match.home_team_id:
@@ -689,6 +723,7 @@ def _prediction_favorite(match: LiveMatch) -> str | None:
     if away_pct > home_pct:
         return "away"
     return None
+
 
 def match_favorite_side(match: LiveMatch) -> str | None:
     """Favorite from trusted pre-match odds, else API-Football predictions.
@@ -708,6 +743,7 @@ def match_favorite_side(match: LiveMatch) -> str | None:
         return favorite_side(odds)
     return None
 
+
 def is_favorite_losing(match: LiveMatch) -> bool:
     if match.status_short in _PEN_STATUSES:
         return False
@@ -718,11 +754,13 @@ def is_favorite_losing(match: LiveMatch) -> bool:
         return match.goals_away - match.goals_home == 1
     return match.goals_home - match.goals_away == 1
 
+
 def is_second_leg(round_name: str | None, leg: int | None = None) -> bool:
     if leg == 2:
         return True
     folded = (round_name or "").casefold()
     return any(marker in folded for marker in _SECOND_LEG_MARKERS)
+
 
 def _goals_for_team(
     team_id: int,
@@ -738,6 +776,7 @@ def _goals_for_team(
     if team_id == away_id:
         return int(goals_away)
     return None
+
 
 def is_tie_deficit(match: LiveMatch, first_leg: FirstLegScore | None) -> bool:
     if match.status_short in _PEN_STATUSES:
@@ -771,6 +810,7 @@ def is_tie_deficit(match: LiveMatch, first_leg: FirstLegScore | None) -> bool:
         return False
     return (int(live_opp) + first_opp) - (int(live_fav) + first_fav) == 1
 
+
 def next_goal_reasons(
     match: LiveMatch, first_leg: FirstLegScore | None = None
 ) -> tuple[str, ...]:
@@ -780,6 +820,7 @@ def next_goal_reasons(
     if is_tie_deficit(match, first_leg):
         reasons.append("tie_deficit")
     return tuple(reasons)
+
 
 def select_next_goal_matches(
     matches: Sequence[LiveMatch],
@@ -794,13 +835,16 @@ def select_next_goal_matches(
     selected.sort(key=lambda item: clock_sort_key(item[0]), reverse=True)
     return selected
 
+
 def _blank_to_none(raw: str | None) -> str | None:
     text = (raw or "").strip()
     return text if text else None
 
+
 def _name(raw: str | None) -> str:
     text = (raw or "").strip()
     return text if text else "—"
+
 
 def _match_noun(count: int) -> str:
     if count == 1:
@@ -810,6 +854,7 @@ def _match_noun(count: int) -> str:
     if 2 <= count % 10 <= 4:
         return "mecze"
     return "meczów"
+
 
 def parse_query_day(raw: str | None) -> date | None:
     """Accept ``YYYY-MM-DD``. Empty input is not a day."""
@@ -823,6 +868,7 @@ def parse_query_day(raw: str | None) -> date | None:
     except ValueError:
         return None
 
+
 def _kickoff_utc(match: LiveMatch) -> datetime | None:
     stamp = match.kickoff
     if stamp is None:
@@ -830,6 +876,7 @@ def _kickoff_utc(match: LiveMatch) -> datetime | None:
     if stamp.tzinfo is None:
         return stamp.replace(tzinfo=UTC)
     return stamp.astimezone(UTC)
+
 
 def order_day_matches(matches: Sequence[LiveMatch]) -> list[LiveMatch]:
     """Leagues by first kickoff, matches inside a league by kickoff."""

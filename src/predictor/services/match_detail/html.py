@@ -37,6 +37,7 @@ _EVENT_LABELS = {
     "Var": "VAR",
 }
 
+
 def _num(raw: str | None) -> float | None:
     if raw is None:
         return None
@@ -46,16 +47,19 @@ def _num(raw: str | None) -> float | None:
     except ValueError:
         return None
 
+
 def render_match_missing() -> str:
     return _page(
         title="Mecz",
         body='<p class="empty">Nie ma takiego meczu w bazie.</p>',
     )
 
+
 def render_match_html(detail: MatchDetail, *, generated_at: datetime) -> str:
     match = detail.match
     title = f"{match.home} – {match.away}"
     return _page(title=title, body=_body(detail, generated_at), refresh=True)
+
 
 def _page(*, title: str, body: str, refresh: bool = False) -> str:
     script = ""
@@ -90,6 +94,7 @@ setTimeout(function () {{ location.reload(); }}, {REFRESH_SECONDS * 1000});
 </html>
 """
 
+
 def _body(detail: MatchDetail, generated_at: datetime) -> str:
     match = detail.match
     chips = _chips(match)
@@ -123,6 +128,7 @@ def _body(detail: MatchDetail, generated_at: datetime) -> str:
 <p class="sub">Odświeżono {escape(generated_at.strftime("%H:%M:%S UTC"))}</p>
 """
 
+
 def _opening_quote(match: LiveMatch) -> PrematchOdds | None:
     quote = match.prematch
     if quote is None:
@@ -130,6 +136,7 @@ def _opening_quote(match: LiveMatch) -> PrematchOdds | None:
     if quote.source == "prematch" or quote.home or quote.away:
         return quote
     return None
+
 
 def _price(raw: str | None) -> str | None:
     if not raw:
@@ -139,12 +146,14 @@ def _price(raw: str | None) -> str | None:
     except InvalidOperation:
         return raw
 
+
 def _opening_odd(match: LiveMatch, side: str) -> str | None:
     quote = _opening_quote(match)
     if quote is None:
         return None
     raw = quote.home if side == "home" else quote.away
     return _price(raw)
+
 
 def _draw_odd(match: LiveMatch) -> str:
     quote = _opening_quote(match)
@@ -154,6 +163,7 @@ def _draw_odd(match: LiveMatch) -> str:
     if not priced:
         return ""
     return f'<div class="score-odd">{escape(priced)}</div>'
+
 
 def _team_side(logo: str | None, name: str, odd: str | None, *, home: bool) -> str:
     price = f'<span class="team-odd">{escape(odd)}</span>' if odd else ""
@@ -165,6 +175,7 @@ def _team_side(logo: str | None, name: str, odd: str | None, *, home: bool) -> s
     side = "home" if home else "away"
     inner = f"{mark}{identity}" if home else f"{identity}{mark}"
     return f'<div class="team {side}">{inner}</div>'
+
 
 def _chips(match: LiveMatch) -> str:
     bits: list[str] = []
@@ -187,6 +198,7 @@ def _chips(match: LiveMatch) -> str:
         + "</p>"
     )
 
+
 def _periods(match: LiveMatch) -> str:
     cells: list[str] = []
     if match.ht_home is not None and match.ht_away is not None:
@@ -198,6 +210,7 @@ def _periods(match: LiveMatch) -> str:
     if not cells:
         return ""
     return f'<p class="periods">{"".join(cells)}</p>'
+
 
 def _events_card(detail: MatchDetail) -> str:
     if not detail.events:
@@ -228,6 +241,7 @@ def _events_card(detail: MatchDetail) -> str:
         inner = f'<ol class="timeline">{"".join(rows)}</ol>'
     return f'<section class="card"><h2>Zdarzenia</h2>{inner}</section>'
 
+
 def _attack_subs_card(detail: MatchDetail) -> str:
     if not detail.attack_subs:
         return ""
@@ -247,6 +261,7 @@ def _attack_subs_card(detail: MatchDetail) -> str:
         '<section class="card"><h2>Zmiany napastników</h2>'
         f'<ul class="subs">{"".join(rows)}</ul></section>'
     )
+
 
 def _stats_card(detail: MatchDetail) -> str:
     if not detail.stats:
@@ -273,6 +288,7 @@ def _stats_card(detail: MatchDetail) -> str:
             )
         inner = "".join(rows)
     return f'<section class="card"><h2>Statystyki</h2>{inner}</section>'
+
 
 def _lineups_card(detail: MatchDetail) -> str:
     if not any(
@@ -308,6 +324,7 @@ def _lineups_card(detail: MatchDetail) -> str:
 </section>
 """
 
+
 def _strength_block(strength: LineupStrength | None) -> str:
     if strength is None or strength.label is None:
         return ""
@@ -319,6 +336,7 @@ def _strength_block(strength: LineupStrength | None) -> str:
         text = "Nie gra: " + ", ".join(strength.missing)
         missing = f'<p class="strength-note">{escape(text)}</p>'
     return f'<p class="strength">{escape(strength.label)}</p>{note}{missing}'
+
 
 def _player_list(players: tuple[DetailPlayer, ...]) -> str:
     if not players:
@@ -334,6 +352,7 @@ def _player_list(players: tuple[DetailPlayer, ...]) -> str:
         )
     return f"<ul class='xi-list'>{''.join(items)}</ul>"
 
+
 def _bench(players: tuple[DetailPlayer, ...]) -> str:
     if not players:
         return ""
@@ -346,6 +365,7 @@ def _bench(players: tuple[DetailPlayer, ...]) -> str:
         for player in players
     )
     return f"<p class='bench'><span>Ławka</span> {names}</p>"
+
 
 def _table_card(detail: MatchDetail) -> str:
     table = detail.table
@@ -396,6 +416,7 @@ def _table_card(detail: MatchDetail) -> str:
         + "</section>"
     )
 
+
 def _split_cards(table: GroupTable, match: LiveMatch) -> str:
     if not table.splits:
         return ""
@@ -415,6 +436,7 @@ def _split_cards(table: GroupTable, match: LiveMatch) -> str:
         '<h3 class="split-title">Podział punktów</h3>'
         '<div class="split-grid">' + "".join(cards) + "</div>"
     )
+
 
 def _standings_table(
     rows: tuple[RankedSlot, ...],
@@ -454,12 +476,14 @@ def _standings_table(
         "</tr></thead><tbody>" + "".join(body) + "</tbody></table>"
     )
 
+
 def _delta(delta: int) -> str:
     if delta > 0:
         return f'<span class="delta up">↑{delta}</span>'
     if delta < 0:
         return f'<span class="delta down">↓{-delta}</span>'
     return '<span class="delta flat">·</span>'
+
 
 def _prediction_card(detail: MatchDetail) -> str:
     match = detail.match
@@ -503,6 +527,7 @@ def _prediction_card(detail: MatchDetail) -> str:
         bits.append(f"<ul class='compare'>{rows}</ul>")
     return f'<section class="card"><h2>Prognoza</h2>{"".join(bits)}</section>'
 
+
 def _goal_price_card(detail: MatchDetail) -> str:
     price = detail.goal_price
     if price is None:
@@ -528,6 +553,7 @@ def _goal_price_card(detail: MatchDetail) -> str:
     if not bits:
         return ""
     return f'<section class="card"><h2>Czy padnie gol</h2>{"".join(bits)}</section>'
+
 
 def _odds_card(detail: MatchDetail) -> str:
     match = detail.match
@@ -577,6 +603,7 @@ def _odds_card(detail: MatchDetail) -> str:
         return ""
     return f'<section class="card"><h2>Kursy</h2>{"".join(blocks)}</section>'
 
+
 def _market_block(market: OddsMarket) -> str:
     chips = "".join(
         f"<span><em>{escape(quote.label)}</em> {escape(quote.odd)}</span>"
@@ -586,6 +613,7 @@ def _market_block(market: OddsMarket) -> str:
         f"<div class='market'><h3>{escape(market.title)}</h3>"
         f"<div class='quotes'>{chips}</div></div>"
     )
+
 
 def _odd_row(
     label: str,
@@ -608,6 +636,7 @@ def _odd_row(
         f"{''.join(cells)}</p>"
     )
 
+
 def _form_bits(form: TeamGoalForm | None) -> str:
     if form is None:
         return ""
@@ -617,6 +646,7 @@ def _form_bits(form: TeamGoalForm | None) -> str:
     if form.matches != FORM_LAST_MATCHES:
         bits.append(f"{form.matches} m.")
     return " · ".join(escape(bit) for bit in bits)
+
 
 def _form_card(detail: MatchDetail) -> str:
     match = detail.match
@@ -638,6 +668,7 @@ def _form_card(detail: MatchDetail) -> str:
         f"{FORM_LAST_MATCHES} meczów</h2>{body}</section>"
     )
 
+
 def _h2h_rows(items: tuple[DetailH2H, ...] | list[DetailH2H]) -> str:
     return "".join(
         "<li><span class='when'>"
@@ -652,6 +683,7 @@ def _h2h_rows(items: tuple[DetailH2H, ...] | list[DetailH2H]) -> str:
         for item in items
     )
 
+
 def _h2h_card(detail: MatchDetail) -> str:
     if not detail.h2h:
         return ""
@@ -660,16 +692,19 @@ def _h2h_card(detail: MatchDetail) -> str:
         f"<ul class='h2h'>{_h2h_rows(detail.h2h)}</ul></section>"
     )
 
+
 def _pct(value: float | None) -> str:
     if value is None:
         return "—"
     return f"{value:.0f}%"
+
 
 def _pct_text(value: str | None) -> str:
     if not value:
         return "—"
     text = value.strip()
     return text if text.endswith("%") else f"{text}%"
+
 
 _DETAIL_CSS = """
   :root {

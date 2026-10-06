@@ -216,7 +216,7 @@ def test_status_api_surface_and_no_get_settle() -> None:
     assert "await settle_open_tickets" in source
     # No await settle on read helpers used by GET
     assert "await settle_open_from_engine" not in source
-    assert source.index("@app.post(\"/live/bets\"") < source.index(
+    assert source.index('@app.post("/live/bets"') < source.index(
         "await settle_open_tickets"
     )
 
