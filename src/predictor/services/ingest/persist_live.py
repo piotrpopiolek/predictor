@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import select
@@ -11,6 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from predictor.models.catalog import OddsLiveBet
+from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture
 from predictor.models.odds import FixtureOddsLive
 from predictor.schemas.catalog import NamedIdItem
@@ -27,21 +27,10 @@ from predictor.schemas.live import LiveFixtureStatus, LiveOddBet, OddsLiveItem
 from predictor.services.ingest.next_goal import is_next_goal_market
 from predictor.services.ingest.persist import _chunks, upsert_named_ids
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
+from predictor.services.odds_parse import parse_odd_value
 
 _VALUE_LABEL_MAX = 64
 _HANDICAP_MAX = 16
-
-
-def _parse_odd(raw: object) -> Decimal | None:
-    if raw is None:
-        return None
-    try:
-        value = Decimal(str(raw))
-    except (InvalidOperation, ValueError):
-        return None
-    if not value.is_finite():
-        return None
-    return value
 
 
 def _handicap_key(raw: object) -> str | None:
@@ -93,6 +82,20 @@ def next_goal_ids_from_mapping(raw: object) -> set[int]:
         except (TypeError, ValueError):
             continue
     return found
+
+
+async def mapped_next_goal_ids(session: AsyncSession) -> set[int]:
+    """Canonical next-goal bet IDs from the live bets dictionary task."""
+    task = await session.scalar(
+        select(EtlTask)
+        .where(EtlTask.endpoint == "/odds/live/bets")
+        .where(EtlTask.cursor_kind.is_(None))
+        .order_by(EtlTask.id)
+        .limit(1)
+    )
+    if task is None or not task.params:
+        return set()
+    return next_goal_ids_from_mapping(task.params.get("next_goal_bet_ids"))
 
 
 def next_goal_bet_ids_in_item(item: OddsLiveItem, mapped: set[int]) -> set[int]:
@@ -225,7 +228,7 @@ def _value_rows(
         handicap = _handicap_key(value.handicap)
         if handicap is None:
             continue
-        odd = _parse_odd(value.odd)
+        odd = parse_odd_value(value.odd)
         if odd is None:
             continue
         rows.append(

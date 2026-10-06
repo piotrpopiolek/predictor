@@ -44,17 +44,20 @@ from predictor.services.match_detail import (
     render_match_html,
     render_match_missing,
 )
-from predictor.services.metrics import metrics_token_ok, render_metrics
+from predictor.services.metrics import (
+    metrics_token_ok,
+    mutation_token_ok,
+    render_metrics,
+)
 from predictor.services.operator_bets import (
     BetError,
     bet_as_dict,
     current_stake_label,
+    list_open_from_engine,
     load_history_payload,
     parse_odd,
     place_bet,
-    settle_and_list_open,
     settle_bet_manual,
-    settle_open_from_engine,
     settle_open_tickets,
 )
 from predictor.services.quota import (
@@ -90,6 +93,14 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Predictor status", lifespan=_lifespan)
     app.state.settings = settings
+    mutation_token = settings.prometheus_metrics_token.get_secret_value()
+
+    def _require_mutation_token(
+        authorization: str | None,
+        form_token: str | None,
+    ) -> None:
+        if not mutation_token_ok(authorization, form_token, mutation_token):
+            raise HTTPException(status_code=401, detail="unauthorized")
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -114,7 +125,6 @@ def create_app() -> FastAPI:
     async def _live_matches() -> list[LiveMatch]:
         engine = cast(AsyncEngine, app.state.engine)
         try:
-            await settle_open_from_engine(engine)
             return await list_live_matches(engine)
         except Exception:
             raise HTTPException(
@@ -129,6 +139,7 @@ def create_app() -> FastAPI:
             matches,
             generated_at=datetime.now(UTC),
             active_nav="all",
+            operator_token=mutation_token,
         )
         return HTMLResponse(html)
 
@@ -144,7 +155,6 @@ def create_app() -> FastAPI:
     async def _next_goal_board() -> list[tuple[LiveMatch, tuple[str, ...]]]:
         engine = cast(AsyncEngine, app.state.engine)
         try:
-            await settle_open_from_engine(engine)
             return await list_next_goal_matches(engine)
         except Exception:
             raise HTTPException(
@@ -157,7 +167,7 @@ def create_app() -> FastAPI:
         selected = await _next_goal_board()
         matches = [match for match, _reasons in selected]
         try:
-            open_bets = await settle_and_list_open(engine)
+            open_bets = await list_open_from_engine(engine)
             stake = await current_stake_label(engine)
         except Exception:
             raise HTTPException(
@@ -173,6 +183,7 @@ def create_app() -> FastAPI:
             active_nav="next_goal",
             open_bets={fid: bet_as_dict(bet) for fid, bet in open_bets.items()},
             current_stake=stake,
+            operator_token=mutation_token,
         )
         return HTMLResponse(html)
 
@@ -181,7 +192,7 @@ def create_app() -> FastAPI:
         engine = cast(AsyncEngine, app.state.engine)
         selected = await _next_goal_board()
         try:
-            open_bets = await settle_and_list_open(engine)
+            open_bets = await list_open_from_engine(engine)
             stake = await current_stake_label(engine)
         except Exception:
             raise HTTPException(
@@ -263,7 +274,11 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=503, detail="postgres_unavailable"
             ) from None
-        html = render_bets_html(payload, generated_at=datetime.now(UTC))
+        html = render_bets_html(
+            payload,
+            generated_at=datetime.now(UTC),
+            operator_token=mutation_token,
+        )
         return HTMLResponse(html)
 
     @app.get("/live/bets.json")
@@ -281,7 +296,10 @@ def create_app() -> FastAPI:
         request: Request,
         fixture_id: int = Form(...),
         odd: str = Form(...),
+        token: str | None = Form(default=None),
+        authorization: str | None = Header(default=None),
     ) -> RedirectResponse | JSONResponse:
+        _require_mutation_token(authorization, token)
         engine = cast(AsyncEngine, app.state.engine)
         wants_json = "application/json" in (request.headers.get("accept") or "")
         try:
@@ -315,7 +333,10 @@ def create_app() -> FastAPI:
         bet_id: int,
         request: Request,
         outcome: str = Form(...),
+        token: str | None = Form(default=None),
+        authorization: str | None = Header(default=None),
     ) -> RedirectResponse | JSONResponse:
+        _require_mutation_token(authorization, token)
         engine = cast(AsyncEngine, app.state.engine)
         wants_json = "application/json" in (request.headers.get("accept") or "")
         try:

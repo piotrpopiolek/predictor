@@ -30,6 +30,7 @@ from predictor.services.ingest.persist import (
     upsert_named_ids,
     upsert_seasons,
 )
+from predictor.services.ingest.task_completion import fail_task
 from predictor.services.queue import (
     complete_task,
     get_or_create_endpoint_task,
@@ -123,12 +124,7 @@ class CatalogIngest:
                 return int(task.id)
 
     async def _fail(self, task_id: int, status: str, error: str) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await session.get(EtlTask, task_id)
-                if task is None:
-                    return
-                await complete_task(session, task, status, error=error)
+        await fail_task(self._session_factory, task_id, status, error)
 
     async def _persist_timezone(
         self, session: AsyncSession, items: list[Any]

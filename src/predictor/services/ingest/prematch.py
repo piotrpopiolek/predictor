@@ -33,6 +33,11 @@ from predictor.services.ingest.persist_odds import (
     replace_odds_mapping,
 )
 from predictor.services.ingest.persist_predictions import persist_predictions
+from predictor.services.ingest.task_completion import (
+    fail_task,
+    finish_task,
+    retry_or_empty_task,
+)
 from predictor.services.queue import (
     claim_h2h_task,
     claim_live_fixture_task,
@@ -42,7 +47,6 @@ from predictor.services.queue import (
     claim_urgent_odds_task,
     claim_urgent_predictions_task,
     complete_task,
-    empty_retry_status,
     ensure_odds_task,
     get_or_create_endpoint_task,
     mapping_needs_refresh,
@@ -489,24 +493,14 @@ class PrematchIngest:
         paging_current: int | None = None,
         paging_total: int | None = None,
     ) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await session.get(EtlTask, task_id)
-                if task is None:
-                    return
-                merged = dict(task.params)
-                merged.update(params)
-                status, merged = empty_retry_status(merged, now=self._now())
-                error = "empty_retry" if status == "retryable_error" else None
-                await complete_task(
-                    session,
-                    task,
-                    status,
-                    error=error,
-                    params=merged,
-                    paging_current=paging_current,
-                    paging_total=paging_total,
-                )
+        await retry_or_empty_task(
+            self._session_factory,
+            task_id,
+            params,
+            now=self._now(),
+            paging_current=paging_current,
+            paging_total=paging_total,
+        )
 
     async def _load_task_fixture(self, task_id: int) -> _FixtureRef | None:
         async with self._session_factory() as session:
@@ -539,30 +533,17 @@ class PrematchIngest:
         paging_current: int | None = None,
         paging_total: int | None = None,
     ) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await session.get(EtlTask, task_id)
-                if task is None:
-                    return
-                merged = dict(task.params)
-                if params:
-                    merged.update(params)
-                await complete_task(
-                    session,
-                    task,
-                    status,
-                    params=merged,
-                    paging_current=paging_current,
-                    paging_total=paging_total,
-                )
+        await finish_task(
+            self._session_factory,
+            task_id,
+            status,
+            params=params,
+            paging_current=paging_current,
+            paging_total=paging_total,
+        )
 
     async def _fail(self, task_id: int, status: str, error: str) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await session.get(EtlTask, task_id)
-                if task is None:
-                    return
-                await complete_task(session, task, status, error=error)
+        await fail_task(self._session_factory, task_id, status, error)
 
 
 def _parse_predictions(raw: list[Any]) -> list[PredictionItem]:

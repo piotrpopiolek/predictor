@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -20,20 +19,9 @@ from predictor.models.odds import FixtureOdds, OddsFixtureMapping
 from predictor.schemas.catalog import NamedIdItem
 from predictor.schemas.odds import OddsMappingItem, PrematchOddsItem
 from predictor.services.ingest.persist import _chunks, upsert_named_ids
+from predictor.services.odds_parse import parse_odd_value
 
 _VALUE_LABEL_MAX = 64
-
-
-def _parse_odd(raw: object) -> Decimal | None:
-    if raw is None:
-        return None
-    try:
-        value = Decimal(str(raw))
-    except (InvalidOperation, ValueError):
-        return None
-    if not value.is_finite():
-        return None
-    return value
 
 
 async def persist_prematch_odds(
@@ -62,7 +50,7 @@ async def persist_prematch_odds(
                     label = (value.value or "").strip()
                     if not label or len(label) > _VALUE_LABEL_MAX:
                         continue
-                    odd = _parse_odd(value.odd)
+                    odd = parse_odd_value(value.odd)
                     if odd is None:
                         continue
                     rows[(fixture_id, bookmaker.id, bet.id, label)] = {

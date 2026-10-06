@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from predictor.client.errors import (
@@ -26,9 +25,10 @@ from predictor.services.ingest.fixtures import parse_fixtures
 from predictor.services.ingest.paging import fetch_all_pages
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.ingest.persist_live import (
-    next_goal_ids_from_mapping,
+    mapped_next_goal_ids,
     persist_odds_live_snapshots,
 )
+from predictor.services.ingest.task_completion import fail_task
 from predictor.services.queue import (
     complete_task,
     drop_untracked_fixture_ids,
@@ -242,16 +242,7 @@ class LiveIngest:
 
     async def _mapped_next_goal_ids(self) -> set[int]:
         async with self._session_factory() as session:
-            task = await session.scalar(
-                select(EtlTask)
-                .where(EtlTask.endpoint == "/odds/live/bets")
-                .where(EtlTask.cursor_kind.is_(None))
-                .order_by(EtlTask.id)
-                .limit(1)
-            )
-        if task is None:
-            return set()
-        return next_goal_ids_from_mapping(task.params.get("next_goal_bet_ids"))
+            return await mapped_next_goal_ids(session)
 
     async def _last_poll_at(self, task_id: int) -> datetime | None:
         async with self._session_factory() as session:
@@ -270,12 +261,7 @@ class LiveIngest:
         return parsed.astimezone(UTC)
 
     async def _fail(self, task_id: int, status: str, error: str) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await session.get(EtlTask, task_id)
-                if task is None:
-                    return
-                await complete_task(session, task, status, error=error)
+        await fail_task(self._session_factory, task_id, status, error)
 
 
 def _int_ids(raw: object) -> list[int]:

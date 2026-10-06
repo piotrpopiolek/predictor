@@ -49,12 +49,7 @@ def test_live_board_html_and_json(
         del engine
         return []
 
-    async def fake_settle(engine: object) -> int:
-        del engine
-        return 0
-
     monkeypatch.setattr("predictor.api.main.list_live_matches", fake_list)
-    monkeypatch.setattr("predictor.api.main.settle_open_from_engine", fake_settle)
     with TestClient(create_app()) as client:
         html = client.get("/live")
         root = client.get("/")
@@ -78,10 +73,6 @@ def test_live_next_goal_html_and_json(
         del engine
         return []
 
-    async def fake_settle(engine: object) -> int:
-        del engine
-        return 0
-
     async def fake_open(engine: object) -> dict[int, object]:
         del engine
         return {}
@@ -91,8 +82,7 @@ def test_live_next_goal_html_and_json(
         return "21.00"
 
     monkeypatch.setattr("predictor.api.main.list_next_goal_matches", fake_next)
-    monkeypatch.setattr("predictor.api.main.settle_open_from_engine", fake_settle)
-    monkeypatch.setattr("predictor.api.main.settle_and_list_open", fake_open)
+    monkeypatch.setattr("predictor.api.main.list_open_from_engine", fake_open)
     monkeypatch.setattr("predictor.api.main.current_stake_label", fake_stake)
     with TestClient(create_app()) as client:
         html = client.get("/live/next-goal")
@@ -217,17 +207,24 @@ def test_place_and_settle_bet_json(
     monkeypatch.setattr("predictor.api.main.settle_bet_manual", fake_settle)
     monkeypatch.setattr("predictor.api.main.AsyncSession", _SessionCM)
 
+    auth = {"Authorization": "Bearer test-metrics-token"}
     with TestClient(create_app()) as client:
-        place = client.post(
+        denied = client.post(
             "/live/bets",
             data={"fixture_id": "42", "odd": "1.70"},
             headers={"Accept": "application/json"},
         )
+        place = client.post(
+            "/live/bets",
+            data={"fixture_id": "42", "odd": "1.70"},
+            headers={"Accept": "application/json", **auth},
+        )
         settle = client.post(
             "/live/bets/7/settle",
             data={"outcome": "won"},
-            headers={"Accept": "application/json"},
+            headers={"Accept": "application/json", **auth},
         )
+    assert denied.status_code == 401
     assert place.status_code == 201
     assert place.json()["fixture_id"] == 42
     assert "selection" not in place.json()

@@ -15,6 +15,7 @@ from predictor.models.children import FixtureEvent
 from predictor.models.fixtures import Fixture
 from predictor.models.operator_bets import OperatorBet
 from predictor.services.live_board import LiveMatch
+from predictor.services.odds_parse import parse_odd_value
 
 START_STAKE = Decimal("21.00")
 STAKE_STEP = Decimal("0.10")
@@ -50,10 +51,9 @@ def odd_value(value: Decimal) -> Decimal:
 
 
 def parse_odd(raw: str | float | Decimal) -> Decimal:
-    try:
-        odd = Decimal(str(raw).strip().replace(",", "."))
-    except Exception as exc:
-        raise BetError(400, "invalid_odd") from exc
+    odd = parse_odd_value(raw)
+    if odd is None:
+        raise BetError(400, "invalid_odd")
     if odd < ODD_MIN or odd > ODD_MAX:
         raise BetError(400, "odd_out_of_range")
     return odd_value(odd)
@@ -473,8 +473,6 @@ async def list_open_by_fixture(session: AsyncSession) -> dict[int, OperatorBet]:
 
 async def load_history_payload(engine: AsyncEngine) -> dict[str, Any]:
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        await settle_open_tickets(session)
-        await session.commit()
         bets = await list_bets(session)
         rows, metrics = build_history(bets)
         stake = await current_stake(session)
@@ -496,6 +494,11 @@ async def current_stake_label(engine: AsyncEngine) -> str:
     async with AsyncSession(engine, expire_on_commit=False) as session:
         stake = await current_stake(session)
         return format(stake, "f")
+
+
+async def list_open_from_engine(engine: AsyncEngine) -> dict[int, OperatorBet]:
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        return await list_open_by_fixture(session)
 
 
 async def settle_and_list_open(

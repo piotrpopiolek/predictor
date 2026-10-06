@@ -18,6 +18,19 @@ def metrics_token_ok(authorization: str | None, token: str) -> bool:
     return secrets.compare_digest(got, token)
 
 
+def mutation_token_ok(
+    authorization: str | None,
+    form_token: str | None,
+    token: str,
+) -> bool:
+    """Accept Bearer (JSON/API) or form field ``token`` (HTML posts)."""
+    if metrics_token_ok(authorization, token):
+        return True
+    if form_token is None or form_token == "":
+        return False
+    return secrets.compare_digest(form_token, token)
+
+
 def render_metrics(
     *,
     environment: str,

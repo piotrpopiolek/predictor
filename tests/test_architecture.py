@@ -26,7 +26,10 @@ def test_only_lock_module_calls_try_advisory_lock() -> None:
 
 def test_api_does_not_import_football_client() -> None:
     source = Path("src/predictor/api/main.py").read_text(encoding="utf-8")
-    board = Path("src/predictor/services/live_board.py").read_text(encoding="utf-8")
+    board_dir = Path("src/predictor/services/live_board")
+    board = "\n".join(
+        p.read_text(encoding="utf-8") for p in sorted(board_dir.glob("*.py"))
+    )
     assert "FootballClient" not in source
     assert "httpx" not in source
     assert "pg_try_advisory_lock" not in source
@@ -190,3 +193,47 @@ def test_metrics_token_and_labels() -> None:
     assert "fixture_id" not in body_q
     assert "task_id" not in body
     assert "run_id" not in body
+
+
+def test_status_api_surface_and_no_get_settle() -> None:
+    source = Path("src/predictor/api/main.py").read_text(encoding="utf-8")
+    for route in (
+        '"/health"',
+        '"/ready"',
+        '"/status"',
+        '"/metrics"',
+        '"/live"',
+        '"/live.json"',
+        '"/live/next-goal"',
+        '"/live/bets"',
+        '"/live/bets/{bet_id}/settle"',
+    ):
+        assert route in source
+    assert "settle_open_from_engine" not in source
+    assert "settle_and_list_open" not in source
+    assert "list_open_from_engine" in source
+    assert "mutation_token_ok" in source
+    assert "await settle_open_tickets" in source
+    # No await settle on read helpers used by GET
+    assert "await settle_open_from_engine" not in source
+    assert source.index("@app.post(\"/live/bets\"") < source.index(
+        "await settle_open_tickets"
+    )
+
+
+def test_mutation_token_accepts_bearer_or_form() -> None:
+    from predictor.services.metrics import mutation_token_ok
+
+    assert mutation_token_ok("Bearer secret", None, "secret") is True
+    assert mutation_token_ok(None, "secret", "secret") is True
+    assert mutation_token_ok(None, None, "secret") is False
+    assert mutation_token_ok("Bearer other", "nope", "secret") is False
+
+
+def test_board_packages_split_domain_sql_html() -> None:
+    for package in ("live_board", "match_detail"):
+        root = Path("src/predictor/services") / package
+        for name in ("domain.py", "sql.py", "html.py", "__init__.py"):
+            assert (root / name).is_file(), f"missing {package}/{name}"
+    assert not Path("src/predictor/services/live_board.py").exists()
+    assert not Path("src/predictor/services/match_detail.py").exists()

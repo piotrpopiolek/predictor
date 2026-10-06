@@ -40,6 +40,11 @@ from predictor.services.ingest.persist_children import (
     persist_injuries,
     upsert_team_statistics,
 )
+from predictor.services.ingest.task_completion import (
+    fail_task,
+    finish_task,
+    retry_or_empty_task,
+)
 from predictor.services.queue import (
     claim_control_refresh_task,
     claim_enrichment_task,
@@ -47,7 +52,6 @@ from predictor.services.queue import (
     claim_injuries_task,
     claim_live_param_task,
     complete_task,
-    empty_retry_status,
     ensure_half_stats_task,
     get_cursor_task,
 )
@@ -449,24 +453,14 @@ class EnrichmentIngest:
         paging_current: int | None = None,
         paging_total: int | None = None,
     ) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await session.get(EtlTask, task_id)
-                if task is None:
-                    return
-                merged = dict(task.params)
-                merged.update(params)
-                status, merged = empty_retry_status(merged, now=self._now())
-                error = "empty_retry" if status == "retryable_error" else None
-                await complete_task(
-                    session,
-                    task,
-                    status,
-                    error=error,
-                    params=merged,
-                    paging_current=paging_current,
-                    paging_total=paging_total,
-                )
+        await retry_or_empty_task(
+            self._session_factory,
+            task_id,
+            params,
+            now=self._now(),
+            paging_current=paging_current,
+            paging_total=paging_total,
+        )
 
     async def _claim_half_id(self) -> tuple[int | None, int | None]:
         async with self._session_factory() as session:
@@ -550,30 +544,17 @@ class EnrichmentIngest:
         paging_current: int | None = None,
         paging_total: int | None = None,
     ) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await session.get(EtlTask, task_id)
-                if task is None:
-                    return
-                merged = dict(task.params)
-                if params:
-                    merged.update(params)
-                await complete_task(
-                    session,
-                    task,
-                    status,
-                    params=merged,
-                    paging_current=paging_current,
-                    paging_total=paging_total,
-                )
+        await finish_task(
+            self._session_factory,
+            task_id,
+            status,
+            params=params,
+            paging_current=paging_current,
+            paging_total=paging_total,
+        )
 
     async def _fail(self, task_id: int, status: str, error: str) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await session.get(EtlTask, task_id)
-                if task is None:
-                    return
-                await complete_task(session, task, status, error=error)
+        await fail_task(self._session_factory, task_id, status, error)
 
 
 def _allowed(flag: bool | None) -> bool:

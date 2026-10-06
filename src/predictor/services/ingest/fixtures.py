@@ -37,6 +37,7 @@ from predictor.services.ingest.persist_fixtures import (
     upsert_fixtures,
     upsert_league_rounds,
 )
+from predictor.services.ingest.task_completion import fail_task
 from predictor.services.queue import (
     claim_live_param_task,
     claim_rounds_task,
@@ -387,12 +388,7 @@ class FixtureIngest:
             await self._fail(task_id, "retryable_error", "persist_failed")
 
     async def _fail(self, task_id: int, status: str, error: str) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await session.get(EtlTask, task_id)
-                if task is None:
-                    return
-                await complete_task(session, task, status, error=error)
+        await fail_task(self._session_factory, task_id, status, error)
 
 
 def parse_fixtures(raw: list[Any]) -> list[FixtureItem]:
