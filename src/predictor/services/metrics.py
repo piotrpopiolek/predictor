@@ -97,7 +97,7 @@ def render_metrics(
         f"predictor_quota_used{{{labels}}} {quota_used}",
         (
             "# HELP predictor_quota_seconds_until_reset "
-            "Seconds until the temporary quota reset at 22:00 Europe/Warsaw."
+            "Seconds until vendor daily quota reset at 00:00 UTC."
         ),
         "# TYPE predictor_quota_seconds_until_reset gauge",
         (

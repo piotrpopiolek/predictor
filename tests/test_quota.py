@@ -15,7 +15,6 @@ from predictor.services.quota import (
     plan_live_budget,
     quota_allows,
     quota_gauges_from_params,
-    quota_reset_after,
     safety_buffer_requests,
     seconds_until_utc_midnight,
 )
@@ -28,7 +27,7 @@ def _plan(matches: int, remaining: int, now: datetime):
 
 
 def test_history_stops_when_live_reserve_is_touched() -> None:
-    now = datetime(2026, 9, 23, 16, 0, tzinfo=UTC)
+    now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     snap = QuotaSnapshot(current=7100, limit_day=7500, remaining=400, source="api")
     plan = _plan(30, snap.remaining, now)
     assert plan.overloaded is True
@@ -52,7 +51,7 @@ def test_surplus_allows_history_and_five_minute_details() -> None:
 
 
 def test_tight_reserve_slows_details_and_drops_oneshots() -> None:
-    now = datetime(2026, 9, 23, 16, 0, tzinfo=UTC)
+    now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     plan = _plan(30, 400, now)
     assert plan.detail_refresh_seconds == 300
     assert plan.relaxed_refresh_seconds > plan.detail_refresh_seconds
@@ -63,7 +62,7 @@ def test_tight_reserve_slows_details_and_drops_oneshots() -> None:
 
 
 def test_oneshots_stop_when_score_reserve_is_the_whole_budget() -> None:
-    now = datetime(2026, 9, 23, 16, 0, tzinfo=UTC)
+    now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     plan = _plan(30, 200, now)
     assert plan.score_need == 144
     assert plan.detail_need == 56
@@ -81,8 +80,7 @@ def test_matches_still_to_play_today_are_reserved_before_kickoff() -> None:
         target_seconds=60,
     )
     assert plan.detail_need == 40 * 2 * 12
-    # 2h of live polls, then idle scores until 22:00 Warsaw (20:00 UTC).
-    assert plan.score_need == 240
+    assert plan.score_need == 288
     assert plan.odds_need == 120
     assert plan.detail_refresh_seconds == 300
     assert plan.score_poll_seconds == 300.0
@@ -108,7 +106,7 @@ def test_empty_board_polls_scores_every_five_minutes() -> None:
 
 
 def test_remaining_zero_blocks_all() -> None:
-    now = datetime(2026, 9, 23, 16, 0, tzinfo=UTC)
+    now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     snap = QuotaSnapshot(current=7500, limit_day=7500, remaining=0, source="api")
     plan = _plan(10, 0, now)
     for priority in range(1, 10):
@@ -116,7 +114,7 @@ def test_remaining_zero_blocks_all() -> None:
 
 
 def test_last_live_requests_stay_reserved_for_score_poll() -> None:
-    now = datetime(2026, 9, 23, 16, 0, tzinfo=UTC)
+    now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     snap = QuotaSnapshot(current=7498, limit_day=7500, remaining=2, source="api")
     plan = _plan(10, 2, now)
     assert quota_allows(1, snap, plan) is True
@@ -126,8 +124,7 @@ def test_last_live_requests_stay_reserved_for_score_poll() -> None:
 
 
 def test_seconds_until_utc_midnight() -> None:
-    # 19:00 UTC in September is 21:00 Warsaw, one hour before 22:00.
-    now = datetime(2026, 9, 12, 19, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 9, 12, 23, 0, 0, tzinfo=UTC)
     assert seconds_until_utc_midnight(now) == 3600.0
 
 
@@ -136,39 +133,45 @@ def test_seconds_until_utc_midnight_rejects_naive() -> None:
         seconds_until_utc_midnight(datetime(2026, 9, 12, 23, 0, 0))
 
 
-def test_quota_reset_is_22_warsaw_in_summer_and_winter() -> None:
-    """Temporary reset is 22:00 Europe/Warsaw, so the UTC hour follows the offset."""
-    warsaw_summer = timezone(timedelta(hours=2))
-    summer = datetime(2026, 9, 13, 22, 1, tzinfo=warsaw_summer)
-    assert seconds_until_utc_midnight(summer) == 23 * 3600 + 59 * 60
-    assert quota_reset_after(summer) == datetime(2026, 9, 14, 20, 0, tzinfo=UTC)
+def test_quota_reset_matches_vendor_dashboard_countdown() -> None:
+    """dashboard.api-football.com: reset at 00h00 UTC, not local midnight.
 
+    Screenshot 2026-09-13 22:01 Europe/Warsaw (UTC+2) showed 03H59 remaining.
+    """
+    warsaw_summer = timezone(timedelta(hours=2))
+    now = datetime(2026, 9, 13, 22, 1, tzinfo=warsaw_summer)
+    assert seconds_until_utc_midnight(now) == 3 * 3600 + 59 * 60
+    local_midnight = datetime(2026, 9, 14, 0, 0, tzinfo=warsaw_summer)
+    assert seconds_until_utc_midnight(now) != (local_midnight - now).total_seconds()
+
+
+def test_quota_reset_stays_utc_midnight_on_winter_offset() -> None:
+    # 22:01 UTC+1 is 21:01 UTC → 02H59 until 00:00 UTC (01:00 local).
     warsaw_winter = timezone(timedelta(hours=1))
-    winter = datetime(2026, 1, 13, 22, 1, tzinfo=warsaw_winter)
-    assert seconds_until_utc_midnight(winter) == 23 * 3600 + 59 * 60
-    assert quota_reset_after(winter) == datetime(2026, 1, 14, 21, 0, tzinfo=UTC)
+    now = datetime(2026, 1, 13, 22, 1, tzinfo=warsaw_winter)
+    assert seconds_until_utc_midnight(now) == 2 * 3600 + 59 * 60
 
 
 def test_live_interval_stays_at_target_when_quota_allows() -> None:
-    now = datetime(2026, 9, 13, 19, 0, tzinfo=UTC)
+    now = datetime(2026, 9, 13, 23, 0, tzinfo=UTC)
     snap = QuotaSnapshot(current=100, limit_day=7500, remaining=5000, source="api")
     assert live_poll_interval_seconds(snap, 60, now) == 60.0
 
 
 def test_live_interval_stretches_when_quota_cannot_hold_target() -> None:
-    now = datetime(2026, 9, 13, 19, 0, tzinfo=UTC)
+    now = datetime(2026, 9, 13, 23, 0, tzinfo=UTC)
     snap = QuotaSnapshot(current=7496, limit_day=7500, remaining=4, source="api")
     interval = live_poll_interval_seconds(snap, 60, now)
     assert interval == 1800.0
 
 
 def test_live_poll_interval_gauge_unknown_remaining_uses_target() -> None:
-    now = datetime(2026, 9, 13, 19, 0, tzinfo=UTC)
+    now = datetime(2026, 9, 13, 23, 0, tzinfo=UTC)
     assert live_poll_interval_gauge(-1, 0, 7500, 60, now) == 60.0
 
 
 def test_live_poll_interval_gauge_stretches_like_scheduler() -> None:
-    now = datetime(2026, 9, 13, 19, 0, tzinfo=UTC)
+    now = datetime(2026, 9, 13, 23, 0, tzinfo=UTC)
     assert live_poll_interval_gauge(4, 7496, 7500, 60, now) == 1800.0
 
 
@@ -242,7 +245,7 @@ def test_same_budget_changes_with_kickoff_distribution() -> None:
     short = plan_live_budget(
         live_matches=0,
         forecast=DayLoadForecast(
-            kickoffs=(KickoffLoad(datetime(2026, 9, 26, 19, 0, tzinfo=UTC), 80),)
+            kickoffs=(KickoffLoad(datetime(2026, 9, 26, 23, 0, tzinfo=UTC), 80),)
         ),
         remaining=7500,
         now=now,
@@ -305,7 +308,7 @@ def test_context_credit_smooths_fractional_ticks_and_respects_room() -> None:
 
 def test_heavy_day_simulation_stays_above_the_safety_buffer() -> None:
     start = datetime(2026, 9, 26, 9, 0, tzinfo=UTC)
-    midnight = quota_reset_after(start)
+    midnight = datetime(2026, 9, 27, 0, 0, tzinfo=UTC)
     schedule = (
         (datetime(2026, 9, 26, 13, 0, tzinfo=UTC), 400),
         (datetime(2026, 9, 26, 15, 0, tzinfo=UTC), 400),
@@ -472,7 +475,9 @@ def _spend_day(
 ) -> tuple[int, bool]:
     credit = ContextCredit()
     now = start
-    midnight = quota_reset_after(start)
+    midnight = datetime(start.year, start.month, start.day, tzinfo=UTC) + timedelta(
+        days=1
+    )
     overloaded = False
     for _ in range(6000):
         if now >= midnight:

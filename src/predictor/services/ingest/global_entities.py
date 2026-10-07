@@ -256,7 +256,7 @@ class GlobalIngest:
         if endpoint == "/teams":
             parsed_teams = _parse_many(items, TeamEnvelope, endpoint)
             extra = await persist_teams(session, parsed_teams)
-            for venue_id in extra.get("venue_ids", []):
+            for venue_id in extra.get("venue_refresh_ids", []):
                 await ensure_param_task(session, "/venues", {"id": int(venue_id)})
             return extra
         if endpoint == "/venues":

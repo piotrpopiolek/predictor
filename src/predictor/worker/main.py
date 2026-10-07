@@ -29,6 +29,7 @@ from predictor.services.ingest.fixtures import forecast_day_load
 from predictor.services.lock import LockBusyError, WriterLock, lock_busy_message
 from predictor.services.queue import (
     complete_stored_player_profiles,
+    complete_stored_venues,
     ensure_cursors,
     ensure_dictionary_tasks,
     record_run_end,
@@ -79,6 +80,7 @@ async def run_locked_loop(
                 await ensure_cursors(session)
                 await ensure_dictionary_tasks(session)
                 await complete_stored_player_profiles(session)
+                await complete_stored_venues(session)
         catalog = CatalogIngest(client, session_factory)
         fixtures = FixtureIngest(client, session_factory)
         live = LiveIngest(

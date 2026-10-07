@@ -29,12 +29,15 @@ from predictor.models.seasonal import (
     TeamSeasonStatistics,
 )
 from predictor.postgres import make_async_engine, make_session_factory
+from predictor.schemas.catalog import CountryItem
 from predictor.schemas.fixtures import FixtureItem
 from predictor.schemas.settings import Settings, load_settings
 from predictor.services.ingest.global_entities import GlobalIngest
+from predictor.services.ingest.persist import upsert_countries
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.queue import (
     complete_stored_player_profiles,
+    complete_stored_venues,
     enqueue_fixture_followups,
     enqueue_global_for_match,
     ensure_cursors,
@@ -177,7 +180,9 @@ def _team_envelope(team_id: int, venue_id: int = 556) -> dict[str, Any]:
             "national": False,
             "logo": "https://example.test/logo.png",
         },
-        "venue": _venue(venue_id),
+        "venue": {
+            key: value for key, value in _venue(venue_id).items() if key != "country"
+        },
     }
 
 
@@ -632,6 +637,9 @@ async def test_teams_and_venues_fill_catalog() -> None:
                     .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
                     .where(EtlTask.cursor_kind.is_(None))
                 )
+                stored = await session.get(Venue, 556)
+                if stored is not None:
+                    stored.country_name = None
                 await ensure_param_task(session, "/teams", {"id": 33})
         ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=2)
         await ingest.refresh_pending()
@@ -648,12 +656,167 @@ async def test_teams_and_venues_fill_catalog() -> None:
         assert venue is not None
         assert venue.address == "Sir Matt Busby Way"
         assert venue.capacity == 74310
-        assert venue_task is not None
-        assert venue_task.status == "complete"
+        assert venue.surface == "grass"
+        assert venue.country_name == "England"
+        assert venue_task is None
         assert any(p.startswith("/teams?") for p in paths)
-        assert any(p.startswith("/venues?") for p in paths)
+        assert not any(p.startswith("/venues?") for p in paths)
     finally:
         await client.aclose()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_venues_followup_only_when_country_conflicts() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    paths: list[str] = []
+    client = _client(settings, httpx.MockTransport(_router(paths)))
+    try:
+        await _reset_w8(factory)
+        await _seed(factory)
+        async with factory() as session:
+            async with session.begin():
+                await upsert_countries(session, [CountryItem(name="Spain")])
+                venue = await session.get(Venue, 556)
+                assert venue is not None
+                venue.country_name = "Spain"
+                await session.execute(
+                    delete(EtlTask)
+                    .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
+                    .where(EtlTask.cursor_kind.is_(None))
+                )
+                await ensure_param_task(session, "/teams", {"id": 33})
+        ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=1)
+        await ingest.refresh_pending()
+        async with factory() as session:
+            venue = await session.get(Venue, 556)
+            venue_task = await session.scalar(
+                select(EtlTask).where(EtlTask.endpoint == "/venues")
+            )
+        assert venue is not None
+        assert venue.address == "Sir Matt Busby Way"
+        assert venue.country_name == "Spain"
+        assert venue_task is not None
+        assert venue_task.status == "pending"
+        assert venue_task.params == {"id": 556}
+        assert any(p.startswith("/teams?") for p in paths)
+        assert not any(p.startswith("/venues?") for p in paths)
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_complete_stored_venues_without_http() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    one = 91001
+    shared = 91002
+    missing_country = 91003
+    already = 91004
+    try:
+        await _reset_w8(factory)
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(Team).where(Team.id.in_((93001, 93002, 93003)))
+                )
+                await session.execute(
+                    delete(EtlTask).where(
+                        EtlTask.endpoint == "/venues",
+                        EtlTask.params["id"].astext.in_(
+                            (str(one), str(shared), str(missing_country), str(already))
+                        ),
+                    )
+                )
+                await session.execute(
+                    delete(Venue).where(
+                        Venue.id.in_((one, shared, missing_country, already))
+                    )
+                )
+                await upsert_countries(
+                    session,
+                    [
+                        CountryItem(name="Poland"),
+                        CountryItem(name="Spain"),
+                        CountryItem(name="England"),
+                    ],
+                )
+                session.add(Venue(id=one, name="Home"))
+                session.add(Venue(id=shared, name="Neutral"))
+                session.add(Venue(id=missing_country, name="Bare"))
+                session.add(Venue(id=already, name="Known", country_name="England"))
+                await session.flush()
+                session.add(
+                    Team(
+                        id=93001,
+                        name="One",
+                        country_name="Poland",
+                        venue_id=one,
+                    )
+                )
+                session.add(
+                    Team(
+                        id=93002,
+                        name="Alpha",
+                        country_name="Poland",
+                        venue_id=shared,
+                    )
+                )
+                session.add(
+                    Team(
+                        id=93003,
+                        name="Beta",
+                        country_name="Spain",
+                        venue_id=shared,
+                    )
+                )
+                for venue_id, status in (
+                    (one, "pending"),
+                    (shared, "pending"),
+                    (missing_country, "pending"),
+                    (already, "pending"),
+                    (one, "in_progress"),
+                ):
+                    session.add(
+                        EtlTask(
+                            endpoint="/venues",
+                            params={"id": venue_id},
+                            status=status,
+                        )
+                    )
+                session.add(
+                    EtlTask(
+                        endpoint="/trophies",
+                        params={"coach": COACH_ID},
+                        status="pending",
+                    )
+                )
+                closed = await complete_stored_venues(session)
+        assert closed == 2
+        async with factory() as session:
+            home = await session.get(Venue, one)
+            neutral = await session.get(Venue, shared)
+            tasks = list(
+                await session.scalars(
+                    select(EtlTask).where(
+                        EtlTask.endpoint.in_(("/venues", "/trophies"))
+                    )
+                )
+            )
+        assert home is not None and home.country_name == "Poland"
+        assert neutral is not None and neutral.country_name is None
+        by_key = {(task.endpoint, task.params.get("id"), task.status) for task in tasks}
+        assert ("/venues", one, "complete") in by_key
+        assert ("/venues", shared, "pending") in by_key
+        assert ("/venues", missing_country, "pending") in by_key
+        assert ("/venues", already, "complete") in by_key
+        assert ("/venues", one, "in_progress") in by_key
+        assert ("/trophies", None, "pending") in by_key
+    finally:
         await engine.dispose()
 
 

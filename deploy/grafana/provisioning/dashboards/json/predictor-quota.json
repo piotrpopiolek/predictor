@@ -96,7 +96,7 @@
     {
       "id": 7,
       "type": "stat",
-      "title": "Quota reset in (22:00 Europe/Warsaw)",
+      "title": "Quota reset in (00:00 UTC)",
       "gridPos": {"h": 6, "w": 7, "x": 12, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {
@@ -195,7 +195,7 @@
         },
         {
           "expr": "(predictor_quota_remaining * 60 / clamp_min(predictor_quota_seconds_until_reset, 1)) and on() (predictor_quota_remaining >= 0)",
-          "legendFormat": "sustainable to 22:00 Warsaw",
+          "legendFormat": "sustainable to 00:00 UTC",
           "refId": "C"
         },
         {

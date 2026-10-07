@@ -33,7 +33,7 @@ from predictor.constants import (
 )
 from predictor.models.catalog import Player, UntrackedLeague
 from predictor.models.etl import EtlRun, EtlTask
-from predictor.models.fixtures import Fixture
+from predictor.models.fixtures import Fixture, Team, Venue
 from predictor.schemas.settings import Settings
 from predictor.services.lock import WriterLock
 from predictor.telemetry import start_span
@@ -1099,6 +1099,57 @@ async def complete_stored_player_profiles(session: AsyncSession) -> int:
         .where(EtlTask.params.has_key("player"))
         .where(~EtlTask.params.has_key("coach"))
         .where(player_id.in_(select(Player.id).where(Player.nationality.is_not(None))))
+        .values(status="complete", updated_at=now, completed_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    updated = cast_type(CursorResult[Any], result)
+    return int(updated.rowcount or 0)
+
+
+async def complete_stored_venues(session: AsyncSession) -> int:
+    """Close pending /venues when /teams already stored the stadium.
+
+    Country is copied from the only team that uses the ground. Stadiums shared
+    by teams from different countries stay pending: only /venues knows which
+    country the ground itself belongs to.
+    """
+    _require_transaction(session, "complete stored venues")
+    single_country = (
+        select(
+            Team.venue_id.label("venue_id"),
+            func.min(Team.country_name).label("country_name"),
+        )
+        .where(Team.venue_id.is_not(None))
+        .where(Team.country_name.is_not(None))
+        .group_by(Team.venue_id)
+        .having(func.count(func.distinct(Team.country_name)) == 1)
+        .subquery()
+    )
+    await session.execute(
+        update(Venue)
+        .where(Venue.country_name.is_(None))
+        .where(Venue.id == single_country.c.venue_id)
+        .values(country_name=single_country.c.country_name)
+        .execution_options(synchronize_session=False)
+    )
+    now = datetime.now(UTC)
+    venue_param = cast(EtlTask.params["id"].astext, Integer)
+    several_countries = (
+        select(Team.venue_id)
+        .where(Team.venue_id.is_not(None))
+        .where(Team.country_name.is_not(None))
+        .group_by(Team.venue_id)
+        .having(func.count(func.distinct(Team.country_name)) > 1)
+    )
+    result = await session.execute(
+        update(EtlTask)
+        .where(EtlTask.endpoint == "/venues")
+        .where(EtlTask.status == "pending")
+        .where(EtlTask.cursor_kind.is_(None))
+        .where(EtlTask.params.has_key("id"))
+        .where(EtlTask.params["id"].astext.op("~")(r"^[0-9]+$"))
+        .where(venue_param.in_(select(Venue.id).where(Venue.country_name.is_not(None))))
+        .where(venue_param.not_in(several_countries))
         .values(status="complete", updated_at=now, completed_at=now)
         .execution_options(synchronize_session=False)
     )

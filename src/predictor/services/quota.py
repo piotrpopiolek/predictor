@@ -1,7 +1,4 @@
-"""Quota budget: keep enough requests for live matches until the daily reset.
-
-Temporary reset is 22:00 Europe/Warsaw, not 00:00 UTC. Revert ``quota_reset_after``
-when the vendor window returns to midnight UTC.
+"""Quota budget: keep enough requests for live matches until UTC midnight.
 
 History (priorities 5–9) and live odds spend only the surplus above the
 reserve. Detail cadence follows matches actually in play plus the kickoff
@@ -15,7 +12,6 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,10 +30,6 @@ from predictor.constants import (
     QUOTA_SNAPSHOT_ENDPOINT,
 )
 from predictor.models.etl import EtlTask
-
-# Temporary vendor window. 22:00 local follows CET/CEST.
-QUOTA_RESET_TZ = ZoneInfo("Europe/Warsaw")
-QUOTA_RESET_LOCAL_TIME = time(22, 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +141,7 @@ def plan_live_budget(
     actually in play.
     """
     utc_now = _as_utc(now)
-    midnight = quota_reset_after(utc_now)
+    midnight = _utc_midnight_after(utc_now)
     seconds_left = max(1.0, (midnight - utc_now).total_seconds())
     buffer = safety_buffer_requests(limit_day, buffer_percent)
     usable = max(0, remaining - buffer)
@@ -621,24 +613,17 @@ def _as_utc(now: datetime) -> datetime:
     return now.astimezone(UTC)
 
 
-def quota_reset_after(now: datetime) -> datetime:
-    """Next temporary reset: 22:00 Europe/Warsaw, as a UTC instant."""
-    utc_now = _as_utc(now)
-    local = utc_now.astimezone(QUOTA_RESET_TZ)
-    candidate = datetime.combine(
-        local.date(), QUOTA_RESET_LOCAL_TIME, tzinfo=QUOTA_RESET_TZ
-    )
-    if local >= candidate:
-        candidate += timedelta(days=1)
-    return candidate.astimezone(UTC)
+def _utc_midnight_after(utc_now: datetime) -> datetime:
+    return datetime.combine(utc_now.date() + timedelta(days=1), time.min, tzinfo=UTC)
 
 
 def seconds_until_utc_midnight(now: datetime) -> float:
-    """Seconds until the temporary 22:00 Europe/Warsaw quota reset."""
+    """Seconds until the vendor daily quota resets."""
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
     utc_now = now.astimezone(UTC)
-    return max(1.0, (quota_reset_after(utc_now) - utc_now).total_seconds())
+    nxt = datetime.combine(utc_now.date() + timedelta(days=1), time.min, tzinfo=UTC)
+    return max(1.0, (nxt - utc_now).total_seconds())
 
 
 def live_poll_interval_seconds(
@@ -649,7 +634,7 @@ def live_poll_interval_seconds(
     requests_per_tick: int = LIVE_REQUESTS_PER_TICK,
 ) -> float:
     """Return the sleep between live ticks. Stretch past the target when quota
-    cannot sustain it until the quota reset (FR-019)."""
+    cannot sustain it until UTC midnight (FR-019)."""
     target = float(target_seconds)
     if snapshot.remaining <= 0:
         return seconds_until_utc_midnight(now)

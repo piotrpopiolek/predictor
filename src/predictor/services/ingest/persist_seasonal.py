@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -129,9 +129,53 @@ async def upsert_venues_full(session: AsyncSession, items: Sequence[VenueFull]) 
     return count
 
 
+def _stamp_venue_country(
+    items: Sequence[TeamEnvelope], stored: dict[int, str | None]
+) -> list[int]:
+    """Fill stadium country from the team, and flag real conflicts.
+
+    /teams omits venue.country. For a home ground it matches team.country.
+    A stadium already stored under a different country needs /venues.
+    """
+    chosen: dict[int, str] = {}
+    refresh: set[int] = set()
+    for item in items:
+        venue = item.venue
+        if venue is None or venue.id is None:
+            continue
+        incoming = as_str(venue.country, 255) or as_str(item.team.country, 255)
+        prior = stored.get(venue.id)
+        if prior and incoming and prior != incoming:
+            venue.country = prior
+            refresh.add(venue.id)
+            continue
+        if not incoming:
+            continue
+        earlier = chosen.get(venue.id)
+        if earlier and earlier != incoming:
+            venue.country = earlier
+            refresh.add(venue.id)
+            continue
+        venue.country = incoming
+        chosen[venue.id] = incoming
+    return sorted(refresh)
+
+
 async def persist_teams(
     session: AsyncSession, items: Sequence[TeamEnvelope]
 ) -> dict[str, Any]:
+    venue_ids = [
+        item.venue.id
+        for item in items
+        if item.venue is not None and item.venue.id is not None
+    ]
+    stored: dict[int, str | None] = {}
+    if venue_ids:
+        rows = await session.execute(
+            select(Venue.id, Venue.country_name).where(Venue.id.in_(venue_ids))
+        )
+        stored = {row.id: row.country_name for row in rows}
+    venue_refresh_ids = _stamp_venue_country(items, stored)
     venues = [item.venue for item in items if item.venue is not None]
     venue_count = await upsert_venues_full(session, venues)
     countries: list[CountryItem] = []
@@ -159,15 +203,12 @@ async def persist_teams(
             }
         )
     await upsert_countries(session, countries)
-    venue_ids = sorted(
-        {
-            item.venue.id
-            for item in items
-            if item.venue is not None and item.venue.id is not None
-        }
-    )
     if not values:
-        return {"teams": 0, "venues": venue_count, "venue_ids": venue_ids}
+        return {
+            "teams": 0,
+            "venues": venue_count,
+            "venue_refresh_ids": venue_refresh_ids,
+        }
     for chunk in _chunks(values):
         stmt = insert(Team).values(list(chunk))
         stmt = stmt.on_conflict_do_update(
@@ -185,7 +226,11 @@ async def persist_teams(
             },
         )
         await session.execute(stmt)
-    return {"teams": len(values), "venues": venue_count, "venue_ids": venue_ids}
+    return {
+        "teams": len(values),
+        "venues": venue_count,
+        "venue_refresh_ids": venue_refresh_ids,
+    }
 
 
 def _side_goals(side: StandingSide | None) -> tuple[int | None, int | None]:
