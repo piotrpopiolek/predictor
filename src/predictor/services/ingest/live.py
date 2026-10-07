@@ -132,7 +132,9 @@ class LiveIngest:
             )
             await self._fail(task_id, "retryable_error", "persist_failed")
 
-    async def refresh_next_goal_snapshots(self) -> None:
+    async def refresh_next_goal_snapshots(
+        self, *, min_gap_seconds: int | None = None
+    ) -> None:
         if not self._quota_left():
             return
         task_id = await self._odds_live_task_id()
@@ -143,13 +145,20 @@ class LiveIngest:
         now = self._now()
         if previous_poll is not None:
             gap = (now - previous_poll).total_seconds()
-            if gap > self._target_seconds:
+            allowed = (
+                self._target_seconds
+                if min_gap_seconds is None
+                else max(1, min_gap_seconds)
+            )
+            if min_gap_seconds is not None and gap < allowed:
+                return
+            if gap > allowed:
                 log_json(
                     logging.WARNING,
                     service="worker",
                     event="live_gap",
                     gap_seconds=round(gap, 3),
-                    target_seconds=self._target_seconds,
+                    target_seconds=allowed,
                     last_poll_at=previous_poll.isoformat(),
                 )
         try:

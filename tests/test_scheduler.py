@@ -186,7 +186,7 @@ async def test_matches_left_today_feeds_the_budget(valid_env: None) -> None:
         matches_left_today=left,
     )
     await scheduler._tick(asyncio.Event())
-    assert called["history"] == 0
+    assert called["history"] == 1
     assert scheduler._gate.oneshot_calls == 0
 
     async def broken() -> int:
@@ -435,11 +435,13 @@ async def test_overload_blocks_lower_priorities_until_the_slate_shrinks(
         live_match_count=lambda: board["live"],
     )
     await scheduler._tick(asyncio.Event())
-    assert called == []
+    assert 8 in called
     assert scheduler._plan is not None
-    assert scheduler._plan.overloaded is True
+    assert scheduler._plan.overloaded is False
+    assert scheduler._plan.score_poll_seconds == 60.0
 
     board["live"] = 1
+    called.clear()
     scheduler._quota = None
     await scheduler._tick(asyncio.Event())
     assert 8 in called

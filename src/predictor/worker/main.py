@@ -115,7 +115,9 @@ async def run_locked_loop(
             gate.spent_calls = tick.calls
 
         async def priority_four() -> None:
-            await live.refresh_next_goal_snapshots()
+            await live.refresh_next_goal_snapshots(
+                min_gap_seconds=gate.odds_refresh_seconds
+            )
 
         async def priority_nine() -> None:
             await prematch.refresh_pending()

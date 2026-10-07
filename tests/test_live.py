@@ -390,3 +390,31 @@ async def test_live_gap_is_logged_not_filled(
     finally:
         await client.aclose()
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_live_odds_wait_for_the_stretched_gap(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    client = _client(settings, httpx.MockTransport(_router([])))
+    try:
+        await _reset_w5(factory)
+        async with factory() as session:
+            async with session.begin():
+                task = await get_or_create_endpoint_task(session, "/odds/live")
+                task.params = {
+                    "last_poll_at": (START - timedelta(minutes=2)).isoformat()
+                }
+        ingest = LiveIngest(client, factory, now_fn=lambda: START, target_seconds=60)
+        with caplog.at_level("WARNING"):
+            await ingest.refresh_next_goal_snapshots(min_gap_seconds=600)
+        assert "live_gap" not in caplog.text
+        async with factory() as session:
+            n = await session.scalar(select(func.count()).select_from(FixtureOddsLive))
+        assert n == 0
+    finally:
+        await client.aclose()
+        await engine.dispose()

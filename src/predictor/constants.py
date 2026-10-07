@@ -114,16 +114,17 @@ GLOBAL_ENDPOINT_ORDER: tuple[str, ...] = (
     "/sidelined",
 )
 
-# Snapshot endpoints re-queued the next UTC day.
-STALE_GLOBAL_ENDPOINTS: frozenset[str] = frozenset(
-    {
-        "/standings",
-        "/teams/statistics",
-        "/players",
-        "/players/squads",
-        *TOP_PLAYER_ENDPOINTS,
-    }
-)
+# Temporary drain mode. Half of the calls above the safety buffer stay for
+# the history queue. Detail and live odds slow down into the other half.
+# The score poll stays on its one-minute cadence. Set to 0 to give live
+# every call above the buffer again.
+HISTORY_BUDGET_SHARE = 0.5
+
+# Snapshot refresh is off while that queue drains. The stored row stays.
+# Reopening /standings, /teams/statistics, /players, /players/squads, and
+# the four top lists every UTC day was spending the history budget on
+# overwrites. An empty set makes requeue_stale_global a no-op.
+STALE_GLOBAL_ENDPOINTS: frozenset[str] = frozenset()
 
 # W3 catalog. Order is FK-safe: countries before leagues. No /fixtures.
 DICTIONARY_ENDPOINTS: tuple[str, ...] = (

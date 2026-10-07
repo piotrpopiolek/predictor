@@ -1175,6 +1175,8 @@ async def claim_global_task(session: AsyncSession) -> EtlTask | None:
 
 async def requeue_stale_global(session: AsyncSession, now: datetime) -> int:
     _require_transaction(session, "requeue stale global")
+    if not STALE_GLOBAL_ENDPOINTS:
+        return 0
     count = 0
     tasks = await session.scalars(
         select(EtlTask)

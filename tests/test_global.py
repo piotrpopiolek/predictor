@@ -1345,7 +1345,7 @@ async def test_fixture_followups_skip_season_lookups() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stale_global_requeues_next_utc_day() -> None:
+async def test_stale_global_stays_complete_while_draining() -> None:
     settings = load_settings()
     engine = make_async_engine(settings)
     factory = make_session_factory(engine)
@@ -1366,14 +1366,10 @@ async def test_stale_global_requeues_next_utc_day() -> None:
                 task = await session.scalar(
                     select(EtlTask).where(EtlTask.endpoint == "/standings")
                 )
-        assert count == 1
+        assert count == 0
         assert task is not None
-        assert task.status == "pending"
-        assert task.created_at is not None
-        created = task.created_at
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=UTC)
-        assert created == NOW
+        assert task.status == "complete"
+        assert task.completed_at == NOW - timedelta(days=1)
     finally:
         await engine.dispose()
 

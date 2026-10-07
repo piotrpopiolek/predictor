@@ -304,6 +304,7 @@ class Scheduler:
         self._gate.detail_refresh_seconds = plan.detail_refresh_seconds
         self._gate.relaxed_refresh_seconds = plan.relaxed_refresh_seconds
         self._gate.oneshot_calls = plan.oneshot_calls
+        self._gate.odds_refresh_seconds = plan.odds_refresh_seconds
         self._gate.max_context_calls = plan.max_context_calls
         self._live_interval_seconds = plan.score_poll_seconds
         return plan
