@@ -73,14 +73,13 @@ async def run_locked_loop(
     client = client or FootballClient(settings, locked=True)
     run_id: int | None = None
     try:
-        async with session_factory() as session:
-            async with session.begin():
-                run_id = await record_run_start(session, settings, lock)
-                await requeue_orphans(session)
-                await ensure_cursors(session)
-                await ensure_dictionary_tasks(session)
-                await complete_stored_player_profiles(session)
-                await complete_stored_venues(session)
+        async with session_factory() as session, session.begin():
+            run_id = await record_run_start(session, settings, lock)
+            await requeue_orphans(session)
+            await ensure_cursors(session)
+            await ensure_dictionary_tasks(session)
+            await complete_stored_player_profiles(session)
+            await complete_stored_venues(session)
         catalog = CatalogIngest(
             client,
             session_factory,
@@ -152,9 +151,8 @@ async def run_locked_loop(
         await scheduler.run(stop)
     finally:
         if run_id is not None:
-            async with session_factory() as session:
-                async with session.begin():
-                    await record_run_end(session, run_id)
+            async with session_factory() as session, session.begin():
+                await record_run_end(session, run_id)
         if owns_client:
             await client.aclose()
         if owns_engine:
