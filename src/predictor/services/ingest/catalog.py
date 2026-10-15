@@ -268,7 +268,7 @@ def _parse_years(raw: Sequence[Any]) -> list[int]:
             continue
         try:
             years.append(int(row))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             log_json(
                 logging.WARNING,
                 service="worker",

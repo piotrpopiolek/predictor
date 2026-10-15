@@ -27,6 +27,7 @@ from predictor.services.ingest import (
 )
 from predictor.services.ingest.fixtures import forecast_day_load
 from predictor.services.lock import LockBusyError, WriterLock, lock_busy_message
+from predictor.services.operator_bets import settle_open_from_engine
 from predictor.services.queue import (
     complete_stored_player_profiles,
     complete_stored_venues,
@@ -136,6 +137,7 @@ async def run_locked_loop(
                 session_factory, datetime.now(UTC)
             ),
             gate=gate,
+            settle_open=lambda: settle_open_from_engine(engine),
             handlers={
                 1: catalog.refresh_priority_one,
                 2: live.refresh_live_fixtures,

@@ -93,7 +93,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Predictor status", lifespan=_lifespan)
     app.state.settings = settings
-    mutation_token = settings.prometheus_metrics_token.get_secret_value()
+    mutation_token = settings.operator_bet_token.get_secret_value()
 
     def _require_mutation_token(
         authorization: str | None,

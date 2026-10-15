@@ -68,6 +68,7 @@ def test_startup_fields_omit_secrets(valid_env: None) -> None:
     assert "test-api-key-not-real" not in blob
     assert "test-db-password" not in blob
     assert "test-metrics-token" not in blob
+    assert "test-operator-bet-token" not in blob
     assert fields["database"] == "predictor_dev"
     assert fields["role"] == "predictor_dev"
 
@@ -120,6 +121,14 @@ def test_live_interval_must_be_positive(
 def test_postgres_port_range(valid_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POSTGRES_PORT", "70000")
     with pytest.raises(SettingsError, match="POSTGRES_PORT"):
+        load_settings()
+
+
+def test_operator_bet_token_must_differ_from_metrics(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPERATOR_BET_TOKEN", "test-metrics-token")
+    with pytest.raises(SettingsError, match="OPERATOR_BET_TOKEN"):
         load_settings()
 
 

@@ -213,6 +213,9 @@ def test_status_api_surface_and_no_get_settle() -> None:
     assert "settle_and_list_open" not in source
     assert "list_open_from_engine" in source
     assert "mutation_token_ok" in source
+    assert "operator_bet_token" in source
+    assert "prometheus_metrics_token" in source
+    assert source.index("operator_bet_token") < source.index("@app.post")
     assert "await settle_open_tickets" in source
     # No await settle on read helpers used by GET
     assert "await settle_open_from_engine" not in source

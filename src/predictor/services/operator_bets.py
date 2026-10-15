@@ -1,4 +1,8 @@
-"""Operator next-goal bet ledger. Written only by the status process."""
+"""Operator next-goal bet ledger.
+
+Place and manual settle run in the status process. Auto-settle from
+fixture score and events runs on each worker tick (no API call, not on GET).
+"""
 
 from __future__ import annotations
 

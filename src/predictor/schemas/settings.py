@@ -35,6 +35,7 @@ FIELD_TO_ENV: dict[str, str] = {
     "instance_id": "INSTANCE_ID",
     "host_environment": "HOST_ENVIRONMENT",
     "prometheus_metrics_token": "PROMETHEUS_METRICS_TOKEN",
+    "operator_bet_token": "OPERATOR_BET_TOKEN",
     "live_poll_target_seconds": "LIVE_POLL_TARGET_SECONDS",
 }
 
@@ -60,6 +61,7 @@ class Settings(BaseSettings):
     instance_id: str
     host_environment: HostEnvironment
     prometheus_metrics_token: SecretStr
+    operator_bet_token: SecretStr
     live_poll_target_seconds: int = 60
     otel_exporter_otlp_endpoint: str | None = None
 
@@ -67,6 +69,7 @@ class Settings(BaseSettings):
         "api_sports_key",
         "postgres_password",
         "prometheus_metrics_token",
+        "operator_bet_token",
         mode="after",
     )
     @classmethod
@@ -149,11 +152,18 @@ def _env_names_from_validation_error(exc: ValidationError) -> list[str]:
 
 def load_settings() -> Settings:
     try:
-        return Settings()
+        settings = Settings()
     except ValidationError as exc:
         names = _env_names_from_validation_error(exc)
         listed = ", ".join(names) if names else "unknown fields"
         raise SettingsError(f"Missing or invalid configuration: {listed}") from exc
+    metrics = settings.prometheus_metrics_token.get_secret_value()
+    bets = settings.operator_bet_token.get_secret_value()
+    if metrics == bets:
+        raise SettingsError(
+            "OPERATOR_BET_TOKEN must differ from PROMETHEUS_METRICS_TOKEN"
+        )
+    return settings
 
 
 def startup_log_fields(settings: Settings) -> dict[str, str]:

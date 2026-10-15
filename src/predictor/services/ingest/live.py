@@ -274,7 +274,7 @@ def _int_ids(raw: object) -> list[int]:
     for item in raw:
         try:
             out.append(int(item))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
     return out
 

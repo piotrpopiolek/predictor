@@ -99,6 +99,60 @@ async def test_scheduler_quota_exhausted_does_not_spin_http(valid_env: None) -> 
 
 
 @pytest.mark.asyncio
+async def test_settle_open_runs_when_quota_is_exhausted(valid_env: None) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json=STATUS_BODY,
+            headers={
+                "x-ratelimit-requests-limit": "100",
+                "x-ratelimit-requests-remaining": "0",
+            },
+        )
+
+    settings = load_settings()
+    client = FootballClient(
+        settings,
+        locked=True,
+        transport=httpx.MockTransport(handler),
+        retry_wait=WaitZero(),
+    )
+    stop = asyncio.Event()
+    frozen = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
+    settled = {"n": 0}
+
+    async def settle() -> int:
+        settled["n"] += 1
+        return 0
+
+    scheduler = Scheduler(
+        settings,
+        client,
+        _unused_factory(),
+        idle_cap_seconds=0.05,
+        status_refresh_seconds=3600,
+        now_fn=lambda: frozen,
+        settle_open=settle,
+    )
+
+    async def fake_persist() -> None:
+        return None
+
+    scheduler._persist_cursors = fake_persist  # type: ignore[method-assign]
+    try:
+
+        async def halt() -> None:
+            await asyncio.sleep(0.15)
+            stop.set()
+
+        await asyncio.gather(scheduler.run(stop), halt())
+    finally:
+        await client.aclose()
+    assert settled["n"] >= 1
+
+
+@pytest.mark.asyncio
 async def test_daily_limit_body_stops_the_scheduler(valid_env: None) -> None:
     calls = {"n": 0}
 

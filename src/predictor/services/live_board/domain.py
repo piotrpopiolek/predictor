@@ -362,7 +362,7 @@ def parse_int_ids(raw: object) -> list[int]:
     for item in raw:
         try:
             fid = int(item)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         if fid in seen:
             continue
@@ -465,7 +465,7 @@ def avg_minute_from_goal_bins(raw: object) -> float | None:
             continue
         try:
             count = int(value)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         if count <= 0:
             continue
@@ -688,7 +688,7 @@ def _parse_odd(raw: str | None) -> Decimal | None:
         return None
     try:
         return Decimal(raw)
-    except InvalidOperation, ValueError:
+    except (InvalidOperation, ValueError):
         return None
 
 

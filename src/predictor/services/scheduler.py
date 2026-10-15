@@ -112,6 +112,7 @@ class Scheduler:
         ) = None,
         finishing_match_count: Callable[[], int] | None = None,
         gate: LiveSpendGate | None = None,
+        settle_open: Callable[[], Awaitable[int]] | None = None,
     ) -> None:
         self._settings = settings
         self._client = client
@@ -126,6 +127,7 @@ class Scheduler:
         self._left_today: int | None = None
         self._forecast: DayLoadForecast | None = None
         self._gate = gate or LiveSpendGate()
+        self._settle_open = settle_open
         self._credit = ContextCredit()
         self._quota: QuotaSnapshot | None = None
         self._status_quota: QuotaSnapshot | None = None
@@ -277,10 +279,24 @@ class Scheduler:
             return False
         return int(recent(60.0)) >= self._settings.quota_requests_per_minute
 
+    async def _settle_open_bets(self) -> None:
+        """DB-only. Runs even when the API quota is exhausted."""
+        if self._settle_open is None:
+            return
+        try:
+            await self._settle_open()
+        except Exception:
+            log_json(
+                logging.WARNING,
+                service="worker",
+                event="operator_bets_settle_failed",
+            )
+
     async def _tick(self, stop: asyncio.Event) -> None:
         self._work_started = False
         if stop.is_set():
             return
+        await self._settle_open_bets()
         try:
             await self._maybe_daily_report()
             quota = await self._ensure_quota()
@@ -385,7 +401,7 @@ class Scheduler:
                         None if plan is None else plan.allowed_per_minute
                     ),
                 )
-        except TypeError, AttributeError:
+        except (TypeError, AttributeError):
             return
         except Exception:
             log_json(logging.WARNING, service="worker", event="quota_persist_failed")
@@ -405,7 +421,7 @@ class Scheduler:
                     quota=self._quota,
                     now=self._now(),
                 )
-        except TypeError, AttributeError:
+        except (TypeError, AttributeError):
             return
         if wrote:
             log_json(
@@ -554,7 +570,7 @@ class Scheduler:
             )
             self._remember_status(spent)
             return spent
-        except RetryableHttpError, FootballHttpError:
+        except (RetryableHttpError, FootballHttpError):
             log_json(logging.WARNING, service="worker", event="quota_refresh_failed")
             if cached is not None:
                 return cached

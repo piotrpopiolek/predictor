@@ -14,7 +14,7 @@ def parse_odd_value(raw: object) -> Decimal | None:
         return None
     try:
         value = Decimal(text)
-    except InvalidOperation, ValueError:
+    except (InvalidOperation, ValueError):
         return None
     if not value.is_finite():
         return None

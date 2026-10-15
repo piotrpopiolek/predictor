@@ -480,7 +480,7 @@ class EnrichmentIngest:
                     int(task.id),
                     int(fixture_id) if fixture_id is not None else None,
                 )
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 await complete_task(
                     session, task, "permanent_error", error="bad_half_params"
                 )
@@ -500,7 +500,7 @@ class EnrichmentIngest:
                 return None
             try:
                 return int(task.id), int(league_id), int(season)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 await complete_task(
                     session, task, "permanent_error", error="bad_injuries_params"
                 )

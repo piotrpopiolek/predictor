@@ -27,6 +27,7 @@ _SECRET_ATTR_KEYS = frozenset(
         "token",
         "x-apisports-key",
         "telegram_bot_token",
+        "operator_bet_token",
         "postgres_password",
     }
 )

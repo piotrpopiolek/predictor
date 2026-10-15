@@ -720,7 +720,7 @@ def quota_gauges_from_params(params: dict[str, Any] | None) -> tuple[int, int]:
     try:
         remaining = int(params["remaining"])
         used = int(params.get("current", 0))
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         return -1, 0
     return remaining, used
 
@@ -731,7 +731,7 @@ def quota_limit_from_params(params: dict[str, Any] | None) -> int:
         return 0
     try:
         limit = int(params["limit_day"])
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         return 0
     return limit if limit > 0 else 0
 

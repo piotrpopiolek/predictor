@@ -20,6 +20,7 @@ VALID_ENV: dict[str, str] = {
     "INSTANCE_ID": "test-1",
     "HOST_ENVIRONMENT": "local",
     "PROMETHEUS_METRICS_TOKEN": "test-metrics-token",
+    "OPERATOR_BET_TOKEN": "test-operator-bet-token",
     "LIVE_POLL_TARGET_SECONDS": "60",
 }
 
