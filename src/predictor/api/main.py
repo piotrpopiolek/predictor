@@ -376,6 +376,8 @@ def create_app() -> FastAPI:
             ) from None
         remaining = int(gauges["quota_remaining"])
         used = int(gauges["quota_used"])
+        vendor_plan = int(gauges.get("quota_plan") or 0)
+        quota_plan = vendor_plan if vendor_plan > 0 else settings.quota_daily_limit
         now = datetime.now(UTC)
         planned = float(gauges.get("score_poll_seconds") or 0)
         interval = (
@@ -384,7 +386,7 @@ def create_app() -> FastAPI:
             else live_poll_interval_gauge(
                 remaining,
                 used,
-                settings.quota_daily_limit,
+                quota_plan,
                 settings.live_poll_target_seconds,
                 now,
             )
@@ -397,7 +399,7 @@ def create_app() -> FastAPI:
             live_last_snapshot_unixtime=gauges["live_last_snapshot_unixtime"],
             live_snapshot_age_seconds=gauges["live_snapshot_age_seconds"],
             oldest_pending_age_seconds=gauges["oldest_pending_age_seconds"],
-            quota_plan=settings.quota_daily_limit,
+            quota_plan=quota_plan,
             quota_remaining=remaining,
             quota_used=used,
             quota_seconds_until_reset=seconds_until_utc_midnight(now),

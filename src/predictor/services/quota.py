@@ -1,9 +1,10 @@
 """Quota budget: keep enough requests for live matches until UTC midnight.
 
-Drain mode holds HISTORY_BUDGET_SHARE of the calls above the safety buffer
-for history (priorities 5–9). Scores keep their cadence. Detail and live
-odds slow down so they fit in the other half. An empty board polls scores
-every 5 minutes instead of every minute.
+Scores keep their cadence. Detail tries to fit at full speed in what remains
+above the safety buffer. Live odds and one-shot context calls are reserved
+only when that detail already fits. History (priorities 5–9) spends the
+surplus above that reserve, inside the sleep window, until UTC midnight.
+An empty board polls scores every 5 minutes instead of every minute.
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from predictor.client.quota import QuotaSnapshot
 from predictor.constants import (
-    HISTORY_BUDGET_SHARE,
     IDLE_SCORE_POLL_SECONDS,
     LIVE_CONTEXT_CREDIT_TICKS,
     LIVE_CONTEXT_FINAL_CALLS,
@@ -122,15 +122,6 @@ def safety_buffer_requests(limit_day: int, buffer_percent: float) -> int:
     return math.ceil(limit_day * (buffer_percent / 100.0))
 
 
-def _live_call_cap(usable: int) -> int:
-    """Calls detail and odds may spend. The rest stays for history."""
-    if usable <= 0 or HISTORY_BUDGET_SHARE <= 0:
-        return max(0, usable)
-    share = min(1.0, HISTORY_BUDGET_SHARE)
-    history = int(usable * share)
-    return max(0, usable - history)
-
-
 def plan_live_budget(
     *,
     live_matches: int,
@@ -220,13 +211,8 @@ def plan_live_budget(
     sleep = float(target_seconds) if in_play else float(IDLE_SCORE_POLL_SECONDS)
     detail_at_fast = _detail_calls(match_seconds, finishing, fast)
     odds_target = max(1, int(target_seconds))
-    # Scores keep their cadence even when they spill out of the live half.
-    # Detail and odds only see what that half has left.
-    fit_budget = _live_call_cap(usable)
-    if score_need > fit_budget:
-        fit_budget = min(usable, score_need)
     choice = _fit_quality(
-        usable=fit_budget,
+        usable=usable,
         score_need=score_need,
         detail_at_fast=detail_at_fast,
         ideal_odds=ideal_odds,
@@ -270,6 +256,32 @@ class _Quality:
 
 # Share of a match spent at halftime or in the last minutes of the first half.
 _URGENT_MATCH_SHARE = 0.25
+
+
+def queue_cycle_seconds(sleep_seconds: float, live_target_seconds: float) -> float:
+    """Wall-clock length of one loop: work plus the sleep that follows it.
+
+    A fast poll spends about as long working as it sleeps, so the cycle is
+    both. An idle poll is almost all sleep.
+    """
+    if sleep_seconds <= 0:
+        return 0.0
+    if sleep_seconds <= live_target_seconds:
+        return sleep_seconds + live_target_seconds
+    return sleep_seconds
+
+
+def history_call_allowance(
+    *,
+    surplus: int,
+    seconds_left: float,
+    cycle_seconds: float,
+) -> int:
+    """Calls for one sleep so the surplus above the live reserve lasts to midnight."""
+    if surplus <= 0 or seconds_left <= 0 or cycle_seconds <= 0:
+        return 0
+    cycles_left = max(1.0, seconds_left / cycle_seconds)
+    return min(surplus, math.floor(surplus / cycles_left))
 
 
 def quota_allows(priority: int, snapshot: QuotaSnapshot, plan: LiveBudgetPlan) -> bool:
@@ -450,84 +462,89 @@ def _fit_quality(
             odds_interval=odds_every,
             overloaded=False,
         )
-    side = max(0, usable - score_need)
-    return _stretch_detail_and_odds(
-        side=side,
-        detail_at_fast=detail_at_fast,
-        ideal_odds=ideal_odds,
-        match_seconds=match_seconds,
-        finishing=finishing,
-        seconds_left=seconds_left,
-        odds_target=odds_every,
-    )
-
-
-def _stretch_detail_and_odds(
-    *,
-    side: int,
-    detail_at_fast: int,
-    ideal_odds: int,
-    match_seconds: float,
-    finishing: int,
-    seconds_left: float,
-    odds_target: int,
-) -> _Quality:
-    """Slow detail and live odds by the same factor until they fit in ``side``."""
-    fast = LIVE_DETAIL_REFRESH_SECONDS
-    ceiling = max(fast, math.ceil(seconds_left))
-    odds_ceiling = max(odds_target, math.ceil(seconds_left))
-    if side <= 0 or (detail_at_fast <= 0 and ideal_odds <= 0):
+    if fits(detail_at_fast, 0, 0):
         return _Quality(
-            interval=ceiling,
-            relaxed_interval=ceiling,
-            detail_need=0,
+            interval=fast,
+            relaxed_interval=fast,
+            detail_need=detail_at_fast,
             odds_need=0,
             oneshot_calls=0,
             oneshot_reserve=0,
-            odds_interval=odds_ceiling,
-            overloaded=False,
+            odds_interval=odds_every,
+            overloaded=ideal_odds > 0,
         )
-    total = detail_at_fast + ideal_odds
-    factor = total / float(side) if total > side else 1.0
-    detail_interval = min(ceiling, max(fast, math.ceil(fast * factor)))
-    odds_interval = min(odds_ceiling, max(odds_target, math.ceil(odds_target * factor)))
-    detail_need = (
-        _detail_calls(match_seconds, finishing, detail_interval)
-        if detail_at_fast > 0
-        else 0
+    detail_budget = max(0, usable - score_need)
+    urgent_interval, relaxed_interval, detail_need = _tiered_intervals(
+        match_seconds=match_seconds,
+        finishing=finishing,
+        call_budget=detail_budget,
+        seconds_left=seconds_left,
     )
-    odds_need = (
-        math.ceil(ideal_odds * odds_target / float(odds_interval))
-        if ideal_odds > 0 and odds_interval > 0
-        else 0
-    )
-    while detail_need + odds_need > side:
-        moved = False
-        if detail_interval < ceiling and detail_at_fast > 0:
-            detail_interval += 1
-            detail_need = _detail_calls(match_seconds, finishing, detail_interval)
-            moved = True
-        if detail_need + odds_need <= side:
-            break
-        if odds_interval < odds_ceiling and ideal_odds > 0:
-            odds_interval += 1
-            odds_need = math.ceil(ideal_odds * odds_target / float(odds_interval))
-            moved = True
-        if not moved:
-            break
-    if detail_need + odds_need > side:
-        odds_need = min(odds_need, side)
-        detail_need = min(detail_need, max(0, side - odds_need))
     return _Quality(
-        interval=detail_interval,
-        relaxed_interval=detail_interval,
+        interval=urgent_interval,
+        relaxed_interval=relaxed_interval,
         detail_need=detail_need,
-        odds_need=odds_need,
+        odds_need=0,
         oneshot_calls=0,
         oneshot_reserve=0,
-        odds_interval=odds_interval,
-        overloaded=False,
+        odds_interval=odds_every,
+        overloaded=True,
     )
+
+
+def _tiered_intervals(
+    *,
+    match_seconds: float,
+    finishing: int,
+    call_budget: int,
+    seconds_left: float,
+) -> tuple[int, int, int]:
+    """Keep halftime-sized detail faster and stretch the rest of the match."""
+    fast = LIVE_DETAIL_REFRESH_SECONDS
+    ceiling = max(fast, math.ceil(seconds_left))
+    if call_budget <= 0:
+        return ceiling, ceiling, 0
+    finish = min(max(0, finishing), call_budget)
+    body = call_budget - finish
+    if match_seconds <= 0 or body <= 0:
+        return fast, fast, finish
+    urgent_seconds = match_seconds * _URGENT_MATCH_SHARE
+    relaxed_seconds = match_seconds - urgent_seconds
+    urgent_fast = _calls_only(urgent_seconds, fast)
+    if urgent_fast <= body:
+        relaxed_body = body - urgent_fast
+        relaxed_interval = _interval_only(relaxed_seconds, relaxed_body, seconds_left)
+        relaxed_calls = min(
+            relaxed_body, _calls_only(relaxed_seconds, relaxed_interval)
+        )
+        return fast, max(fast, relaxed_interval), urgent_fast + relaxed_calls + finish
+    urgent_body = max(1, body // 2)
+    relaxed_body = max(0, body - urgent_body)
+    urgent_interval = _interval_only(urgent_seconds, urgent_body, seconds_left)
+    relaxed_interval = _interval_only(
+        relaxed_seconds, max(1, relaxed_body), seconds_left
+    )
+    if relaxed_interval < urgent_interval:
+        relaxed_interval = urgent_interval
+    urgent_calls = min(urgent_body, _calls_only(urgent_seconds, urgent_interval))
+    relaxed_calls = min(relaxed_body, _calls_only(relaxed_seconds, relaxed_interval))
+    return urgent_interval, relaxed_interval, urgent_calls + relaxed_calls + finish
+
+
+def _calls_only(match_seconds: float, interval: int) -> int:
+    if match_seconds <= 0 or interval <= 0:
+        return 0
+    return math.ceil(match_seconds / float(interval))
+
+
+def _interval_only(match_seconds: float, call_budget: int, seconds_left: float) -> int:
+    ceiling = max(LIVE_DETAIL_REFRESH_SECONDS, math.ceil(seconds_left))
+    if match_seconds <= 0 or call_budget <= 0:
+        return ceiling
+    interval = max(LIVE_DETAIL_REFRESH_SECONDS, math.ceil(match_seconds / call_budget))
+    while _calls_only(match_seconds, interval) > call_budget and interval < ceiling:
+        interval += 1
+    return min(interval, ceiling)
 
 
 def _detail_calls(match_seconds: float, finishing: int, interval: int) -> int:
@@ -706,6 +723,17 @@ def quota_gauges_from_params(params: dict[str, Any] | None) -> tuple[int, int]:
     except (KeyError, TypeError, ValueError):
         return -1, 0
     return remaining, used
+
+
+def quota_limit_from_params(params: dict[str, Any] | None) -> int:
+    """Vendor daily limit stored on the snapshot. Zero when it is missing."""
+    if not params:
+        return 0
+    try:
+        limit = int(params["limit_day"])
+    except (KeyError, TypeError, ValueError):
+        return 0
+    return limit if limit > 0 else 0
 
 
 async def persist_quota_snapshot(

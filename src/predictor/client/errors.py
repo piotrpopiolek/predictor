@@ -30,3 +30,7 @@ class RetryableHttpError(RuntimeError):
 
 class QuotaExhaustedError(RuntimeError):
     """Stop paging when remaining quota hits zero; do not mark the task complete."""
+
+
+class SpendWindowClosed(Exception):
+    """The history sleep window has no calls, no time, or no minute-cap room left."""

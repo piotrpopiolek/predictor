@@ -16,6 +16,7 @@ from predictor.client.errors import (
     FootballHttpError,
     QuotaExhaustedError,
     RetryableHttpError,
+    SpendWindowClosed,
 )
 from predictor.client.football import FootballClient
 from predictor.constants import (
@@ -43,6 +44,7 @@ from predictor.services.ingest.persist_children import (
 from predictor.services.ingest.task_completion import (
     fail_task,
     finish_task,
+    release_in_progress_task,
     retry_or_empty_task,
 )
 from predictor.services.queue import (
@@ -140,6 +142,9 @@ class EnrichmentIngest:
                 self._client, "/fixtures", params={"id": fixture.id}
             )
         except AuthBlockedError:
+            raise
+        except SpendWindowClosed:
+            await release_in_progress_task(self._session_factory, task_id)
             raise
         except QuotaExhaustedError:
             await self._fail(task_id, "retryable_error", "quota_exhausted")
@@ -270,6 +275,9 @@ class EnrichmentIngest:
                 )
             except AuthBlockedError:
                 raise
+            except SpendWindowClosed:
+                await release_in_progress_task(self._session_factory, task_id)
+                raise
             except QuotaExhaustedError:
                 await self._fail(task_id, "retryable_error", "quota_exhausted")
                 return
@@ -377,6 +385,8 @@ class EnrichmentIngest:
             )
         except AuthBlockedError:
             raise
+        except SpendWindowClosed:
+            await release_in_progress_task(self._session_factory, task_id)
         except QuotaExhaustedError:
             await self._fail(task_id, "retryable_error", "quota_exhausted")
             return False

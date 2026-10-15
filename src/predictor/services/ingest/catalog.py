@@ -36,6 +36,7 @@ from predictor.services.queue import (
     get_or_create_endpoint_task,
     needs_refresh,
 )
+from predictor.services.quota import safety_buffer_requests
 
 PersistFn = Callable[[AsyncSession, list[Any]], Awaitable[dict[str, Any]]]
 
@@ -47,17 +48,21 @@ class CatalogIngest:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         now_fn: Callable[[], datetime] | None = None,
+        buffer_percent: float = 0.0,
     ) -> None:
         self._client = client
         self._session_factory = session_factory
         self._now = now_fn or (lambda: datetime.now(UTC))
+        self._buffer_percent = buffer_percent
         self.timezones: list[str] = []
 
     def _quota_left(self) -> bool:
         snapshot = self._client.quota
         if snapshot is None:
             return True
-        return snapshot.remaining > 0
+        limit = snapshot.limit_day
+        buffer = safety_buffer_requests(limit, self._buffer_percent)
+        return snapshot.remaining > buffer
 
     async def refresh_priority_one(self) -> None:
         steps: tuple[tuple[str, PersistFn], ...] = (

@@ -38,6 +38,10 @@ LIVE_CONTEXT_TIME_FRACTION = 0.85
 LIVE_CONTEXT_CREDIT_TICKS = 3
 LIVE_CONTEXT_EMPTY_BACKOFF_SECONDS = 5 * 60
 LIVE_CONTEXT_MAX_EMPTY_ATTEMPTS = 5
+# A failed fetch goes back on the queue this many times, then permanent_error.
+ERROR_RETRY_LIMIT = 10
+ERROR_RETRY_BASE_BACKOFF_SECONDS = 60
+ERROR_RETRY_MAX_BACKOFF_SECONDS = 60 * 60
 
 CURSOR_KINDS = ("forward", "backfill", "enrichment")
 
@@ -114,13 +118,7 @@ GLOBAL_ENDPOINT_ORDER: tuple[str, ...] = (
     "/sidelined",
 )
 
-# Temporary drain mode. Half of the calls above the safety buffer stay for
-# the history queue. Detail and live odds slow down into the other half.
-# The score poll stays on its one-minute cadence. Set to 0 to give live
-# every call above the buffer again.
-HISTORY_BUDGET_SHARE = 0.5
-
-# Snapshot refresh is off while that queue drains. The stored row stays.
+# Snapshot refresh is off while the history queue drains. The stored row stays.
 # Reopening /standings, /teams/statistics, /players, /players/squads, and
 # the four top lists every UTC day was spending the history budget on
 # overwrites. An empty set makes requeue_stale_global a no-op.

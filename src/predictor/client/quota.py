@@ -18,6 +18,8 @@ class QuotaSnapshot:
     remaining: int
     fetched_at: datetime | None = None
     source: str = "api"
+    # "status" is a /status body. "header" is a rate-limit header on another call.
+    reading: str = "status"
 
 
 def _header_int(response: httpx.Response, name: str) -> int | None:

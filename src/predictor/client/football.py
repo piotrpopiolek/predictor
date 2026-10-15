@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+from collections import deque
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +22,7 @@ from predictor.client.errors import (
     FootballHttpError,
     QuotaExhaustedError,
     RetryableHttpError,
+    SpendWindowClosed,
     WriterLockRequiredError,
 )
 from predictor.client.quota import (
@@ -56,6 +59,11 @@ class FootballClient:
         self._locked = locked
         self._auth_blocked = False
         self._quota: QuotaSnapshot | None = None
+        self._calls_made = 0
+        self._call_marks: deque[float] = deque()
+        self._window_deadline: float | None = None
+        self._window_ceiling = 0
+        self._window_per_minute = 0
         self._wait = retry_wait or WaitRetryAfterOrJitter()
         timeout = httpx.Timeout(
             connect=HTTP_CONNECT_TIMEOUT_SECONDS,
@@ -91,6 +99,31 @@ class FootballClient:
     @property
     def quota(self) -> QuotaSnapshot | None:
         return self._quota
+
+    @property
+    def calls_made(self) -> int:
+        return self._calls_made
+
+    def open_history_window(
+        self,
+        *,
+        deadline: float,
+        call_ceiling: int,
+        per_minute: int,
+    ) -> None:
+        """Refuse HTTP once the sleep, the call pool, or the minute cap is spent."""
+        self._window_deadline = deadline
+        self._window_ceiling = call_ceiling
+        self._window_per_minute = per_minute
+
+    def close_history_window(self) -> None:
+        self._window_deadline = None
+
+    def calls_in_recent_seconds(self, seconds: float) -> int:
+        cutoff = time.monotonic() - seconds
+        while self._call_marks and self._call_marks[0] < cutoff:
+            self._call_marks.popleft()
+        return len(self._call_marks)
 
     def _redact(self, text: str) -> str:
         if self._key and self._key in text:
@@ -148,6 +181,9 @@ class FootballClient:
         path: str,
         params: Mapping[str, str | int] | None,
     ) -> httpx.Response:
+        self._refuse_closed_window()
+        self._calls_made += 1
+        self._call_marks.append(time.monotonic())
         try:
             response = await self._http.request(method, path, params=params)
         except httpx.TransportError:
@@ -170,6 +206,17 @@ class FootballClient:
         if response.status_code >= 400:
             raise FootballHttpError(response.status_code, path)
         return response
+
+    def _refuse_closed_window(self) -> None:
+        if self._window_deadline is None:
+            return
+        closed = (
+            time.monotonic() >= self._window_deadline
+            or self._calls_made >= self._window_ceiling
+            or self.calls_in_recent_seconds(60) >= self._window_per_minute
+        )
+        if closed:
+            raise SpendWindowClosed()
 
     def _note_quota_headers(self, response: httpx.Response) -> None:
         remaining = response.headers.get("x-ratelimit-requests-remaining")
@@ -194,6 +241,7 @@ class FootballClient:
             remaining=max(0, remaining_i),
             fetched_at=datetime.now(UTC),
             source="api",
+            reading="header",
         )
 
     def _body_says_daily_limit(self, response: httpx.Response) -> bool:

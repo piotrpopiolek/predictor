@@ -16,6 +16,7 @@ from predictor.client.errors import (
     FootballHttpError,
     QuotaExhaustedError,
     RetryableHttpError,
+    SpendWindowClosed,
 )
 from predictor.client.football import FootballClient
 from predictor.constants import (

@@ -83,7 +83,7 @@ def render_metrics(
             "predictor_oldest_pending_age_seconds{"
             f"{labels}}} {oldest_pending_age_seconds}"
         ),
-        "# HELP predictor_quota_plan Configured daily request plan.",
+        "# HELP predictor_quota_plan Vendor daily limit from the latest snapshot.",
         "# TYPE predictor_quota_plan gauge",
         f"predictor_quota_plan{{{labels}}} {quota_plan}",
         (

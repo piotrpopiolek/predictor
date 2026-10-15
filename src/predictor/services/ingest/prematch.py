@@ -15,6 +15,7 @@ from predictor.client.errors import (
     FootballHttpError,
     QuotaExhaustedError,
     RetryableHttpError,
+    SpendWindowClosed,
 )
 from predictor.client.football import FootballClient
 from predictor.constants import PREMATCH_PER_TICK, URGENT_PREMATCH_PER_TICK
@@ -36,6 +37,7 @@ from predictor.services.ingest.persist_predictions import persist_predictions
 from predictor.services.ingest.task_completion import (
     fail_task,
     finish_task,
+    release_in_progress_task,
     retry_or_empty_task,
 )
 from predictor.services.queue import (
@@ -118,6 +120,9 @@ class PrematchIngest:
             items, current, total = await fetch_all_pages(self._client, "/odds/mapping")
         except AuthBlockedError:
             raise
+        except SpendWindowClosed:
+            await release_in_progress_task(self._session_factory, task_id)
+            raise
         except QuotaExhaustedError:
             await self._fail(task_id, "retryable_error", "quota_exhausted")
             return
@@ -175,6 +180,9 @@ class PrematchIngest:
                 self._client, "/fixtures/headtohead", params={"h2h": h2h}
             )
         except AuthBlockedError:
+            raise
+        except SpendWindowClosed:
+            await release_in_progress_task(self._session_factory, task_id)
             raise
         except QuotaExhaustedError:
             await self._fail(task_id, "retryable_error", "quota_exhausted")
@@ -259,6 +267,9 @@ class PrematchIngest:
                 self._client, "/predictions", params={"fixture": loaded.id}
             )
         except AuthBlockedError:
+            raise
+        except SpendWindowClosed:
+            await release_in_progress_task(self._session_factory, task_id)
             raise
         except QuotaExhaustedError:
             await self._fail(task_id, "retryable_error", "quota_exhausted")
@@ -358,6 +369,9 @@ class PrematchIngest:
                 self._client, "/odds", params={"fixture": loaded.id}
             )
         except AuthBlockedError:
+            raise
+        except SpendWindowClosed:
+            await release_in_progress_task(self._session_factory, task_id)
             raise
         except QuotaExhaustedError:
             await self._fail(task_id, "retryable_error", "quota_exhausted")

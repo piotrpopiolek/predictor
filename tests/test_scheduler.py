@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -10,10 +11,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tenacity import RetryCallState
 from tenacity.wait import wait_base
 
-from predictor.client.errors import FootballHttpError, QuotaExhaustedError
+from predictor.client.errors import (
+    FootballHttpError,
+    QuotaExhaustedError,
+    SpendWindowClosed,
+)
 from predictor.client.football import FootballClient
 from predictor.client.quota import QuotaSnapshot
 from predictor.schemas.settings import load_settings
+from predictor.services.quota import (
+    history_call_allowance,
+    plan_live_budget,
+    queue_cycle_seconds,
+    seconds_until_utc_midnight,
+)
 from predictor.services.scheduler import PRIORITY_ORDER, Scheduler
 
 
@@ -186,7 +197,7 @@ async def test_matches_left_today_feeds_the_budget(valid_env: None) -> None:
         matches_left_today=left,
     )
     await scheduler._tick(asyncio.Event())
-    assert called["history"] == 1
+    assert called["history"] == 0
     assert scheduler._gate.oneshot_calls == 0
 
     async def broken() -> int:
@@ -345,59 +356,63 @@ async def test_tick_stops_when_a_handler_hits_the_daily_limit(valid_env: None) -
 
 
 @pytest.mark.asyncio
-async def test_planning_uses_newer_client_headers(valid_env: None) -> None:
-    start = datetime(2026, 9, 26, 18, 0, tzinfo=UTC)
-    calls = {"status": 0}
+async def test_stale_header_cannot_hide_a_fresh_status(valid_env: None) -> None:
+    start = datetime(2026, 10, 8, 0, 1, tzinfo=UTC)
+    called: list[int] = []
 
     class _Client:
-        quota = QuotaSnapshot(
-            current=7420,
-            limit_day=7500,
-            remaining=80,
-            fetched_at=start + timedelta(seconds=1),
-            source="api",
-        )
+        calls_made = 0
+        quota: QuotaSnapshot | None = None
 
         async def get_status(self) -> QuotaSnapshot:
-            calls["status"] += 1
-            return QuotaSnapshot(
-                current=500,
+            self.calls_made += 1
+            snap = QuotaSnapshot(
+                current=8,
                 limit_day=7500,
-                remaining=7000,
+                remaining=7492,
                 fetched_at=start,
                 source="api",
             )
+            self.quota = snap
+            return snap
 
-    called = {"history": 0, "odds": 0}
+    client = _Client()
+
+    async def dictionaries() -> None:
+        called.append(1)
+        client.calls_made += 8
+        client.quota = QuotaSnapshot(
+            current=7131,
+            limit_day=7500,
+            remaining=369,
+            fetched_at=start + timedelta(seconds=1),
+            source="api",
+            reading="header",
+        )
 
     async def history() -> None:
-        called["history"] += 1
-
-    async def odds_live() -> None:
-        called["odds"] += 1
+        called.append(8)
 
     settings = load_settings()
     scheduler = Scheduler(
         settings,
-        cast(Any, _Client()),
+        cast(Any, client),
         _unused_factory(),
-        handlers={4: odds_live, 8: history},
+        handlers={1: dictionaries, 8: history},
         now_fn=lambda: start,
-        live_match_count=lambda: 30,
         status_refresh_seconds=3600,
     )
     scheduler._quota = QuotaSnapshot(
-        current=500,
+        current=7131,
         limit_day=7500,
-        remaining=7000,
-        fetched_at=start,
+        remaining=369,
+        fetched_at=start - timedelta(minutes=5),
         source="api",
     )
     await scheduler._tick(asyncio.Event())
-    assert calls["status"] == 0
-    assert called == {"history": 0, "odds": 0}
-    assert scheduler._plan is not None
-    assert scheduler._plan.overloaded is True
+    assert called == [1, 8]
+    assert scheduler.quota is not None
+    assert scheduler.quota.remaining == 7492
 
 
 @pytest.mark.asyncio
@@ -435,15 +450,377 @@ async def test_overload_blocks_lower_priorities_until_the_slate_shrinks(
         live_match_count=lambda: board["live"],
     )
     await scheduler._tick(asyncio.Event())
-    assert 8 in called
+    assert called == []
     assert scheduler._plan is not None
-    assert scheduler._plan.overloaded is False
-    assert scheduler._plan.score_poll_seconds == 60.0
+    assert scheduler._plan.overloaded is True
 
     board["live"] = 1
-    called.clear()
     scheduler._quota = None
     await scheduler._tick(asyncio.Event())
     assert 8 in called
     assert scheduler._plan is not None
     assert scheduler._plan.overloaded is False
+
+
+def test_header_drop_is_limited_to_calls_this_tick(valid_env: None) -> None:
+    start = datetime(2026, 10, 8, 0, 2, tzinfo=UTC)
+    status = QuotaSnapshot(
+        current=8,
+        limit_day=7500,
+        remaining=7492,
+        fetched_at=start,
+        source="api",
+    )
+
+    class _Client:
+        calls_made = 8
+        quota = QuotaSnapshot(
+            current=16,
+            limit_day=7500,
+            remaining=7484,
+            fetched_at=start + timedelta(seconds=1),
+            source="api",
+            reading="header",
+        )
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        cast(Any, _Client()),
+        _unused_factory(),
+        now_fn=lambda: start,
+    )
+    scheduler._calls_baseline = 0
+    assert scheduler._prefer_observed(status).remaining == 7484
+
+    scheduler._client.quota = QuotaSnapshot(
+        current=7131,
+        limit_day=7500,
+        remaining=369,
+        fetched_at=start + timedelta(seconds=2),
+        source="api",
+        reading="header",
+    )
+    assert scheduler._prefer_observed(status).remaining == 7492
+
+
+@pytest.mark.asyncio
+async def test_new_utc_day_reads_status_before_handlers(valid_env: None) -> None:
+    start = datetime(2026, 10, 8, 0, 0, 40, tzinfo=UTC)
+    events: list[str] = []
+
+    class _Client:
+        quota: QuotaSnapshot | None = None
+
+        async def get_status(self) -> QuotaSnapshot:
+            events.append("status")
+            snap = QuotaSnapshot(
+                current=8,
+                limit_day=7500,
+                remaining=7492,
+                fetched_at=start,
+                source="api",
+            )
+            self.quota = snap
+            return snap
+
+    async def dictionaries() -> None:
+        events.append("handler")
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        cast(Any, _Client()),
+        _unused_factory(),
+        handlers={1: dictionaries},
+        now_fn=lambda: start,
+        status_refresh_seconds=3600,
+    )
+    scheduler._quota = QuotaSnapshot(
+        current=7131,
+        limit_day=7500,
+        remaining=376,
+        fetched_at=start - timedelta(minutes=5),
+        source="api",
+    )
+    await scheduler._tick(asyncio.Event())
+    assert events == ["status", "handler"]
+    assert scheduler.quota is not None
+    assert scheduler.quota.remaining == 7492
+
+
+@pytest.mark.asyncio
+async def test_reset_lag_probes_status_for_fifteen_minutes(valid_env: None) -> None:
+    moment = {"at": datetime(2026, 10, 8, 0, 5, tzinfo=UTC)}
+    calls = {"status": 0}
+    called: list[int] = []
+    readings = [
+        QuotaSnapshot(
+            current=7496,
+            limit_day=7500,
+            remaining=4,
+            fetched_at=moment["at"],
+            source="api",
+        ),
+        QuotaSnapshot(
+            current=8,
+            limit_day=7500,
+            remaining=7492,
+            fetched_at=moment["at"] + timedelta(minutes=1),
+            source="api",
+        ),
+    ]
+
+    class _Client:
+        quota: QuotaSnapshot | None = None
+
+        async def get_status(self) -> QuotaSnapshot:
+            calls["status"] += 1
+            snap = readings[min(calls["status"] - 1, len(readings) - 1)]
+            self.quota = snap
+            return snap
+
+    async def history() -> None:
+        called.append(8)
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        cast(Any, _Client()),
+        _unused_factory(),
+        handlers={8: history},
+        now_fn=lambda: moment["at"],
+        idle_cap_seconds=60,
+    )
+    await scheduler._tick(asyncio.Event())
+    assert calls["status"] == 1
+    assert called == []
+    assert scheduler.live_interval_seconds == 60
+
+    moment["at"] = datetime(2026, 10, 8, 0, 6, tzinfo=UTC)
+    await scheduler._tick(asyncio.Event())
+    assert calls["status"] == 2
+    assert called == [8]
+    assert scheduler.quota is not None
+    assert scheduler.quota.remaining == 7492
+
+
+@pytest.mark.asyncio
+async def test_spent_status_sleeps_until_midnight_after_probe(
+    valid_env: None,
+) -> None:
+    moment = {"at": datetime(2026, 10, 8, 0, 20, tzinfo=UTC)}
+    calls = {"status": 0}
+
+    class _Client:
+        quota: QuotaSnapshot | None = None
+
+        async def get_status(self) -> QuotaSnapshot:
+            calls["status"] += 1
+            snap = QuotaSnapshot(
+                current=7496,
+                limit_day=7500,
+                remaining=4,
+                fetched_at=moment["at"],
+                source="api",
+            )
+            self.quota = snap
+            return snap
+
+    async def history() -> None:
+        raise AssertionError("handlers must wait for the next utc day")
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        cast(Any, _Client()),
+        _unused_factory(),
+        handlers={8: history},
+        now_fn=lambda: moment["at"],
+        idle_cap_seconds=60,
+    )
+    await scheduler._tick(asyncio.Event())
+    assert calls["status"] == 1
+    assert scheduler.live_interval_seconds == 85200
+
+    await scheduler._tick(asyncio.Event())
+    assert calls["status"] == 1
+
+
+def test_history_allowance_spreads_surplus_across_cycles() -> None:
+    assert queue_cycle_seconds(60, 60) == 120
+    assert queue_cycle_seconds(300, 60) == 300
+    assert history_call_allowance(surplus=0, seconds_left=3600, cycle_seconds=120) == 0
+    assert (
+        history_call_allowance(surplus=34000, seconds_left=29880, cycle_seconds=120)
+        == 136
+    )
+
+
+def _history_client(now: datetime, *, recent: int = 0) -> Any:
+    class _Client:
+        quota = QuotaSnapshot(
+            current=5000,
+            limit_day=75000,
+            remaining=70000,
+            fetched_at=now,
+            source="api",
+            reading="status",
+        )
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        @property
+        def calls_made(self) -> int:
+            return self.calls
+
+        def calls_in_recent_seconds(self, seconds: float) -> int:
+            del seconds
+            return recent
+
+    return _Client()
+
+
+@pytest.mark.asyncio
+async def test_sleep_spends_the_history_pool(valid_env: None) -> None:
+    now = datetime(2026, 10, 11, 16, 0, tzinfo=UTC)
+    called: list[int] = []
+    client = _history_client(now)
+
+    async def odds_live() -> None:
+        called.append(4)
+
+    async def history() -> None:
+        called.append(9)
+        client.calls += 1
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        client,
+        _unused_factory(),
+        handlers={4: odds_live, 9: history},
+        now_fn=lambda: now,
+        live_match_count=lambda: 0,
+    )
+    scheduler._work_started = True
+    scheduler._quota = client.quota
+    scheduler._plan = plan_live_budget(
+        live_matches=0,
+        remaining=70000,
+        now=now,
+        limit_day=75000,
+        buffer_percent=0.1,
+    )
+    window = 0.2
+    surplus = 70000 - scheduler._plan.safety_buffer - scheduler._plan.full_reserve
+    allowance = history_call_allowance(
+        surplus=surplus,
+        seconds_left=seconds_until_utc_midnight(now),
+        cycle_seconds=queue_cycle_seconds(window, 60),
+    )
+    await scheduler._drain_during_sleep(asyncio.Event(), window)
+    assert allowance > 10
+    assert called.count(9) == allowance
+    assert 4 not in called
+
+
+@pytest.mark.asyncio
+async def test_sleep_stops_when_the_window_ends(valid_env: None) -> None:
+    now = datetime(2026, 10, 11, 23, 59, 50, tzinfo=UTC)
+    client = _history_client(now)
+
+    async def history() -> None:
+        client.calls += 1
+        await asyncio.sleep(0.08)
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        client,
+        _unused_factory(),
+        handlers={9: history},
+        now_fn=lambda: now,
+        live_match_count=lambda: 1,
+    )
+    scheduler._work_started = True
+    scheduler._quota = client.quota
+    scheduler._plan = plan_live_budget(
+        live_matches=1,
+        remaining=70000,
+        now=now,
+        limit_day=75000,
+        buffer_percent=0.1,
+    )
+    started = time.monotonic()
+    await scheduler._drain_during_sleep(asyncio.Event(), 0.15)
+    assert 1 <= client.calls <= 4
+    assert time.monotonic() - started < 0.6
+
+
+@pytest.mark.asyncio
+async def test_minute_cap_skips_the_history_window(valid_env: None) -> None:
+    now = datetime(2026, 10, 11, 16, 0, tzinfo=UTC)
+    client = _history_client(now, recent=450)
+
+    async def history() -> None:
+        client.calls += 1
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        client,
+        _unused_factory(),
+        handlers={9: history},
+        now_fn=lambda: now,
+        live_match_count=lambda: 0,
+    )
+    scheduler._work_started = True
+    scheduler._quota = client.quota
+    scheduler._plan = plan_live_budget(
+        live_matches=0,
+        remaining=70000,
+        now=now,
+        limit_day=75000,
+        buffer_percent=0.1,
+    )
+    await scheduler._drain_during_sleep(asyncio.Event(), 0.05)
+    assert client.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_closed_history_window_does_not_send(valid_env: None) -> None:
+    sent = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        sent["n"] += 1
+        return httpx.Response(
+            200,
+            json={"response": []},
+            headers={
+                "x-ratelimit-requests-limit": "75000",
+                "x-ratelimit-requests-remaining": "70000",
+            },
+        )
+
+    settings = load_settings()
+    client = FootballClient(
+        settings,
+        locked=True,
+        transport=httpx.MockTransport(handler),
+        retry_wait=WaitZero(),
+    )
+    try:
+        client.open_history_window(
+            deadline=time.monotonic() + 5,
+            call_ceiling=1,
+            per_minute=450,
+        )
+        await client.get("/timezone")
+        with pytest.raises(SpendWindowClosed):
+            await client.get("/timezone")
+        assert sent["n"] == 1
+    finally:
+        await client.aclose()

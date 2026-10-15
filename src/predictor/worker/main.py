@@ -81,7 +81,11 @@ async def run_locked_loop(
                 await ensure_dictionary_tasks(session)
                 await complete_stored_player_profiles(session)
                 await complete_stored_venues(session)
-        catalog = CatalogIngest(client, session_factory)
+        catalog = CatalogIngest(
+            client,
+            session_factory,
+            buffer_percent=settings.quota_safety_buffer_percent,
+        )
         fixtures = FixtureIngest(client, session_factory)
         live = LiveIngest(
             client,

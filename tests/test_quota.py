@@ -15,6 +15,7 @@ from predictor.services.quota import (
     plan_live_budget,
     quota_allows,
     quota_gauges_from_params,
+    quota_limit_from_params,
     safety_buffer_requests,
     seconds_until_utc_midnight,
 )
@@ -26,16 +27,18 @@ def _plan(matches: int, remaining: int, now: datetime):
     )
 
 
-def test_history_keeps_the_calls_above_the_live_half() -> None:
+def test_history_runs_only_above_the_full_live_reserve() -> None:
     now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     snap = QuotaSnapshot(current=7100, limit_day=7500, remaining=400, source="api")
     plan = _plan(30, snap.remaining, now)
     assert plan.score_poll_seconds == 60.0
-    assert plan.full_reserve <= 400
-    assert plan.overloaded is False
+    assert plan.detail_refresh_seconds == 300
+    assert plan.odds_need == 0
+    assert plan.full_reserve == 400
+    assert plan.overloaded is True
     assert quota_allows(1, snap, plan) is True
     assert quota_allows(2, snap, plan) is True
-    assert quota_allows(9, snap, plan) is True
+    assert quota_allows(9, snap, plan) is False
 
 
 def test_surplus_allows_history_and_five_minute_details() -> None:
@@ -49,24 +52,25 @@ def test_surplus_allows_history_and_five_minute_details() -> None:
     assert plan.score_poll_seconds == 60.0
 
 
-def test_tight_reserve_slows_details_and_drops_oneshots() -> None:
+def test_tight_reserve_keeps_fast_detail_and_drops_odds() -> None:
     now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     plan = _plan(30, 400, now)
-    assert plan.detail_refresh_seconds > 300
+    assert plan.detail_refresh_seconds == 300
+    assert plan.odds_need == 0
     assert plan.oneshot_calls == 0
-    assert plan.overloaded is False
+    assert plan.overloaded is True
     assert plan.score_poll_seconds == 60.0
-    assert plan.full_reserve <= 200
+    assert plan.full_reserve == 400
 
 
 def test_oneshots_stop_when_score_reserve_is_the_whole_budget() -> None:
     now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     plan = _plan(30, 200, now)
     assert plan.score_need == 144
-    assert plan.detail_need == 0
+    assert plan.detail_need == 56
     assert plan.odds_need == 0
     assert plan.oneshot_calls == 0
-    assert plan.overloaded is False
+    assert plan.overloaded is True
     assert plan.score_poll_seconds == 60.0
 
 
@@ -79,13 +83,14 @@ def test_matches_still_to_play_today_are_reserved_before_kickoff() -> None:
         now=now,
         target_seconds=60,
     )
+    assert plan.detail_need == 40 * 2 * 12
     assert plan.score_need == 288
+    assert plan.odds_need == 120
+    assert plan.detail_refresh_seconds == 300
     assert plan.score_poll_seconds == 300.0
     assert plan.poll_odds is False
     assert plan.oneshot_calls == 0
     assert plan.overloaded is False
-    assert plan.detail_refresh_seconds > 300
-    assert plan.full_reserve <= 1000
     snap = QuotaSnapshot(current=5500, limit_day=7500, remaining=2000, source="api")
     assert quota_allows(8, snap, plan) is True
     at_reserve = QuotaSnapshot(
@@ -182,11 +187,16 @@ def test_quota_gauges_from_params() -> None:
     remaining, used = quota_gauges_from_params({"remaining": 1200, "current": 6300})
     assert remaining == 1200
     assert used == 6300
+    assert quota_limit_from_params(None) == 0
+    assert quota_limit_from_params({"remaining": 1200}) == 0
+    assert quota_limit_from_params({"limit_day": 75000}) == 75000
 
 
 def test_idle_fresh_start_keeps_the_usable_plan() -> None:
     now = datetime(2026, 9, 26, 9, 38, tzinfo=UTC)
     assert safety_buffer_requests(7500, 5) == 375
+    assert safety_buffer_requests(7500, 0.1) == 8
+    assert safety_buffer_requests(75000, 0.1) == 75
     plan = plan_live_budget(
         live_matches=0,
         remaining=7500,
@@ -225,12 +235,12 @@ def test_large_future_slate_does_not_clamp_detail_to_fifteen_minutes() -> None:
         limit_day=7500,
         buffer_percent=5,
     )
-    assert crowded.overloaded is False
-    assert crowded.detail_refresh_seconds > 300
+    assert crowded.overloaded is True
+    assert crowded.relaxed_refresh_seconds > 300
+    assert crowded.relaxed_refresh_seconds != 900
+    assert crowded.detail_refresh_seconds <= crowded.relaxed_refresh_seconds
     assert crowded.score_poll_seconds == 60.0
     assert crowded.reserved_calls <= 6315 - 375
-    snap = QuotaSnapshot(current=1185, limit_day=7500, remaining=6315, source="api")
-    assert quota_allows(9, snap, crowded) is True
     calm = plan_live_budget(
         live_matches=40,
         remaining=6315,
@@ -368,12 +378,12 @@ def test_future_slate_does_not_force_the_old_fifteen_minute_ceiling() -> None:
         limit_day=7500,
         buffer_percent=5,
     )
-    assert plan.detail_refresh_seconds > 300
-    assert plan.overloaded is False
+    assert plan.detail_refresh_seconds == 300
+    assert plan.odds_need == 0
+    assert plan.overloaded is True
     assert plan.score_poll_seconds == 60.0
     assert plan.safety_buffer == 375
-    usable = 7500 - 375
-    assert usable - plan.reserved_calls >= int(usable * 0.5)
+    assert plan.reserved_calls <= 7500 - 375
 
 
 def test_fresh_start_allocates_the_plan_above_the_buffer() -> None:
@@ -431,7 +441,7 @@ def test_same_budget_changes_cap_when_later_kickoffs_change() -> None:
         ),
     )
     assert light.detail_refresh_seconds == 300
-    assert light.oneshot_calls == 4
+    assert light.oneshot_calls == 12
     assert light.overloaded is False
     assert heavy.relaxed_refresh_seconds > light.relaxed_refresh_seconds
     assert heavy.context_calls_per_tick < light.context_calls_per_tick

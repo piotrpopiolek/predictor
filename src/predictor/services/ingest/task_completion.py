@@ -2,15 +2,33 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from predictor.models.etl import EtlTask
-from predictor.services.queue import complete_task, empty_retry_status
+from predictor.services.queue import (
+    complete_task,
+    empty_retry_status,
+    error_retry_status,
+)
 
 SessionFactory = async_sessionmaker[AsyncSession]
+
+
+async def release_in_progress_task(
+    session_factory: SessionFactory,
+    task_id: int,
+) -> None:
+    """Return a claimed task to pending when the history window closes mid-request."""
+    async with session_factory() as session:
+        async with session.begin():
+            task = await session.get(EtlTask, task_id)
+            if task is None or task.status != "in_progress":
+                return
+            task.status = "pending"
+            task.updated_at = datetime.now(UTC)
 
 
 async def fail_task(
@@ -24,7 +42,12 @@ async def fail_task(
             task = await session.get(EtlTask, task_id)
             if task is None:
                 return
-            await complete_task(session, task, status, error=error)
+            params = None
+            if status == "retryable_error" and error != "quota_exhausted":
+                status, params = error_retry_status(
+                    dict(task.params), now=datetime.now(UTC)
+                )
+            await complete_task(session, task, status, error=error, params=params)
 
 
 async def finish_task(

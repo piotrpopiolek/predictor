@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
@@ -15,6 +16,7 @@ from predictor.client.errors import (
     FootballHttpError,
     QuotaExhaustedError,
     RetryableHttpError,
+    SpendWindowClosed,
 )
 from predictor.client.football import FootballClient
 from predictor.client.quota import QuotaSnapshot
@@ -29,10 +31,13 @@ from predictor.services.quota import (
     LiveBudgetPlan,
     LiveSpendGate,
     context_allowance,
+    history_call_allowance,
     persist_quota_snapshot,
     plan_live_budget,
+    queue_cycle_seconds,
     quota_allows,
     refund_context_credit,
+    safety_buffer_requests,
     seconds_until_utc_midnight,
 )
 
@@ -57,6 +62,7 @@ PRIORITY_ORDER: tuple[PrioritySlot, ...] = (
 )
 
 STATUS_REFRESH_SECONDS = 3600.0
+RESET_PROBE_SECONDS = 15 * 60
 
 
 async def _noop() -> None:
@@ -66,12 +72,26 @@ async def _noop() -> None:
 def _blocks_until_reset(snapshot: QuotaSnapshot, now: datetime) -> bool:
     if snapshot.source != "api" or snapshot.remaining > 0:
         return False
+    return _is_same_utc_day(snapshot, now)
+
+
+def _as_utc(moment: datetime) -> datetime:
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
+
+
+def _is_same_utc_day(snapshot: QuotaSnapshot, now: datetime) -> bool:
     fetched = snapshot.fetched_at
     if fetched is None:
         return False
-    if fetched.tzinfo is None:
-        fetched = fetched.replace(tzinfo=UTC)
-    return fetched.astimezone(UTC).date() == now.astimezone(UTC).date()
+    return _as_utc(fetched).date() == _as_utc(now).date()
+
+
+def _seconds_since_utc_midnight(now: datetime) -> float:
+    utc = _as_utc(now)
+    midnight = utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    return (utc - midnight).total_seconds()
 
 
 class Scheduler:
@@ -107,11 +127,14 @@ class Scheduler:
         self._gate = gate or LiveSpendGate()
         self._credit = ContextCredit()
         self._quota: QuotaSnapshot | None = None
+        self._status_quota: QuotaSnapshot | None = None
+        self._calls_baseline = 0
         self._plan: LiveBudgetPlan | None = None
         self._live_interval_seconds: float | None = None
 
     @property
     def quota(self) -> QuotaSnapshot | None:
+        self._work_started = False
         return self._quota
 
     @property
@@ -121,19 +144,157 @@ class Scheduler:
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
             await self._tick(stop)
-            timeout = self._sleep_seconds()
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=timeout)
-            except TimeoutError:
+            await self._drain_during_sleep(stop, self._sleep_seconds())
+
+    async def _drain_during_sleep(self, stop: asyncio.Event, window: float) -> None:
+        """Spend the history call pool inside the sleep that already follows a tick.
+
+        The next score poll still starts when this window ends. A slow API
+        stops early and leaves the unused calls for the next window. The
+        vendor minute cap stops a burst.
+        """
+        started = time.monotonic()
+        deadline = started + window
+        try:
+            if window > 0 and self._work_started and not stop.is_set():
+                await self._spend_history(stop, deadline, window)
+        finally:
+            self._close_history_window()
+            leftover = deadline - time.monotonic()
+            if leftover > 0 and not stop.is_set():
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=leftover)
+                except TimeoutError:
+                    pass
+
+    async def _spend_history(
+        self,
+        stop: asyncio.Event,
+        deadline: float,
+        window: float,
+    ) -> None:
+        quota = self._quota
+        plan = self._plan
+        if quota is None or plan is None or quota.source != "api" or plan.overloaded:
+            return
+        surplus = quota.remaining - plan.safety_buffer - plan.full_reserve
+        allowance = history_call_allowance(
+            surplus=surplus,
+            seconds_left=seconds_until_utc_midnight(self._now()),
+            cycle_seconds=queue_cycle_seconds(
+                window,
+                float(self._settings.live_poll_target_seconds),
+            ),
+        )
+        if allowance <= 0:
+            return
+        baseline = self._client_calls()
+        self._open_history_window(deadline, baseline + allowance)
+        once_done: set[int] = set()
+        while not stop.is_set() and time.monotonic() < deadline:
+            if self._client_calls() - baseline >= allowance or self._minute_full():
+                break
+            made = await self._one_history_pass(
+                stop,
+                deadline,
+                baseline,
+                allowance,
+                once_done,
+            )
+            if not made:
+                break
+        log_json(
+            logging.INFO,
+            service="worker",
+            event="history_window",
+            allowance=allowance,
+            spent=self._client_calls() - baseline,
+        )
+
+    async def _one_history_pass(
+        self,
+        stop: asyncio.Event,
+        deadline: float,
+        baseline: int,
+        allowance: int,
+        once_done: set[int],
+    ) -> bool:
+        before = self._client_calls()
+        for slot in PRIORITY_ORDER:
+            if slot.priority < 5:
                 continue
+            # Forward sync refetches today on every call. Once per window.
+            if slot.priority == 6 and 6 in once_done:
+                continue
+            if (
+                stop.is_set()
+                or time.monotonic() >= deadline
+                or self._client_calls() - baseline >= allowance
+                or self._minute_full()
+            ):
+                break
+            quota = self._quota
+            if quota is None:
+                break
+            quota = self._prefer_observed(quota)
+            self._quota = quota
+            plan = self._apply_budget(quota)
+            if not quota_allows(slot.priority, quota, plan):
+                continue
+            handler = self._handlers.get(slot.priority)
+            if handler is None:
+                continue
+            if slot.priority == 6:
+                once_done.add(6)
+            try:
+                await handler()
+            except SpendWindowClosed:
+                break
+            except QuotaExhaustedError:
+                fresh = self._client_quota()
+                if fresh is not None:
+                    self._quota = fresh
+                return False
+        return self._client_calls() > before
+
+    def _open_history_window(self, deadline: float, call_ceiling: int) -> None:
+        opener = getattr(self._client, "open_history_window", None)
+        if opener is None:
+            return
+        opener(
+            deadline=deadline,
+            call_ceiling=call_ceiling,
+            per_minute=self._settings.quota_requests_per_minute,
+        )
+
+    def _close_history_window(self) -> None:
+        closer = getattr(self._client, "close_history_window", None)
+        if closer is not None:
+            closer()
+
+    def _minute_full(self) -> bool:
+        recent = getattr(self._client, "calls_in_recent_seconds", None)
+        if recent is None:
+            return False
+        return int(recent(60.0)) >= self._settings.quota_requests_per_minute
 
     async def _tick(self, stop: asyncio.Event) -> None:
+        self._work_started = False
         if stop.is_set():
             return
         try:
             await self._maybe_daily_report()
-            quota = self._prefer_observed(await self._ensure_quota())
+            quota = await self._ensure_quota()
+            self._calls_baseline = self._client_calls()
+            quota = self._prefer_observed(quota)
             self._quota = quota
+            if self._probing_reset():
+                self._apply_budget(self._status_quota or quota)
+                self._live_interval_seconds = min(
+                    self._idle_cap_seconds,
+                    seconds_until_utc_midnight(self._now()),
+                )
+                return
             if quota.source == "api" and quota.remaining <= 0:
                 await self._persist_cursors()
                 log_json(
@@ -146,15 +307,11 @@ class Scheduler:
             await self._refresh_matches_left()
             target = float(self._settings.live_poll_target_seconds)
             plan = self._apply_budget(quota)
-            if plan.score_poll_seconds > target and self._live_match_count() > 0:
-                log_json(
-                    logging.WARNING,
-                    service="worker",
-                    event="live_freshness_missed",
-                    interval_seconds=round(plan.score_poll_seconds, 3),
-                    target_seconds=self._settings.live_poll_target_seconds,
-                    remaining=quota.remaining,
-                )
+            if self._status_confirms_buffer():
+                self._warn_if_live_stretched(plan, target, quota)
+                return
+            self._warn_if_live_stretched(plan, target, quota)
+            self._work_started = True
             tick_start = self._now()
             for slot in PRIORITY_ORDER:
                 if stop.is_set():
@@ -287,6 +444,22 @@ class Scheduler:
             kickoffs=(KickoffLoad(kickoff=self._now(), count=count),) if count else ()
         )
 
+    def _warn_if_live_stretched(
+        self,
+        plan: LiveBudgetPlan,
+        target: float,
+        quota: QuotaSnapshot,
+    ) -> None:
+        if plan.score_poll_seconds > target and self._live_match_count() > 0:
+            log_json(
+                logging.WARNING,
+                service="worker",
+                event="live_freshness_missed",
+                interval_seconds=round(plan.score_poll_seconds, 3),
+                target_seconds=self._settings.live_poll_target_seconds,
+                remaining=quota.remaining,
+            )
+
     def _apply_budget(self, snapshot: QuotaSnapshot) -> LiveBudgetPlan:
         limit = snapshot.limit_day or self._settings.quota_daily_limit
         plan = plan_live_budget(
@@ -310,19 +483,23 @@ class Scheduler:
         return plan
 
     def _prefer_observed(self, quota: QuotaSnapshot) -> QuotaSnapshot:
-        """Plan from response headers once they are newer than ``/status``."""
+        """Plan from response headers once they are newer than ``/status``.
+
+        A drop larger than the calls made in this tick is the previous day's
+        counter still sitting on the header. Keep the ``/status`` reading.
+        """
         observed = self._client_quota()
         if observed is None or observed.source != "api":
             return quota
         now = self._now()
         fetched = observed.fetched_at
-        if fetched is not None:
-            if fetched.tzinfo is None:
-                fetched = fetched.replace(tzinfo=UTC)
-            if fetched.astimezone(UTC).date() != now.astimezone(UTC).date():
-                return quota
+        if fetched is not None and not _is_same_utc_day(observed, now):
+            return quota
         current = quota.fetched_at
         if fetched is not None and current is not None and fetched < current:
+            return quota
+        drop = quota.remaining - observed.remaining
+        if drop > self._calls_this_tick():
             return quota
         return observed
 
@@ -334,21 +511,34 @@ class Scheduler:
 
     async def _ensure_quota(self) -> QuotaSnapshot:
         now = self._now()
+        if self._probing_reset():
+            return await self._fetch_status(now)
         observed = self._client_quota()
         if observed is not None and _blocks_until_reset(observed, now):
+            self._remember_status(observed)
             return observed
         cached = self._quota
-        if cached is not None and cached.source == "api":
-            if cached.remaining <= 0 and cached.fetched_at is not None:
-                if (
-                    cached.fetched_at.astimezone(UTC).date()
-                    == now.astimezone(UTC).date()
-                ):
-                    return cached
-            elif cached.fetched_at is not None:
-                age = (now - cached.fetched_at).total_seconds()
+        if (
+            cached is not None
+            and cached.source == "api"
+            and _is_same_utc_day(cached, now)
+            and not self._needs_status_confirmation(cached)
+        ):
+            if cached.remaining <= 0:
+                self._remember_status(cached)
+                return cached
+            if self._status_confirms_buffer():
+                return self._status_quota or cached
+            fetched = cached.fetched_at
+            if fetched is not None:
+                age = (now - _as_utc(fetched)).total_seconds()
                 if age < self._status_refresh_seconds:
+                    self._remember_status(cached)
                     return cached
+        return await self._fetch_status(now)
+
+    async def _fetch_status(self, now: datetime) -> QuotaSnapshot:
+        cached = self._quota
         try:
             snapshot = await self._client.get_status()
         except AuthBlockedError:
@@ -356,14 +546,17 @@ class Scheduler:
         except QuotaExhaustedError:
             observed = self._client_quota()
             if observed is not None and observed.remaining <= 0:
+                self._remember_status(observed)
                 return observed
-            return QuotaSnapshot(
+            spent = QuotaSnapshot(
                 current=self._settings.quota_daily_limit,
                 limit_day=self._settings.quota_daily_limit,
                 remaining=0,
                 fetched_at=now,
                 source="api",
             )
+            self._remember_status(spent)
+            return spent
         except (RetryableHttpError, FootballHttpError):
             log_json(logging.WARNING, service="worker", event="quota_refresh_failed")
             if cached is not None:
@@ -375,6 +568,7 @@ class Scheduler:
                 fetched_at=now,
                 source="unknown",
             )
+        self._remember_status(snapshot)
         return snapshot
 
     async def _persist_cursors(self) -> None:
@@ -383,10 +577,68 @@ class Scheduler:
                 await ensure_cursors(session)
 
     def _sleep_seconds(self) -> float:
+        now = self._now()
+        until_reset = seconds_until_utc_midnight(now)
+        if self._probing_reset():
+            return min(self._idle_cap_seconds, until_reset)
+        if self._status_confirms_buffer():
+            return until_reset
         quota = self._quota
         if quota is not None and quota.source == "api" and quota.remaining <= 0:
-            until_reset = seconds_until_utc_midnight(self._now())
+            return min(self._idle_cap_seconds, until_reset)
+        if quota is not None and self._inside_buffer(quota):
             return min(self._idle_cap_seconds, until_reset)
         if self._live_interval_seconds is not None:
             return self._live_interval_seconds
         return float(self._settings.live_poll_target_seconds)
+
+    def _remember_status(self, snapshot: QuotaSnapshot) -> None:
+        if snapshot.source == "api" and snapshot.reading == "status":
+            self._status_quota = snapshot
+
+    def _client_calls(self) -> int:
+        made = getattr(self._client, "calls_made", None)
+        if isinstance(made, int):
+            return made
+        return 0
+
+    def _calls_this_tick(self) -> int:
+        return max(0, self._client_calls() - self._calls_baseline)
+
+    def _buffer_of(self, snapshot: QuotaSnapshot) -> int:
+        limit = snapshot.limit_day or self._settings.quota_daily_limit
+        return safety_buffer_requests(limit, self._settings.quota_safety_buffer_percent)
+
+    def _inside_buffer(self, snapshot: QuotaSnapshot) -> bool:
+        return snapshot.remaining <= self._buffer_of(snapshot)
+
+    def _current_near_limit(self, snapshot: QuotaSnapshot) -> bool:
+        limit = snapshot.limit_day or self._settings.quota_daily_limit
+        if limit <= 0:
+            return False
+        return snapshot.current >= limit - self._buffer_of(snapshot)
+
+    def _status_is_spent_today(self) -> bool:
+        status = self._status_quota
+        if status is None or status.reading != "status" or status.source != "api":
+            return False
+        if not _is_same_utc_day(status, self._now()):
+            return False
+        return self._inside_buffer(status)
+
+    def _probing_reset(self) -> bool:
+        status = self._status_quota
+        if status is None or not self._status_is_spent_today():
+            return False
+        if not self._current_near_limit(status):
+            return False
+        return _seconds_since_utc_midnight(self._now()) < RESET_PROBE_SECONDS
+
+    def _status_confirms_buffer(self) -> bool:
+        return self._status_is_spent_today() and not self._probing_reset()
+
+    def _needs_status_confirmation(self, snapshot: QuotaSnapshot) -> bool:
+        """Headers inside the buffer still need a ``/status`` from today."""
+        if not self._inside_buffer(snapshot):
+            return False
+        return not self._status_confirms_buffer()

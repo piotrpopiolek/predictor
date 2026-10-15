@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -11,6 +11,7 @@ from tenacity import RetryCallState
 from tenacity.wait import wait_base
 
 from predictor.client.football import FootballClient
+from predictor.client.quota import QuotaSnapshot
 from predictor.constants import DICTIONARY_ENDPOINTS
 from predictor.models.catalog import (
     Bookmaker,
@@ -357,3 +358,38 @@ async def test_quota_during_paging_does_not_complete() -> None:
     finally:
         await client.aclose()
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_priority_one_stops_when_remaining_enters_the_buffer() -> None:
+    class _Client:
+        quota = QuotaSnapshot(
+            current=7491,
+            limit_day=7500,
+            remaining=9,
+            source="api",
+            reading="header",
+        )
+
+    client = _Client()
+    ingest = CatalogIngest(
+        cast(Any, client),
+        cast(Any, object()),
+        buffer_percent=0.1,
+    )
+    called: list[str] = []
+
+    async def fake(endpoint: str, persist: Any) -> None:
+        del persist
+        called.append(endpoint)
+        client.quota = QuotaSnapshot(
+            current=7492,
+            limit_day=7500,
+            remaining=8,
+            source="api",
+            reading="header",
+        )
+
+    ingest._ingest_endpoint = fake  # type: ignore[method-assign]
+    await ingest.refresh_priority_one()
+    assert called == ["/timezone"]

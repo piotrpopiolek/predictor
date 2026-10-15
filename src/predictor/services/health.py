@@ -22,7 +22,7 @@ from predictor.models.odds import FixtureOddsLive
 from predictor.schemas.settings import Settings
 from predictor.services.live_board import load_live_all_fixture_ids
 from predictor.services.lock import HolderInfo, fetch_holder_sqlalchemy
-from predictor.services.quota import quota_gauges_from_params
+from predictor.services.quota import quota_gauges_from_params, quota_limit_from_params
 
 
 def current_alembic_head(config_path: str = "alembic.ini") -> str:

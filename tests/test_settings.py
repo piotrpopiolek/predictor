@@ -11,7 +11,8 @@ def test_load_settings_reads_env(valid_env: None) -> None:
     assert settings.postgres_db == "predictor_dev"
     assert settings.postgres_user == "predictor_dev"
     assert settings.host_environment.value == "local"
-    assert settings.quota_safety_buffer_percent == 5.0
+    assert settings.quota_safety_buffer_percent == 0.1
+    assert settings.quota_requests_per_minute == 450
     assert settings.api_sports_key.get_secret_value() == "test-api-key-not-real"
 
 

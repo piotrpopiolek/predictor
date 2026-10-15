@@ -28,6 +28,7 @@ from predictor.services.queue import (
     enqueue_fixture_followups,
     ensure_cursors,
     ensure_prematch_for_fixture_ids,
+    error_retry_status,
     historical_backlog_blocks,
     reopen_live_detail_task,
     requeue_orphans,
@@ -677,6 +678,22 @@ async def test_claim_urgent_skips_far_and_finished() -> None:
 
 FID_LIVE = 93011
 FID_OTHER = 93012
+
+
+def test_error_retry_grows_then_stops_after_ten() -> None:
+    now = datetime(2026, 10, 12, 5, 0, tzinfo=UTC)
+    params: dict[str, object] = {"player": 0}
+    delays: list[float] = []
+    for _ in range(10):
+        status, params = error_retry_status(params, now=now)
+        assert status == "retryable_error"
+        due = datetime.fromisoformat(str(params["next_attempt_at"]))
+        delays.append((due - now).total_seconds())
+    assert delays == [60, 120, 240, 480, 960, 1920, 3600, 3600, 3600, 3600]
+    status, params = error_retry_status(params, now=now)
+    assert status == "permanent_error"
+    assert params["error_retries"] == 11
+    assert "next_attempt_at" not in params
 
 
 def test_empty_retry_backs_off_then_stops() -> None:

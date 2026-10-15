@@ -31,6 +31,7 @@ FIELD_TO_ENV: dict[str, str] = {
     "postgres_db": "POSTGRES_DB",
     "quota_daily_limit": "QUOTA_DAILY_LIMIT",
     "quota_safety_buffer_percent": "QUOTA_SAFETY_BUFFER_PERCENT",
+    "quota_requests_per_minute": "QUOTA_REQUESTS_PER_MINUTE",
     "instance_id": "INSTANCE_ID",
     "host_environment": "HOST_ENVIRONMENT",
     "prometheus_metrics_token": "PROMETHEUS_METRICS_TOKEN",
@@ -53,7 +54,9 @@ class Settings(BaseSettings):
     postgres_password: SecretStr
     postgres_db: str
     quota_daily_limit: int
-    quota_safety_buffer_percent: float = 5.0
+    # 0.1 percent is 1‰ of the daily limit: 75 calls on a 75000 plan.
+    quota_safety_buffer_percent: float = 0.1
+    quota_requests_per_minute: int = 450
     instance_id: str
     host_environment: HostEnvironment
     prometheus_metrics_token: SecretStr
@@ -89,6 +92,13 @@ class Settings(BaseSettings):
     @field_validator("quota_daily_limit")
     @classmethod
     def _positive_limit(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("must be >= 1")
+        return value
+
+    @field_validator("quota_requests_per_minute")
+    @classmethod
+    def _positive_minute_cap(cls, value: int) -> int:
         if value < 1:
             raise ValueError("must be >= 1")
         return value

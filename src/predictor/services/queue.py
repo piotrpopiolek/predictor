@@ -17,6 +17,9 @@ from predictor.constants import (
     CURSOR_KINDS,
     DICTIONARY_ENDPOINTS,
     ENRICHABLE_FIXTURE_STATUSES,
+    ERROR_RETRY_BASE_BACKOFF_SECONDS,
+    ERROR_RETRY_LIMIT,
+    ERROR_RETRY_MAX_BACKOFF_SECONDS,
     ETL_STATUSES,
     FINISHED_FIXTURE_STATUSES,
     GLOBAL_ENDPOINT_ORDER,
@@ -58,6 +61,31 @@ def empty_retry_status(
         merged.pop("next_attempt_at", None)
         return "coverage_empty", merged
     due = now.astimezone(UTC) + timedelta(seconds=backoff_seconds)
+    merged["next_attempt_at"] = due.isoformat()
+    return "retryable_error", merged
+
+
+def error_retry_status(
+    params: dict[str, Any],
+    *,
+    now: datetime,
+    max_retries: int = ERROR_RETRY_LIMIT,
+    base_backoff_seconds: int = ERROR_RETRY_BASE_BACKOFF_SECONDS,
+    max_backoff_seconds: int = ERROR_RETRY_MAX_BACKOFF_SECONDS,
+) -> tuple[str, dict[str, Any]]:
+    """Put a failed task back up to ``max_retries`` times, then stop.
+
+    The wait doubles on each retry, starting at ``base_backoff_seconds``,
+    and does not grow past ``max_backoff_seconds``.
+    """
+    merged = dict(params)
+    retries = int(merged.get("error_retries") or 0) + 1
+    merged["error_retries"] = retries
+    if retries > max_retries:
+        merged.pop("next_attempt_at", None)
+        return "permanent_error", merged
+    delay = min(max_backoff_seconds, base_backoff_seconds * (2 ** (retries - 1)))
+    due = now.astimezone(UTC) + timedelta(seconds=delay)
     merged["next_attempt_at"] = due.isoformat()
     return "retryable_error", merged
 
