@@ -156,13 +156,12 @@ async def _reset_dictionary_tasks(
     endpoints: Sequence[str] | None = None,
 ) -> None:
     chosen = endpoints or DICTIONARY_ENDPOINTS
-    async with factory() as session:
-        async with session.begin():
-            await session.execute(
-                update(EtlTask)
-                .where(EtlTask.endpoint.in_(chosen))
-                .values(status="pending", completed_at=None, params={})
-            )
+    async with factory() as session, session.begin():
+        await session.execute(
+            update(EtlTask)
+            .where(EtlTask.endpoint.in_(chosen))
+            .values(status="pending", completed_at=None, params={})
+        )
 
 
 def _client(settings: Settings, transport: httpx.BaseTransport) -> FootballClient:

@@ -91,15 +91,14 @@ async def test_restart_requeues_in_progress_without_http() -> None:
         retry_wait=WaitZero(),
     )
     try:
-        async with factory() as session:
-            async with session.begin():
-                await ensure_cursors(session)
-                session.add(EtlTask(endpoint=endpoint, params={}, status="in_progress"))
-                cursor = await get_cursor_task(session, "backfill")
-                cursor.params = {
-                    "last_complete": "2026-09-01",
-                    "next_day": "2026-08-31",
-                }
+        async with factory() as session, session.begin():
+            await ensure_cursors(session)
+            session.add(EtlTask(endpoint=endpoint, params={}, status="in_progress"))
+            cursor = await get_cursor_task(session, "backfill")
+            cursor.params = {
+                "last_complete": "2026-09-01",
+                "next_day": "2026-08-31",
+            }
         await run_worker(settings=settings, stop=stop, client=client, engine=engine)
         async with factory() as session:
             orphan = await session.scalar(

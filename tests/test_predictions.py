@@ -162,43 +162,42 @@ def _router(
 
 
 async def _reset_w7(factory: async_sessionmaker[AsyncSession]) -> None:
-    async with factory() as session:
-        async with session.begin():
-            await session.execute(
-                delete(EtlTask)
-                .where(
-                    EtlTask.endpoint.in_(
-                        (
-                            "/fixtures/headtohead",
-                            "/predictions",
-                            "/odds",
-                            "/odds/mapping",
-                        )
-                    )
-                )
-                .where(EtlTask.cursor_kind.is_(None))
-            )
-            await session.execute(
-                delete(PredictionH2H).where(
-                    or_(
-                        PredictionH2H.fixture_id.in_(W7_IDS),
-                        PredictionH2H.h2h_fixture_id.in_(W7_IDS),
+    async with factory() as session, session.begin():
+        await session.execute(
+            delete(EtlTask)
+            .where(
+                EtlTask.endpoint.in_(
+                    (
+                        "/fixtures/headtohead",
+                        "/predictions",
+                        "/odds",
+                        "/odds/mapping",
                     )
                 )
             )
-            await session.execute(
-                delete(Prediction).where(Prediction.fixture_id.in_(W7_IDS))
-            )
-            await session.execute(
-                delete(FixtureOdds).where(FixtureOdds.fixture_id.in_(W7_IDS))
-            )
-            await session.execute(
-                delete(OddsFixtureMapping).where(
-                    OddsFixtureMapping.fixture_id.in_(W7_IDS)
+            .where(EtlTask.cursor_kind.is_(None))
+        )
+        await session.execute(
+            delete(PredictionH2H).where(
+                or_(
+                    PredictionH2H.fixture_id.in_(W7_IDS),
+                    PredictionH2H.h2h_fixture_id.in_(W7_IDS),
                 )
             )
-            await session.execute(delete(Fixture).where(Fixture.id.in_(W7_IDS)))
-            await ensure_cursors(session)
+        )
+        await session.execute(
+            delete(Prediction).where(Prediction.fixture_id.in_(W7_IDS))
+        )
+        await session.execute(
+            delete(FixtureOdds).where(FixtureOdds.fixture_id.in_(W7_IDS))
+        )
+        await session.execute(
+            delete(OddsFixtureMapping).where(
+                OddsFixtureMapping.fixture_id.in_(W7_IDS)
+            )
+        )
+        await session.execute(delete(Fixture).where(Fixture.id.in_(W7_IDS)))
+        await ensure_cursors(session)
 
 
 async def _seed_subject(
@@ -210,28 +209,26 @@ async def _seed_subject(
     item = FixtureItem.model_validate(
         _fixture_core(SUBJECT_ID, status="NS", home_id=33, away_id=34)
     )
-    async with factory() as session:
-        async with session.begin():
-            await upsert_fixtures(session, [item])
-            row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
-            if row is not None:
-                row.cov_predictions = True
-                row.cov_odds = True
-            if h2h:
-                await ensure_h2h_task(session, 33, 34)
-            if predictions:
-                await ensure_predictions_task(session, SUBJECT_ID)
+    async with factory() as session, session.begin():
+        await upsert_fixtures(session, [item])
+        row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
+        if row is not None:
+            row.cov_predictions = True
+            row.cov_odds = True
+        if h2h:
+            await ensure_h2h_task(session, 33, 34)
+        if predictions:
+            await ensure_predictions_task(session, SUBJECT_ID)
 
 
 async def _set_coverage(
     factory: async_sessionmaker[AsyncSession], **flags: bool | None
 ) -> None:
-    async with factory() as session:
-        async with session.begin():
-            row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
-            assert row is not None
-            for name, value in flags.items():
-                setattr(row, name, value)
+    async with factory() as session, session.begin():
+        row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
+        assert row is not None
+        for name, value in flags.items():
+            setattr(row, name, value)
 
 
 @pytest.mark.asyncio

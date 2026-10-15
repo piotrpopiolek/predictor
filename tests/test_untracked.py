@@ -69,23 +69,22 @@ def _payload(
 
 
 async def _cleanup(factory: Any) -> None:
-    async with factory() as session:
-        async with session.begin():
-            await session.execute(
-                delete(EtlTask).where(EtlTask.fixture_id.in_((TRACKED, IGNORED)))
-            )
-            await session.execute(
-                delete(EtlTask).where(EtlTask.params.contains({"league": LEAGUE}))
-            )
-            await session.execute(
-                delete(EtlTask).where(EtlTask.params.contains({"marker": LEAGUE}))
-            )
-            await session.execute(
-                delete(UntrackedLeague).where(UntrackedLeague.league_id == LEAGUE)
-            )
-            await session.execute(
-                delete(Fixture).where(Fixture.id.in_((TRACKED, IGNORED)))
-            )
+    async with factory() as session, session.begin():
+        await session.execute(
+            delete(EtlTask).where(EtlTask.fixture_id.in_((TRACKED, IGNORED)))
+        )
+        await session.execute(
+            delete(EtlTask).where(EtlTask.params.contains({"league": LEAGUE}))
+        )
+        await session.execute(
+            delete(EtlTask).where(EtlTask.params.contains({"marker": LEAGUE}))
+        )
+        await session.execute(
+            delete(UntrackedLeague).where(UntrackedLeague.league_id == LEAGUE)
+        )
+        await session.execute(
+            delete(Fixture).where(Fixture.id.in_((TRACKED, IGNORED)))
+        )
 
 
 @pytest.mark.asyncio
@@ -95,72 +94,71 @@ async def test_untracked_league_skips_followups_live_ids_and_open_tasks() -> Non
     factory = make_session_factory(engine)
     try:
         await _cleanup(factory)
-        async with factory() as session:
-            async with session.begin():
-                tracked = FixtureItem.model_validate(
-                    _payload(TRACKED, 39, kickoff=NOW + timedelta(hours=3))
+        async with factory() as session, session.begin():
+            tracked = FixtureItem.model_validate(
+                _payload(TRACKED, 39, kickoff=NOW + timedelta(hours=3))
+            )
+            ignored = FixtureItem.model_validate(
+                _payload(IGNORED, LEAGUE, kickoff=NOW + timedelta(hours=3))
+            )
+            await upsert_fixtures(session, [tracked, ignored])
+            session.add(UntrackedLeague(league_id=LEAGUE, note="test"))
+            session.add(
+                EtlTask(
+                    endpoint="/fixtures",
+                    fixture_id=IGNORED,
+                    params={"id": IGNORED},
+                    status="pending",
                 )
-                ignored = FixtureItem.model_validate(
-                    _payload(IGNORED, LEAGUE, kickoff=NOW + timedelta(hours=3))
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/standings",
+                    params={"league": LEAGUE, "season": 2026},
+                    status="pending",
                 )
-                await upsert_fixtures(session, [tracked, ignored])
-                session.add(UntrackedLeague(league_id=LEAGUE, note="test"))
-                session.add(
-                    EtlTask(
-                        endpoint="/fixtures",
-                        fixture_id=IGNORED,
-                        params={"id": IGNORED},
-                        status="pending",
-                    )
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/fixtures",
+                    params={"date": "2099-01-01", "marker": LEAGUE},
+                    status="pending",
                 )
-                session.add(
-                    EtlTask(
-                        endpoint="/standings",
-                        params={"league": LEAGUE, "season": 2026},
-                        status="pending",
-                    )
-                )
-                session.add(
-                    EtlTask(
-                        endpoint="/fixtures",
-                        params={"date": "2099-01-01", "marker": LEAGUE},
-                        status="pending",
-                    )
-                )
-                blocked = await historical_backlog_blocks(session, NOW)
-                await enqueue_fixture_followups(
-                    session,
-                    {
-                        "discovered": [
-                            {
-                                "id": TRACKED,
-                                "home": 33,
-                                "away": 34,
-                                "league": 39,
-                                "season": 2026,
-                            },
-                            {
-                                "id": IGNORED,
-                                "home": 33,
-                                "away": 34,
-                                "league": LEAGUE,
-                                "season": 2026,
-                            },
-                        ],
-                        "league_seasons": [
-                            {"league": 39, "season": 2026},
-                            {"league": LEAGUE, "season": 2026},
-                        ],
-                    },
-                    historical=not blocked,
-                )
-                await enqueue_fixture_followups(
-                    session,
-                    {"fixture_ids": [TRACKED, IGNORED]},
-                    historical=False,
-                )
-                kept = await drop_untracked_fixture_ids(session, [TRACKED, IGNORED])
-                empty = await drop_untracked_fixture_ids(session, [])
+            )
+            blocked = await historical_backlog_blocks(session, NOW)
+            await enqueue_fixture_followups(
+                session,
+                {
+                    "discovered": [
+                        {
+                            "id": TRACKED,
+                            "home": 33,
+                            "away": 34,
+                            "league": 39,
+                            "season": 2026,
+                        },
+                        {
+                            "id": IGNORED,
+                            "home": 33,
+                            "away": 34,
+                            "league": LEAGUE,
+                            "season": 2026,
+                        },
+                    ],
+                    "league_seasons": [
+                        {"league": 39, "season": 2026},
+                        {"league": LEAGUE, "season": 2026},
+                    ],
+                },
+                historical=not blocked,
+            )
+            await enqueue_fixture_followups(
+                session,
+                {"fixture_ids": [TRACKED, IGNORED]},
+                historical=False,
+            )
+            kept = await drop_untracked_fixture_ids(session, [TRACKED, IGNORED])
+            empty = await drop_untracked_fixture_ids(session, [])
         assert kept == [TRACKED]
         assert empty == []
         async with factory() as session:
@@ -216,17 +214,16 @@ async def test_forecast_and_prematch_skip_untracked_league() -> None:
     try:
         await _cleanup(factory)
         before = await forecast_day_load(factory, NOW)
-        async with factory() as session:
-            async with session.begin():
-                tracked = FixtureItem.model_validate(
-                    _payload(TRACKED, 39, kickoff=kickoff)
-                )
-                ignored = FixtureItem.model_validate(
-                    _payload(IGNORED, LEAGUE, kickoff=kickoff)
-                )
-                await upsert_fixtures(session, [tracked, ignored])
-                session.add(UntrackedLeague(league_id=LEAGUE, note="test"))
-                await ensure_prematch_for_fixture_ids(session, [TRACKED, IGNORED])
+        async with factory() as session, session.begin():
+            tracked = FixtureItem.model_validate(
+                _payload(TRACKED, 39, kickoff=kickoff)
+            )
+            ignored = FixtureItem.model_validate(
+                _payload(IGNORED, LEAGUE, kickoff=kickoff)
+            )
+            await upsert_fixtures(session, [tracked, ignored])
+            session.add(UntrackedLeague(league_id=LEAGUE, note="test"))
+            await ensure_prematch_for_fixture_ids(session, [TRACKED, IGNORED])
         after = await forecast_day_load(factory, NOW)
         assert after.matches == before.matches + 1
         async with factory() as session:

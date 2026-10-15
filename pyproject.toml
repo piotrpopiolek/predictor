@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "predictor"
 version = "0.1.0"
 description = "Predictor Data Mirror — API-Football v3 ETL"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "alembic==1.20.0",
     "fastapi==0.141.1",
@@ -58,24 +58,25 @@ omit = ["*/worker/__main__.py"]
 [tool.coverage.report]
 fail_under = 80
 show_missing = true
+skip_covered = true
 exclude_also = [
     "if __name__ == .__main__.:",
 ]
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py314"
 line-length = 88
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
 [tool.black]
 line-length = 88
-target-version = ["py313"]
+target-version = ["py314"]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 strict = true
 packages = ["predictor"]
 plugins = ["pydantic.mypy"]

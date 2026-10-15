@@ -70,9 +70,8 @@ def test_ready_ok_when_lock_and_open_run() -> None:
         engine = make_async_engine(settings)
         try:
             factory = make_session_factory(engine)
-            async with factory() as session:
-                async with session.begin():
-                    run_id = await record_run_start(session, settings, lock)
+            async with factory() as session, session.begin():
+                run_id = await record_run_start(session, settings, lock)
         finally:
             await engine.dispose()
         return lock, run_id
@@ -108,9 +107,8 @@ def test_ready_ok_when_lock_and_open_run() -> None:
             engine = make_async_engine(settings)
             try:
                 factory = make_session_factory(engine)
-                async with factory() as session:
-                    async with session.begin():
-                        await record_run_end(session, run_id)
+                async with factory() as session, session.begin():
+                    await record_run_end(session, run_id)
             finally:
                 await engine.dispose()
             await lock.release()

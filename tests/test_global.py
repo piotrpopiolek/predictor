@@ -434,82 +434,80 @@ def _router(
 
 
 async def _reset_w8(factory: async_sessionmaker[AsyncSession]) -> None:
-    async with factory() as session:
-        async with session.begin():
-            await session.execute(
-                delete(EtlTask)
-                .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
-                .where(EtlTask.cursor_kind.is_(None))
-            )
-            await session.execute(
-                delete(Sidelined).where(
-                    or_(
-                        Sidelined.player_id.in_((PLAYER_ID, PLAYER_B)),
-                        Sidelined.coach_id == COACH_ID,
-                    )
+    async with factory() as session, session.begin():
+        await session.execute(
+            delete(EtlTask)
+            .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
+            .where(EtlTask.cursor_kind.is_(None))
+        )
+        await session.execute(
+            delete(Sidelined).where(
+                or_(
+                    Sidelined.player_id.in_((PLAYER_ID, PLAYER_B)),
+                    Sidelined.coach_id == COACH_ID,
                 )
             )
-            await session.execute(
-                delete(Trophy).where(
-                    or_(
-                        Trophy.player_id.in_((PLAYER_ID, PLAYER_B)),
-                        Trophy.coach_id == COACH_ID,
-                    )
+        )
+        await session.execute(
+            delete(Trophy).where(
+                or_(
+                    Trophy.player_id.in_((PLAYER_ID, PLAYER_B)),
+                    Trophy.coach_id == COACH_ID,
                 )
             )
-            await session.execute(
-                delete(Transfer).where(Transfer.player_id.in_((PLAYER_ID, PLAYER_B)))
+        )
+        await session.execute(
+            delete(Transfer).where(Transfer.player_id.in_((PLAYER_ID, PLAYER_B)))
+        )
+        await session.execute(
+            delete(CoachCareer).where(CoachCareer.coach_id == COACH_ID)
+        )
+        await session.execute(
+            delete(SquadMember).where(
+                SquadMember.player_id.in_((PLAYER_ID, PLAYER_B))
             )
-            await session.execute(
-                delete(CoachCareer).where(CoachCareer.coach_id == COACH_ID)
+        )
+        await session.execute(
+            delete(PlayerCareerTeam).where(
+                PlayerCareerTeam.player_id.in_((PLAYER_ID, PLAYER_B))
             )
-            await session.execute(
-                delete(SquadMember).where(
-                    SquadMember.player_id.in_((PLAYER_ID, PLAYER_B))
-                )
+        )
+        await session.execute(
+            delete(PlayerStatistic).where(
+                PlayerStatistic.player_id.in_((PLAYER_ID, PLAYER_B))
             )
-            await session.execute(
-                delete(PlayerCareerTeam).where(
-                    PlayerCareerTeam.player_id.in_((PLAYER_ID, PLAYER_B))
-                )
+        )
+        await session.execute(
+            delete(TeamSeasonStatistics).where(
+                TeamSeasonStatistics.league_id == LEAGUE_ID,
+                TeamSeasonStatistics.season == SEASON,
             )
-            await session.execute(
-                delete(PlayerStatistic).where(
-                    PlayerStatistic.player_id.in_((PLAYER_ID, PLAYER_B))
-                )
+        )
+        await session.execute(
+            delete(Standing).where(
+                Standing.league_id == LEAGUE_ID, Standing.season == SEASON
             )
-            await session.execute(
-                delete(TeamSeasonStatistics).where(
-                    TeamSeasonStatistics.league_id == LEAGUE_ID,
-                    TeamSeasonStatistics.season == SEASON,
-                )
-            )
-            await session.execute(
-                delete(Standing).where(
-                    Standing.league_id == LEAGUE_ID, Standing.season == SEASON
-                )
-            )
-            await session.execute(delete(Fixture).where(Fixture.id == FIXTURE_ID))
-            await ensure_cursors(session)
+        )
+        await session.execute(delete(Fixture).where(Fixture.id == FIXTURE_ID))
+        await ensure_cursors(session)
 
 
 async def _seed(
     factory: async_sessionmaker[AsyncSession], **coverage: bool | None
 ) -> None:
     item = FixtureItem.model_validate(_fixture_core())
-    async with factory() as session:
-        async with session.begin():
-            extra = await upsert_fixtures(session, [item])
-            await enqueue_fixture_followups(session, extra)
-            row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
-            if row is not None:
-                row.cov_standings = True
-                row.cov_players = True
-                row.cov_top_scorers = True
-                row.cov_top_assists = True
-                row.cov_top_cards = True
-                for name, value in coverage.items():
-                    setattr(row, name, value)
+    async with factory() as session, session.begin():
+        extra = await upsert_fixtures(session, [item])
+        await enqueue_fixture_followups(session, extra)
+        row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
+        if row is not None:
+            row.cov_standings = True
+            row.cov_players = True
+            row.cov_top_scorers = True
+            row.cov_top_assists = True
+            row.cov_top_cards = True
+            for name, value in coverage.items():
+                setattr(row, name, value)
 
 
 @pytest.mark.asyncio
@@ -584,18 +582,17 @@ async def test_team_statistics_sentinel_omits_date() -> None:
     try:
         await _reset_w8(factory)
         await _seed(factory)
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask)
-                    .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
-                    .where(EtlTask.cursor_kind.is_(None))
-                )
-                await ensure_param_task(
-                    session,
-                    "/teams/statistics",
-                    {"team": 33, "league": LEAGUE_ID, "season": SEASON},
-                )
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask)
+                .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
+                .where(EtlTask.cursor_kind.is_(None))
+            )
+            await ensure_param_task(
+                session,
+                "/teams/statistics",
+                {"team": 33, "league": LEAGUE_ID, "season": SEASON},
+            )
         ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=1)
         await ingest.refresh_pending()
         async with factory() as session:
@@ -630,17 +627,16 @@ async def test_teams_and_venues_fill_catalog() -> None:
     try:
         await _reset_w8(factory)
         await _seed(factory)
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask)
-                    .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
-                    .where(EtlTask.cursor_kind.is_(None))
-                )
-                stored = await session.get(Venue, 556)
-                if stored is not None:
-                    stored.country_name = None
-                await ensure_param_task(session, "/teams", {"id": 33})
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask)
+                .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
+                .where(EtlTask.cursor_kind.is_(None))
+            )
+            stored = await session.get(Venue, 556)
+            if stored is not None:
+                stored.country_name = None
+            await ensure_param_task(session, "/teams", {"id": 33})
         ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=2)
         await ingest.refresh_pending()
         async with factory() as session:
@@ -676,18 +672,17 @@ async def test_venues_followup_only_when_country_conflicts() -> None:
     try:
         await _reset_w8(factory)
         await _seed(factory)
-        async with factory() as session:
-            async with session.begin():
-                await upsert_countries(session, [CountryItem(name="Spain")])
-                venue = await session.get(Venue, 556)
-                assert venue is not None
-                venue.country_name = "Spain"
-                await session.execute(
-                    delete(EtlTask)
-                    .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
-                    .where(EtlTask.cursor_kind.is_(None))
-                )
-                await ensure_param_task(session, "/teams", {"id": 33})
+        async with factory() as session, session.begin():
+            await upsert_countries(session, [CountryItem(name="Spain")])
+            venue = await session.get(Venue, 556)
+            assert venue is not None
+            venue.country_name = "Spain"
+            await session.execute(
+                delete(EtlTask)
+                .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
+                .where(EtlTask.cursor_kind.is_(None))
+            )
+            await ensure_param_task(session, "/teams", {"id": 33})
         ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=1)
         await ingest.refresh_pending()
         async with factory() as session:
@@ -719,83 +714,82 @@ async def test_complete_stored_venues_without_http() -> None:
     already = 91004
     try:
         await _reset_w8(factory)
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(Team).where(Team.id.in_((93001, 93002, 93003)))
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(Team).where(Team.id.in_((93001, 93002, 93003)))
+            )
+            await session.execute(
+                delete(EtlTask).where(
+                    EtlTask.endpoint == "/venues",
+                    EtlTask.params["id"].astext.in_(
+                        (str(one), str(shared), str(missing_country), str(already))
+                    ),
                 )
-                await session.execute(
-                    delete(EtlTask).where(
-                        EtlTask.endpoint == "/venues",
-                        EtlTask.params["id"].astext.in_(
-                            (str(one), str(shared), str(missing_country), str(already))
-                        ),
-                    )
+            )
+            await session.execute(
+                delete(Venue).where(
+                    Venue.id.in_((one, shared, missing_country, already))
                 )
-                await session.execute(
-                    delete(Venue).where(
-                        Venue.id.in_((one, shared, missing_country, already))
-                    )
+            )
+            await upsert_countries(
+                session,
+                [
+                    CountryItem(name="Poland"),
+                    CountryItem(name="Spain"),
+                    CountryItem(name="England"),
+                ],
+            )
+            session.add(Venue(id=one, name="Home"))
+            session.add(Venue(id=shared, name="Neutral"))
+            session.add(Venue(id=missing_country, name="Bare"))
+            session.add(Venue(id=already, name="Known", country_name="England"))
+            await session.flush()
+            session.add(
+                Team(
+                    id=93001,
+                    name="One",
+                    country_name="Poland",
+                    venue_id=one,
                 )
-                await upsert_countries(
-                    session,
-                    [
-                        CountryItem(name="Poland"),
-                        CountryItem(name="Spain"),
-                        CountryItem(name="England"),
-                    ],
+            )
+            session.add(
+                Team(
+                    id=93002,
+                    name="Alpha",
+                    country_name="Poland",
+                    venue_id=shared,
                 )
-                session.add(Venue(id=one, name="Home"))
-                session.add(Venue(id=shared, name="Neutral"))
-                session.add(Venue(id=missing_country, name="Bare"))
-                session.add(Venue(id=already, name="Known", country_name="England"))
-                await session.flush()
-                session.add(
-                    Team(
-                        id=93001,
-                        name="One",
-                        country_name="Poland",
-                        venue_id=one,
-                    )
+            )
+            session.add(
+                Team(
+                    id=93003,
+                    name="Beta",
+                    country_name="Spain",
+                    venue_id=shared,
                 )
-                session.add(
-                    Team(
-                        id=93002,
-                        name="Alpha",
-                        country_name="Poland",
-                        venue_id=shared,
-                    )
-                )
-                session.add(
-                    Team(
-                        id=93003,
-                        name="Beta",
-                        country_name="Spain",
-                        venue_id=shared,
-                    )
-                )
-                for venue_id, status in (
-                    (one, "pending"),
-                    (shared, "pending"),
-                    (missing_country, "pending"),
-                    (already, "pending"),
-                    (one, "in_progress"),
-                ):
-                    session.add(
-                        EtlTask(
-                            endpoint="/venues",
-                            params={"id": venue_id},
-                            status=status,
-                        )
-                    )
+            )
+            for venue_id, status in (
+                (one, "pending"),
+                (shared, "pending"),
+                (missing_country, "pending"),
+                (already, "pending"),
+                (one, "in_progress"),
+            ):
                 session.add(
                     EtlTask(
-                        endpoint="/trophies",
-                        params={"coach": COACH_ID},
-                        status="pending",
+                        endpoint="/venues",
+                        params={"id": venue_id},
+                        status=status,
                     )
                 )
-                closed = await complete_stored_venues(session)
+            session.add(
+                EtlTask(
+                    endpoint="/trophies",
+                    params={"coach": COACH_ID},
+                    status="pending",
+                )
+            )
+            closed = await complete_stored_venues(session)
         assert closed == 2
         async with factory() as session:
             home = await session.get(Venue, one)
@@ -838,16 +832,15 @@ async def test_players_pages_and_catalog_followups() -> None:
     try:
         await _reset_w8(factory)
         await _seed(factory)
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask)
-                    .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
-                    .where(EtlTask.cursor_kind.is_(None))
-                )
-                await ensure_param_task(
-                    session, "/players", {"league": LEAGUE_ID, "season": SEASON}
-                )
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask)
+                .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
+                .where(EtlTask.cursor_kind.is_(None))
+            )
+            await ensure_param_task(
+                session, "/players", {"league": LEAGUE_ID, "season": SEASON}
+            )
         ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=1)
         await ingest.refresh_pending()
         async with factory() as session:
@@ -932,30 +925,29 @@ async def test_squads_queue_profile_only_for_stubs() -> None:
     try:
         await _reset_w8(factory)
         await _seed(factory)
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask)
-                    .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
-                    .where(EtlTask.cursor_kind.is_(None))
-                )
-                stored = await session.get(Player, PLAYER_ID)
-                if stored is None:
-                    session.add(
-                        Player(
-                            id=PLAYER_ID,
-                            name="Terry Striker",
-                            nationality="England",
-                        )
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask)
+                .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
+                .where(EtlTask.cursor_kind.is_(None))
+            )
+            stored = await session.get(Player, PLAYER_ID)
+            if stored is None:
+                session.add(
+                    Player(
+                        id=PLAYER_ID,
+                        name="Terry Striker",
+                        nationality="England",
                     )
-                else:
-                    stored.nationality = "England"
-                stub = await session.get(Player, SQUAD_STUB)
-                if stub is None:
-                    session.add(Player(id=SQUAD_STUB, name="S. Stub"))
-                else:
-                    stub.nationality = None
-                await ensure_param_task(session, "/players/squads", {"team": 33})
+                )
+            else:
+                stored.nationality = "England"
+            stub = await session.get(Player, SQUAD_STUB)
+            if stub is None:
+                session.add(Player(id=SQUAD_STUB, name="S. Stub"))
+            else:
+                stub.nationality = None
+            await ensure_param_task(session, "/players/squads", {"team": 33})
         ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=1)
         await ingest.refresh_pending()
         async with factory() as session:
@@ -997,63 +989,62 @@ async def test_complete_stored_player_profiles_without_http() -> None:
     factory = make_session_factory(engine)
     try:
         await _reset_w8(factory)
-        async with factory() as session:
-            async with session.begin():
-                full = await session.get(Player, STORED_PROFILE)
-                if full is None:
-                    session.add(
-                        Player(id=STORED_PROFILE, name="Known", nationality="Poland")
-                    )
-                else:
-                    full.nationality = "Poland"
-                stub = await session.get(Player, STUB_PROFILE)
-                if stub is None:
-                    session.add(Player(id=STUB_PROFILE, name="Stub"))
-                else:
-                    stub.nationality = None
+        async with factory() as session, session.begin():
+            full = await session.get(Player, STORED_PROFILE)
+            if full is None:
                 session.add(
-                    EtlTask(
-                        endpoint="/players/profiles",
-                        params={"player": STORED_PROFILE},
-                        status="pending",
-                    )
+                    Player(id=STORED_PROFILE, name="Known", nationality="Poland")
                 )
-                session.add(
-                    EtlTask(
-                        endpoint="/players/profiles",
-                        params={"player": STUB_PROFILE},
-                        status="pending",
-                    )
+            else:
+                full.nationality = "Poland"
+            stub = await session.get(Player, STUB_PROFILE)
+            if stub is None:
+                session.add(Player(id=STUB_PROFILE, name="Stub"))
+            else:
+                stub.nationality = None
+            session.add(
+                EtlTask(
+                    endpoint="/players/profiles",
+                    params={"player": STORED_PROFILE},
+                    status="pending",
                 )
-                session.add(
-                    EtlTask(
-                        endpoint="/players/profiles",
-                        params={"player": MISSING_PROFILE},
-                        status="pending",
-                    )
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/players/profiles",
+                    params={"player": STUB_PROFILE},
+                    status="pending",
                 )
-                session.add(
-                    EtlTask(
-                        endpoint="/players/profiles",
-                        params={"coach": COACH_ID},
-                        status="pending",
-                    )
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/players/profiles",
+                    params={"player": MISSING_PROFILE},
+                    status="pending",
                 )
-                session.add(
-                    EtlTask(
-                        endpoint="/players/profiles",
-                        params={"player": STORED_PROFILE},
-                        status="in_progress",
-                    )
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/players/profiles",
+                    params={"coach": COACH_ID},
+                    status="pending",
                 )
-                session.add(
-                    EtlTask(
-                        endpoint="/trophies",
-                        params={"coach": COACH_ID},
-                        status="pending",
-                    )
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/players/profiles",
+                    params={"player": STORED_PROFILE},
+                    status="in_progress",
                 )
-                closed = await complete_stored_player_profiles(session)
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/trophies",
+                    params={"coach": COACH_ID},
+                    status="pending",
+                )
+            )
+            closed = await complete_stored_player_profiles(session)
         assert closed == 1
         async with factory() as session:
             tasks = list(
@@ -1102,21 +1093,20 @@ async def test_coachs_career_and_xor_catalog() -> None:
     try:
         await _reset_w8(factory)
         await _seed(factory)
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask)
-                    .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
-                    .where(EtlTask.cursor_kind.is_(None))
-                )
-                await ensure_param_task(session, "/coachs", {"id": COACH_ID})
-                await ensure_param_task(session, "/transfers", {"player": PLAYER_ID})
-                await ensure_param_task(session, "/trophies", {"player": PLAYER_ID})
-                await ensure_param_task(session, "/sidelined", {"player": PLAYER_ID})
-                await ensure_param_task(session, "/players/squads", {"team": 33})
-                await ensure_param_task(
-                    session, "/players/teams", {"player": PLAYER_ID}
-                )
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask)
+                .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
+                .where(EtlTask.cursor_kind.is_(None))
+            )
+            await ensure_param_task(session, "/coachs", {"id": COACH_ID})
+            await ensure_param_task(session, "/transfers", {"player": PLAYER_ID})
+            await ensure_param_task(session, "/trophies", {"player": PLAYER_ID})
+            await ensure_param_task(session, "/sidelined", {"player": PLAYER_ID})
+            await ensure_param_task(session, "/players/squads", {"team": 33})
+            await ensure_param_task(
+                session, "/players/teams", {"player": PLAYER_ID}
+            )
         ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=10)
         await ingest.refresh_pending()
         async with factory() as session:
@@ -1175,18 +1165,17 @@ async def test_topscorers_use_player_statistics() -> None:
     try:
         await _reset_w8(factory)
         await _seed(factory)
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask)
-                    .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
-                    .where(EtlTask.cursor_kind.is_(None))
-                )
-                await ensure_param_task(
-                    session,
-                    "/players/topscorers",
-                    {"league": LEAGUE_ID, "season": SEASON},
-                )
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask)
+                .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
+                .where(EtlTask.cursor_kind.is_(None))
+            )
+            await ensure_param_task(
+                session,
+                "/players/topscorers",
+                {"league": LEAGUE_ID, "season": SEASON},
+            )
         ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=1)
         await ingest.refresh_pending()
         async with factory() as session:
@@ -1222,27 +1211,26 @@ async def test_reconstructable_lookups_skip_http() -> None:
     try:
         await _reset_w8(factory)
         await _seed(factory)
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask)
-                    .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
-                    .where(EtlTask.cursor_kind.is_(None))
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask)
+                .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
+                .where(EtlTask.cursor_kind.is_(None))
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/teams/seasons",
+                    params={"team": 33},
+                    status="pending",
                 )
-                session.add(
-                    EtlTask(
-                        endpoint="/teams/seasons",
-                        params={"team": 33},
-                        status="pending",
-                    )
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/players/seasons",
+                    params={"player": PLAYER_ID},
+                    status="pending",
                 )
-                session.add(
-                    EtlTask(
-                        endpoint="/players/seasons",
-                        params={"player": PLAYER_ID},
-                        status="pending",
-                    )
-                )
+            )
         ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=3)
         await ingest.refresh_pending()
         async with factory() as session:
@@ -1288,16 +1276,15 @@ async def test_coverage_false_and_empty_are_terminal() -> None:
 
         await _reset_w8(factory)
         await _seed(factory)
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask)
-                    .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
-                    .where(EtlTask.cursor_kind.is_(None))
-                )
-                await ensure_param_task(
-                    session, "/standings", {"league": LEAGUE_ID, "season": SEASON}
-                )
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask)
+                .where(EtlTask.endpoint.in_(W8_ENDPOINTS))
+                .where(EtlTask.cursor_kind.is_(None))
+            )
+            await ensure_param_task(
+                session, "/standings", {"league": LEAGUE_ID, "season": SEASON}
+            )
         paths = []
         client = _client(
             settings,

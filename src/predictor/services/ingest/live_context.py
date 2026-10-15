@@ -321,9 +321,8 @@ class LiveContextIngest:
         return urgent, later
 
     async def _enqueue(self, fixture_ids: list[int]) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                await ensure_live_followups(session, fixture_ids)
+        async with self._session_factory() as session, session.begin():
+            await ensure_live_followups(session, fixture_ids)
 
     async def _drain(
         self,
@@ -481,40 +480,39 @@ class LiveContextIngest:
         match_status: str | None,
         refresh_seconds: int = LIVE_DETAIL_REFRESH_SECONDS,
     ) -> bool:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await session.scalar(
-                    select(EtlTask)
-                    .where(EtlTask.endpoint == "/fixtures")
-                    .where(EtlTask.fixture_id == fixture_id)
-                    .where(EtlTask.cursor_kind.is_(None))
-                    .order_by(EtlTask.id)
-                    .limit(1)
-                )
-                if not detail_refresh_due(
-                    task_status=None if task is None else task.status,
-                    params=None if task is None else task.params,
-                    match_status=match_status,
-                    now=self._now(),
-                    final=final,
-                    refresh_seconds=refresh_seconds,
-                ):
-                    return False
-                if task is None:
-                    await ensure_enrichment_task(session, fixture_id)
-                    await session.flush()
-                elif task.status == "in_progress":
-                    return False
-                elif task.status not in {"pending", "retryable_error"}:
-                    task.status = "pending"
-                    task.completed_at = None
-                    task.last_error = None
-                    task.updated_at = self._now()
-                    await session.flush()
-                claimed = await claim_detail(
-                    session, "/fixtures", [fixture_id], now=self._now()
-                )
-                task_id = None if claimed is None else int(claimed.id)
+        async with self._session_factory() as session, session.begin():
+            task = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.endpoint == "/fixtures")
+                .where(EtlTask.fixture_id == fixture_id)
+                .where(EtlTask.cursor_kind.is_(None))
+                .order_by(EtlTask.id)
+                .limit(1)
+            )
+            if not detail_refresh_due(
+                task_status=None if task is None else task.status,
+                params=None if task is None else task.params,
+                match_status=match_status,
+                now=self._now(),
+                final=final,
+                refresh_seconds=refresh_seconds,
+            ):
+                return False
+            if task is None:
+                await ensure_enrichment_task(session, fixture_id)
+                await session.flush()
+            elif task.status == "in_progress":
+                return False
+            elif task.status not in {"pending", "retryable_error"}:
+                task.status = "pending"
+                task.completed_at = None
+                task.last_error = None
+                task.updated_at = self._now()
+                await session.flush()
+            claimed = await claim_detail(
+                session, "/fixtures", [fixture_id], now=self._now()
+            )
+            task_id = None if claimed is None else int(claimed.id)
         if task_id is None:
             return False
         ok = await self._enrichment._enrich_task(task_id, control=False)
@@ -524,25 +522,24 @@ class LiveContextIngest:
         return ok
 
     async def _stamp_detail(self, fixture_id: int, *, finished: bool) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await session.scalar(
-                    select(EtlTask)
-                    .where(EtlTask.endpoint == "/fixtures")
-                    .where(EtlTask.fixture_id == fixture_id)
-                    .where(EtlTask.cursor_kind.is_(None))
-                    .order_by(EtlTask.id)
-                    .limit(1)
-                )
-                if task is None:
-                    return
-                params = dict(task.params or {})
-                stamp = self._now().isoformat()
-                params["last_live_detail_at"] = stamp
-                if finished:
-                    params["final_detail_at"] = stamp
-                task.params = params
-                task.updated_at = self._now()
+        async with self._session_factory() as session, session.begin():
+            task = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.endpoint == "/fixtures")
+                .where(EtlTask.fixture_id == fixture_id)
+                .where(EtlTask.cursor_kind.is_(None))
+                .order_by(EtlTask.id)
+                .limit(1)
+            )
+            if task is None:
+                return
+            params = dict(task.params or {})
+            stamp = self._now().isoformat()
+            params["last_live_detail_at"] = stamp
+            if finished:
+                params["final_detail_at"] = stamp
+            task.params = params
+            task.updated_at = self._now()
 
     async def _load_scope(self, fixture_ids: list[int]) -> _Scope:
         scope = _Scope(fixture_ids=list(fixture_ids))
@@ -598,15 +595,14 @@ class LiveContextIngest:
         return scope
 
     async def _prune_finishing(self, finishing_ids: list[int]) -> list[int]:
-        async with self._session_factory() as session:
-            async with session.begin():
-                still = await unfinished_context_fixture_ids(session, finishing_ids)
-                task = await get_or_create_live_fixtures_task(session)
-                params = dict(task.params or {})
-                params["finishing_ids"] = still
-                task.params = params
-                task.updated_at = self._now()
-                return still
+        async with self._session_factory() as session, session.begin():
+            still = await unfinished_context_fixture_ids(session, finishing_ids)
+            task = await get_or_create_live_fixtures_task(session)
+            params = dict(task.params or {})
+            params["finishing_ids"] = still
+            task.params = params
+            task.updated_at = self._now()
+            return still
 
 
 class _Spend:

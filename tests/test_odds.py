@@ -207,65 +207,62 @@ def _router(
 
 
 async def _reset_w7(factory: async_sessionmaker[AsyncSession]) -> None:
-    async with factory() as session:
-        async with session.begin():
-            await session.execute(
-                delete(EtlTask)
-                .where(
-                    EtlTask.endpoint.in_(
-                        (
-                            "/fixtures/headtohead",
-                            "/predictions",
-                            "/odds",
-                            "/odds/mapping",
-                        )
-                    )
-                )
-                .where(EtlTask.cursor_kind.is_(None))
-            )
-            await session.execute(
-                delete(PredictionH2H).where(
-                    or_(
-                        PredictionH2H.fixture_id.in_(W7_IDS),
-                        PredictionH2H.h2h_fixture_id.in_(W7_IDS),
+    async with factory() as session, session.begin():
+        await session.execute(
+            delete(EtlTask)
+            .where(
+                EtlTask.endpoint.in_(
+                    (
+                        "/fixtures/headtohead",
+                        "/predictions",
+                        "/odds",
+                        "/odds/mapping",
                     )
                 )
             )
-            await session.execute(
-                delete(Prediction).where(Prediction.fixture_id.in_(W7_IDS))
-            )
-            await session.execute(
-                delete(FixtureOdds).where(FixtureOdds.fixture_id.in_(W7_IDS))
-            )
-            await session.execute(
-                delete(OddsFixtureMapping).where(
-                    OddsFixtureMapping.fixture_id.in_(W7_IDS)
+            .where(EtlTask.cursor_kind.is_(None))
+        )
+        await session.execute(
+            delete(PredictionH2H).where(
+                or_(
+                    PredictionH2H.fixture_id.in_(W7_IDS),
+                    PredictionH2H.h2h_fixture_id.in_(W7_IDS),
                 )
             )
-            await session.execute(delete(Fixture).where(Fixture.id.in_(W7_IDS)))
-            await ensure_cursors(session)
+        )
+        await session.execute(
+            delete(Prediction).where(Prediction.fixture_id.in_(W7_IDS))
+        )
+        await session.execute(
+            delete(FixtureOdds).where(FixtureOdds.fixture_id.in_(W7_IDS))
+        )
+        await session.execute(
+            delete(OddsFixtureMapping).where(
+                OddsFixtureMapping.fixture_id.in_(W7_IDS)
+            )
+        )
+        await session.execute(delete(Fixture).where(Fixture.id.in_(W7_IDS)))
+        await ensure_cursors(session)
 
 
 async def _seed_fixture(factory: async_sessionmaker[AsyncSession]) -> None:
     item = FixtureItem.model_validate(_fixture_core())
-    async with factory() as session:
-        async with session.begin():
-            await upsert_fixtures(session, [item])
-            row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
-            if row is not None:
-                row.cov_predictions = True
-                row.cov_odds = True
+    async with factory() as session, session.begin():
+        await upsert_fixtures(session, [item])
+        row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
+        if row is not None:
+            row.cov_predictions = True
+            row.cov_odds = True
 
 
 async def _set_coverage(
     factory: async_sessionmaker[AsyncSession], **flags: bool | None
 ) -> None:
-    async with factory() as session:
-        async with session.begin():
-            row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
-            assert row is not None
-            for name, value in flags.items():
-                setattr(row, name, value)
+    async with factory() as session, session.begin():
+        row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
+        assert row is not None
+        for name, value in flags.items():
+            setattr(row, name, value)
 
 
 @pytest.mark.asyncio
@@ -332,9 +329,8 @@ async def test_odds_pagination_omits_page_on_first_request() -> None:
     try:
         await _reset_w7(factory)
         await _seed_fixture(factory)
-        async with factory() as session:
-            async with session.begin():
-                await ensure_odds_task(session, FIXTURE_ID)
+        async with factory() as session, session.begin():
+            await ensure_odds_task(session, FIXTURE_ID)
         ingest = PrematchIngest(client, factory, now_fn=lambda: NOW, per_tick=4)
         await ingest.refresh_pending()
 
@@ -399,9 +395,8 @@ async def test_odds_coverage_false_skips_http() -> None:
         await _reset_w7(factory)
         await _seed_fixture(factory)
         await _set_coverage(factory, cov_odds=False)
-        async with factory() as session:
-            async with session.begin():
-                await ensure_odds_task(session, FIXTURE_ID)
+        async with factory() as session, session.begin():
+            await ensure_odds_task(session, FIXTURE_ID)
         ingest = PrematchIngest(client, factory, now_fn=lambda: NOW, per_tick=4)
         await ingest.refresh_pending()
 
@@ -432,9 +427,8 @@ async def test_empty_odds_are_coverage_empty() -> None:
     try:
         await _reset_w7(factory)
         await _seed_fixture(factory)
-        async with factory() as session:
-            async with session.begin():
-                await ensure_odds_task(session, FIXTURE_ID)
+        async with factory() as session, session.begin():
+            await ensure_odds_task(session, FIXTURE_ID)
         ingest = PrematchIngest(client, factory, now_fn=lambda: NOW, per_tick=4)
         await ingest.refresh_pending()
 
@@ -463,18 +457,17 @@ async def test_complete_mapping_is_not_refetched_same_utc_day() -> None:
     try:
         await _reset_w7(factory)
         await _seed_fixture(factory)
-        async with factory() as session:
-            async with session.begin():
-                session.add(
-                    EtlTask(
-                        endpoint="/odds/mapping",
-                        params={},
-                        status="complete",
-                        completed_at=NOW,
-                        updated_at=NOW,
-                    )
+        async with factory() as session, session.begin():
+            session.add(
+                EtlTask(
+                    endpoint="/odds/mapping",
+                    params={},
+                    status="complete",
+                    completed_at=NOW,
+                    updated_at=NOW,
                 )
-                await ensure_odds_task(session, FIXTURE_ID)
+            )
+            await ensure_odds_task(session, FIXTURE_ID)
         ingest = PrematchIngest(client, factory, now_fn=lambda: NOW, per_tick=4)
         await ingest.refresh_pending()
 
@@ -494,17 +487,16 @@ async def test_mapping_retryable_error_waits_for_backoff() -> None:
     client = _client(settings, httpx.MockTransport(_router(paths, mapping=[])))
     try:
         await _reset_w7(factory)
-        async with factory() as session:
-            async with session.begin():
-                session.add(
-                    EtlTask(
-                        endpoint="/odds/mapping",
-                        params={},
-                        status="retryable_error",
-                        last_error="FootballHttpError",
-                        updated_at=NOW,
-                    )
+        async with factory() as session, session.begin():
+            session.add(
+                EtlTask(
+                    endpoint="/odds/mapping",
+                    params={},
+                    status="retryable_error",
+                    last_error="FootballHttpError",
+                    updated_at=NOW,
                 )
+            )
         early = PrematchIngest(
             client,
             factory,

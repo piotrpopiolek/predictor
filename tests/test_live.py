@@ -166,57 +166,56 @@ def _router(
 
 
 async def _reset_w5(factory: async_sessionmaker[AsyncSession]) -> None:
-    async with factory() as session:
-        async with session.begin():
-            await session.execute(delete(FixtureOddsLive))
-            await session.execute(
-                delete(PredictionH2H).where(
-                    or_(
-                        PredictionH2H.fixture_id == 9001,
-                        PredictionH2H.h2h_fixture_id == 9001,
-                    )
+    async with factory() as session, session.begin():
+        await session.execute(delete(FixtureOddsLive))
+        await session.execute(
+            delete(PredictionH2H).where(
+                or_(
+                    PredictionH2H.fixture_id == 9001,
+                    PredictionH2H.h2h_fixture_id == 9001,
                 )
             )
-            await session.execute(
-                delete(Prediction).where(Prediction.fixture_id == 9001)
-            )
-            await session.execute(
-                delete(FixtureOdds).where(FixtureOdds.fixture_id == 9001)
-            )
-            await session.execute(
-                delete(OddsFixtureMapping).where(OddsFixtureMapping.fixture_id == 9001)
-            )
-            await session.execute(
-                delete(EtlTask)
-                .where(EtlTask.endpoint.in_(("/odds/live", "/fixtures")))
-                .where(EtlTask.cursor_kind.is_(None))
-                .where(EtlTask.fixture_id.is_(None))
-                .where(EtlTask.day_utc.is_(None))
-            )
-            await session.execute(delete(Fixture).where(Fixture.id == 9001))
-            task = await session.scalar(
-                select(EtlTask)
-                .where(EtlTask.endpoint == "/odds/live/bets")
-                .where(EtlTask.cursor_kind.is_(None))
-                .order_by(EtlTask.id)
-                .limit(1)
-            )
-            mapping = {
-                "next_goal_bet_ids": [73, 85],
-                "next_goal_names": ["Which team will score the 1st goal?"],
-            }
-            if task is None:
-                session.add(
-                    EtlTask(
-                        endpoint="/odds/live/bets",
-                        params=mapping,
-                        status="complete",
-                    )
+        )
+        await session.execute(
+            delete(Prediction).where(Prediction.fixture_id == 9001)
+        )
+        await session.execute(
+            delete(FixtureOdds).where(FixtureOdds.fixture_id == 9001)
+        )
+        await session.execute(
+            delete(OddsFixtureMapping).where(OddsFixtureMapping.fixture_id == 9001)
+        )
+        await session.execute(
+            delete(EtlTask)
+            .where(EtlTask.endpoint.in_(("/odds/live", "/fixtures")))
+            .where(EtlTask.cursor_kind.is_(None))
+            .where(EtlTask.fixture_id.is_(None))
+            .where(EtlTask.day_utc.is_(None))
+        )
+        await session.execute(delete(Fixture).where(Fixture.id == 9001))
+        task = await session.scalar(
+            select(EtlTask)
+            .where(EtlTask.endpoint == "/odds/live/bets")
+            .where(EtlTask.cursor_kind.is_(None))
+            .order_by(EtlTask.id)
+            .limit(1)
+        )
+        mapping = {
+            "next_goal_bet_ids": [73, 85],
+            "next_goal_names": ["Which team will score the 1st goal?"],
+        }
+        if task is None:
+            session.add(
+                EtlTask(
+                    endpoint="/odds/live/bets",
+                    params=mapping,
+                    status="complete",
                 )
-            else:
-                params = dict(task.params)
-                params.update(mapping)
-                task.params = params
+            )
+        else:
+            params = dict(task.params)
+            params.update(mapping)
+            task.params = params
 
 
 @pytest.mark.asyncio
@@ -264,7 +263,7 @@ async def test_live_all_and_odds_live_append_only() -> None:
         assert child.status == "pending"
         assert any("live=all" in p for p in paths)
         assert any(p == "/odds/live" or p.startswith("/odds/live?") for p in paths)
-        assert not any("/odds/bets" == p.split("?")[0] for p in paths)
+        assert not any(p.split("?")[0] == "/odds/bets" for p in paths)
     finally:
         await client.aclose()
         await engine.dispose()
@@ -373,12 +372,11 @@ async def test_live_gap_is_logged_not_filled(
     client = _client(settings, httpx.MockTransport(_router([])))
     try:
         await _reset_w5(factory)
-        async with factory() as session:
-            async with session.begin():
-                task = await get_or_create_endpoint_task(session, "/odds/live")
-                task.params = {
-                    "last_poll_at": (START - timedelta(minutes=10)).isoformat()
-                }
+        async with factory() as session, session.begin():
+            task = await get_or_create_endpoint_task(session, "/odds/live")
+            task.params = {
+                "last_poll_at": (START - timedelta(minutes=10)).isoformat()
+            }
         ingest = LiveIngest(client, factory, now_fn=lambda: START, target_seconds=60)
         with caplog.at_level("WARNING"):
             await ingest.refresh_live_fixtures()
@@ -402,12 +400,11 @@ async def test_live_odds_wait_for_the_stretched_gap(
     client = _client(settings, httpx.MockTransport(_router([])))
     try:
         await _reset_w5(factory)
-        async with factory() as session:
-            async with session.begin():
-                task = await get_or_create_endpoint_task(session, "/odds/live")
-                task.params = {
-                    "last_poll_at": (START - timedelta(minutes=2)).isoformat()
-                }
+        async with factory() as session, session.begin():
+            task = await get_or_create_endpoint_task(session, "/odds/live")
+            task.params = {
+                "last_poll_at": (START - timedelta(minutes=2)).isoformat()
+            }
         ingest = LiveIngest(client, factory, now_fn=lambda: START, target_seconds=60)
         with caplog.at_level("WARNING"):
             await ingest.refresh_next_goal_snapshots(min_gap_seconds=600)

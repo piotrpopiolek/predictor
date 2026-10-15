@@ -308,48 +308,47 @@ async def test_live_context_prefers_live_fixture_and_retries_empty_odds() -> Non
         retry_wait=WaitZero(),
     )
     try:
-        async with factory() as session:
-            async with session.begin():
-                await _purge(session)
-                live = FixtureItem.model_validate(
-                    _fixture_payload(
-                        FID_LIVE,
-                        kickoff=NOW,
-                        status="1H",
-                        home_id=401,
-                        away_id=402,
-                    )
+        async with factory() as session, session.begin():
+            await _purge(session)
+            live = FixtureItem.model_validate(
+                _fixture_payload(
+                    FID_LIVE,
+                    kickoff=NOW,
+                    status="1H",
+                    home_id=401,
+                    away_id=402,
                 )
-                other = FixtureItem.model_validate(
-                    _fixture_payload(
-                        FID_OTHER,
-                        kickoff=NOW - timedelta(hours=2),
-                        status="FT",
-                        home_id=403,
-                        away_id=404,
-                    )
+            )
+            other = FixtureItem.model_validate(
+                _fixture_payload(
+                    FID_OTHER,
+                    kickoff=NOW - timedelta(hours=2),
+                    status="FT",
+                    home_id=403,
+                    away_id=404,
                 )
-                await upsert_fixtures(session, [other, live])
-                session.add(
-                    EtlTask(
-                        endpoint="/fixtures",
-                        fixture_id=FID_LIVE,
-                        params={
-                            "id": FID_LIVE,
-                            "last_live_detail_at": NOW.isoformat(),
-                        },
-                        status="complete",
-                        completed_at=NOW,
-                    )
+            )
+            await upsert_fixtures(session, [other, live])
+            session.add(
+                EtlTask(
+                    endpoint="/fixtures",
+                    fixture_id=FID_LIVE,
+                    params={
+                        "id": FID_LIVE,
+                        "last_live_detail_at": NOW.isoformat(),
+                    },
+                    status="complete",
+                    completed_at=NOW,
                 )
-                session.add(
-                    EtlTask(
-                        endpoint="/odds",
-                        fixture_id=FID_OTHER,
-                        params={"fixture": FID_OTHER},
-                        status="pending",
-                    )
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/odds",
+                    fixture_id=FID_OTHER,
+                    params={"fixture": FID_OTHER},
+                    status="pending",
                 )
+            )
         context = LiveContextIngest(
             factory,
             enrichment=EnrichmentIngest(client, factory, now_fn=lambda: NOW),
@@ -394,9 +393,8 @@ async def test_live_context_prefers_live_fixture_and_retries_empty_odds() -> Non
         assert live_pred.status == "retryable_error"
         assert live_pred.params.get("next_attempt_at")
     finally:
-        async with factory() as session:
-            async with session.begin():
-                await _purge(session)
+        async with factory() as session, session.begin():
+            await _purge(session)
         await client.aclose()
         await engine.dispose()
 

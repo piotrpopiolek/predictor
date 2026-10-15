@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
@@ -162,10 +163,8 @@ class Scheduler:
             self._close_history_window()
             leftover = deadline - time.monotonic()
             if leftover > 0 and not stop.is_set():
-                try:
+                with suppress(TimeoutError):
                     await asyncio.wait_for(stop.wait(), timeout=leftover)
-                except TimeoutError:
-                    pass
 
     async def _spend_history(
         self,
@@ -369,25 +368,24 @@ class Scheduler:
         except TypeError:
             return
         try:
-            async with session_cm as session:
-                async with session.begin():
-                    plan = self._plan
-                    await persist_quota_snapshot(
-                        session,
-                        snapshot,
-                        score_poll_seconds=self._live_interval_seconds,
-                        detail_refresh_seconds=(
-                            None if plan is None else plan.relaxed_refresh_seconds
-                        ),
-                        context_call_cap=(
-                            None if plan is None else plan.context_calls_per_tick
-                        ),
-                        overloaded=None if plan is None else plan.overloaded,
-                        allowed_per_minute=(
-                            None if plan is None else plan.allowed_per_minute
-                        ),
-                    )
-        except (TypeError, AttributeError):
+            async with session_cm as session, session.begin():
+                plan = self._plan
+                await persist_quota_snapshot(
+                    session,
+                    snapshot,
+                    score_poll_seconds=self._live_interval_seconds,
+                    detail_refresh_seconds=(
+                        None if plan is None else plan.relaxed_refresh_seconds
+                    ),
+                    context_call_cap=(
+                        None if plan is None else plan.context_calls_per_tick
+                    ),
+                    overloaded=None if plan is None else plan.overloaded,
+                    allowed_per_minute=(
+                        None if plan is None else plan.allowed_per_minute
+                    ),
+                )
+        except TypeError, AttributeError:
             return
         except Exception:
             log_json(logging.WARNING, service="worker", event="quota_persist_failed")
@@ -400,15 +398,14 @@ class Scheduler:
         except TypeError:
             return
         try:
-            async with session_cm as session:
-                async with session.begin():
-                    wrote = await write_daily_report(
-                        session,
-                        yesterday,
-                        quota=self._quota,
-                        now=self._now(),
-                    )
-        except (TypeError, AttributeError):
+            async with session_cm as session, session.begin():
+                wrote = await write_daily_report(
+                    session,
+                    yesterday,
+                    quota=self._quota,
+                    now=self._now(),
+                )
+        except TypeError, AttributeError:
             return
         if wrote:
             log_json(
@@ -557,7 +554,7 @@ class Scheduler:
             )
             self._remember_status(spent)
             return spent
-        except (RetryableHttpError, FootballHttpError):
+        except RetryableHttpError, FootballHttpError:
             log_json(logging.WARNING, service="worker", event="quota_refresh_failed")
             if cached is not None:
                 return cached
@@ -572,9 +569,8 @@ class Scheduler:
         return snapshot
 
     async def _persist_cursors(self) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                await ensure_cursors(session)
+        async with self._session_factory() as session, session.begin():
+            await ensure_cursors(session)
 
     def _sleep_seconds(self) -> float:
         now = self._now()

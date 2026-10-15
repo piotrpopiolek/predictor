@@ -109,16 +109,14 @@ class EnrichmentIngest:
         await self._drain_injuries()
 
     async def _claim_enrichment_id(self) -> int | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await claim_enrichment_task(session)
-                return None if task is None else int(task.id)
+        async with self._session_factory() as session, session.begin():
+            task = await claim_enrichment_task(session)
+            return None if task is None else int(task.id)
 
     async def _claim_control_id(self) -> int | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await claim_control_refresh_task(session, self._now())
-                return None if task is None else int(task.id)
+        async with self._session_factory() as session, session.begin():
+            task = await claim_control_refresh_task(session, self._now())
+            return None if task is None else int(task.id)
 
     async def _enrich_task(self, task_id: int, *, control: bool) -> bool:
         loaded = await self._load_task_fixture(task_id)
@@ -169,72 +167,71 @@ class EnrichmentIngest:
         warn_model_extra("/fixtures", detail)
         coverage = await self._coverage(fixture.league_id, fixture.season)
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    task = await session.get(EtlTask, task_id)
-                    if task is None:
-                        return False
-                    counts = await persist_fixture_detail(
-                        session,
-                        detail,
-                        include_events=True,
-                        include_lineups=True,
-                        include_statistics=True,
-                        include_players=True,
+            async with self._session_factory() as session, session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return False
+                counts = await persist_fixture_detail(
+                    session,
+                    detail,
+                    include_events=True,
+                    include_lineups=True,
+                    include_statistics=True,
+                    include_players=True,
+                )
+                if (
+                    _allowed(coverage["statistics"])
+                    and fixture.season >= HALF_STATS_FROM_SEASON
+                ):
+                    await ensure_half_stats_task(session, fixture.id)
+                now = self._now()
+                params = dict(task.params)
+                params.update(
+                    {
+                        "id": fixture.id,
+                        "counts": counts,
+                        "control_due": (
+                            now + timedelta(hours=CONTROL_REFRESH_HOURS)
+                        ).isoformat(),
+                        "control_done": control,
+                    }
+                )
+                if control:
+                    params["control_at"] = now.isoformat()
+                else:
+                    params["ft_refresh_at"] = now.isoformat()
+                cursor = await get_cursor_task(session, "enrichment")
+                cursor_params = dict(cursor.params)
+                cursor_params["last_fixture_id"] = fixture.id
+                cursor.params = cursor_params
+                cursor.updated_at = now
+                stored_children = any(
+                    int(counts.get(key) or 0) > 0
+                    for key in (
+                        "events",
+                        "lineups",
+                        "statistics",
+                        "player_stats",
+                        "lineup_players",
                     )
-                    if (
-                        _allowed(coverage["statistics"])
-                        and fixture.season >= HALF_STATS_FROM_SEASON
-                    ):
-                        await ensure_half_stats_task(session, fixture.id)
-                    now = self._now()
-                    params = dict(task.params)
-                    params.update(
-                        {
-                            "id": fixture.id,
-                            "counts": counts,
-                            "control_due": (
-                                now + timedelta(hours=CONTROL_REFRESH_HOURS)
-                            ).isoformat(),
-                            "control_done": control,
-                        }
-                    )
-                    if control:
-                        params["control_at"] = now.isoformat()
-                    else:
-                        params["ft_refresh_at"] = now.isoformat()
-                    cursor = await get_cursor_task(session, "enrichment")
-                    cursor_params = dict(cursor.params)
-                    cursor_params["last_fixture_id"] = fixture.id
-                    cursor.params = cursor_params
-                    cursor.updated_at = now
-                    stored_children = any(
-                        int(counts.get(key) or 0) > 0
-                        for key in (
-                            "events",
-                            "lineups",
-                            "statistics",
-                            "player_stats",
-                            "lineup_players",
-                        )
-                    )
-                    coverage_allows = any(
-                        _allowed(coverage[key])
-                        for key in ("events", "lineups", "statistics", "players")
-                    )
-                    status = (
-                        "complete"
-                        if stored_children or coverage_allows
-                        else "coverage_empty"
-                    )
-                    await complete_task(
-                        session,
-                        task,
-                        status,
-                        paging_current=current,
-                        paging_total=total,
-                        params=params,
-                    )
+                )
+                coverage_allows = any(
+                    _allowed(coverage[key])
+                    for key in ("events", "lineups", "statistics", "players")
+                )
+                status = (
+                    "complete"
+                    if stored_children or coverage_allows
+                    else "coverage_empty"
+                )
+                await complete_task(
+                    session,
+                    task,
+                    status,
+                    paging_current=current,
+                    paging_total=total,
+                    params=params,
+                )
         except IntegrityError as exc:
             log_json(
                 logging.ERROR,
@@ -295,28 +292,30 @@ class EnrichmentIngest:
                 )
                 continue
             try:
-                async with self._session_factory() as session:
-                    async with session.begin():
-                        task = await session.get(EtlTask, task_id)
-                        if task is None:
-                            return
-                        count = await upsert_team_statistics(
-                            session,
-                            fixture_id,
-                            parsed,
-                            default_period="FT",
-                            include_default=False,
-                        )
-                        params = dict(task.params)
-                        params["count"] = count
-                        await complete_task(
-                            session,
-                            task,
-                            "complete",
-                            paging_current=current,
-                            paging_total=total,
-                            params=params,
-                        )
+                async with (
+                    self._session_factory() as session,
+                    session.begin(),
+                ):
+                    task = await session.get(EtlTask, task_id)
+                    if task is None:
+                        return
+                    count = await upsert_team_statistics(
+                        session,
+                        fixture_id,
+                        parsed,
+                        default_period="FT",
+                        include_default=False,
+                    )
+                    params = dict(task.params)
+                    params["count"] = count
+                    await complete_task(
+                        session,
+                        task,
+                        "complete",
+                        paging_current=current,
+                        paging_total=total,
+                        params=params,
+                    )
             except Exception:
                 log_json(
                     logging.ERROR,
@@ -403,23 +402,22 @@ class EnrichmentIngest:
             )
             return True
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    task = await session.get(EtlTask, task_id)
-                    if task is None:
-                        return True
-                    count = await persist_injuries(session, parsed)
-                    params = dict(task.params)
-                    params["count"] = count
-                    status = "coverage_empty" if count == 0 else "complete"
-                    await complete_task(
-                        session,
-                        task,
-                        status,
-                        paging_current=current,
-                        paging_total=total,
-                        params=params,
-                    )
+            async with self._session_factory() as session, session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return True
+                count = await persist_injuries(session, parsed)
+                params = dict(task.params)
+                params["count"] = count
+                status = "coverage_empty" if count == 0 else "complete"
+                await complete_task(
+                    session,
+                    task,
+                    status,
+                    paging_current=current,
+                    paging_total=total,
+                    params=params,
+                )
         except Exception:
             log_json(
                 logging.ERROR,
@@ -433,27 +431,26 @@ class EnrichmentIngest:
     async def _claim_scoped_injuries(
         self, pairs: Sequence[tuple[int, int]]
     ) -> tuple[int, int, int] | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await claim_live_param_task(
-                    session,
-                    "/injuries",
-                    [
-                        {"league": league_id, "season": season}
-                        for league_id, season in pairs
-                    ],
-                    now=self._now(),
+        async with self._session_factory() as session, session.begin():
+            task = await claim_live_param_task(
+                session,
+                "/injuries",
+                [
+                    {"league": league_id, "season": season}
+                    for league_id, season in pairs
+                ],
+                now=self._now(),
+            )
+            if task is None:
+                return None
+            league_id = task.params.get("league")
+            season = task.params.get("season")
+            if league_id is None or season is None:
+                await complete_task(
+                    session, task, "permanent_error", error="bad_injuries_params"
                 )
-                if task is None:
-                    return None
-                league_id = task.params.get("league")
-                season = task.params.get("season")
-                if league_id is None or season is None:
-                    await complete_task(
-                        session, task, "permanent_error", error="bad_injuries_params"
-                    )
-                    return None
-                return int(task.id), int(league_id), int(season)
+                return None
+            return int(task.id), int(league_id), int(season)
 
     async def _retry_or_empty(
         self,
@@ -473,43 +470,41 @@ class EnrichmentIngest:
         )
 
     async def _claim_half_id(self) -> tuple[int | None, int | None]:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await claim_half_stats_task(session)
-                if task is None:
-                    return None, None
-                fixture_id = task.fixture_id or task.params.get("fixture")
-                try:
-                    return (
-                        int(task.id),
-                        int(fixture_id) if fixture_id is not None else None,
-                    )
-                except (TypeError, ValueError):
-                    await complete_task(
-                        session, task, "permanent_error", error="bad_half_params"
-                    )
-                    return None, None
+        async with self._session_factory() as session, session.begin():
+            task = await claim_half_stats_task(session)
+            if task is None:
+                return None, None
+            fixture_id = task.fixture_id or task.params.get("fixture")
+            try:
+                return (
+                    int(task.id),
+                    int(fixture_id) if fixture_id is not None else None,
+                )
+            except TypeError, ValueError:
+                await complete_task(
+                    session, task, "permanent_error", error="bad_half_params"
+                )
+                return None, None
 
     async def _claim_injuries(self) -> tuple[int, int, int] | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await claim_injuries_task(session)
-                if task is None:
-                    return None
-                league_id = task.params.get("league")
-                season = task.params.get("season")
-                if league_id is None or season is None:
-                    await complete_task(
-                        session, task, "permanent_error", error="bad_injuries_params"
-                    )
-                    return None
-                try:
-                    return int(task.id), int(league_id), int(season)
-                except (TypeError, ValueError):
-                    await complete_task(
-                        session, task, "permanent_error", error="bad_injuries_params"
-                    )
-                    return None
+        async with self._session_factory() as session, session.begin():
+            task = await claim_injuries_task(session)
+            if task is None:
+                return None
+            league_id = task.params.get("league")
+            season = task.params.get("season")
+            if league_id is None or season is None:
+                await complete_task(
+                    session, task, "permanent_error", error="bad_injuries_params"
+                )
+                return None
+            try:
+                return int(task.id), int(league_id), int(season)
+            except TypeError, ValueError:
+                await complete_task(
+                    session, task, "permanent_error", error="bad_injuries_params"
+                )
+                return None
 
     async def _load_task_fixture(self, task_id: int) -> _FixtureRef | None:
         async with self._session_factory() as session:

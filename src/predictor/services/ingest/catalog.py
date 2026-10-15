@@ -95,22 +95,21 @@ class CatalogIngest:
             await self._fail(task_id, "retryable_error", type(exc).__name__)
             return
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    task = await session.get(EtlTask, task_id)
-                    if task is None:
-                        return
-                    extra = await persist(session, items)
-                    params = dict(task.params)
-                    params.update(extra)
-                    await complete_task(
-                        session,
-                        task,
-                        "complete",
-                        paging_current=current,
-                        paging_total=total,
-                        params=params,
-                    )
+            async with self._session_factory() as session, session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return
+                extra = await persist(session, items)
+                params = dict(task.params)
+                params.update(extra)
+                await complete_task(
+                    session,
+                    task,
+                    "complete",
+                    paging_current=current,
+                    paging_total=total,
+                    params=params,
+                )
         except Exception:
             log_json(
                 logging.ERROR,
@@ -121,12 +120,11 @@ class CatalogIngest:
             await self._fail(task_id, "retryable_error", "persist_failed")
 
     async def _task_id_if_due(self, endpoint: str) -> int | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await get_or_create_endpoint_task(session, endpoint)
-                if not needs_refresh(task, self._now()):
-                    return None
-                return int(task.id)
+        async with self._session_factory() as session, session.begin():
+            task = await get_or_create_endpoint_task(session, endpoint)
+            if not needs_refresh(task, self._now()):
+                return None
+            return int(task.id)
 
     async def _fail(self, task_id: int, status: str, error: str) -> None:
         await fail_task(self._session_factory, task_id, status, error)

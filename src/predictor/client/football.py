@@ -166,13 +166,12 @@ class FootballClient:
             wait=self._wait,
             reraise=True,
         ):
-            with attempt:
-                with start_span(
-                    "http.client",
-                    http_route=path,
-                    http_method=method,
-                ):
-                    return await self._send_once(method, path, params)
+            with attempt, start_span(
+                "http.client",
+                http_route=path,
+                http_method=method,
+            ):
+                return await self._send_once(method, path, params)
         raise RuntimeError("unreachable retry loop")
 
     async def _send_once(

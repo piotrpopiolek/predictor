@@ -54,8 +54,8 @@ def _bet(
 
 
 def test_stake_starts_at_21_and_grows_only_on_wins() -> None:
-    assert START_STAKE == Decimal("21.00")
-    assert STAKE_STEP == Decimal("0.10")
+    assert Decimal("21.00") == START_STAKE
+    assert Decimal("0.10") == STAKE_STEP
     assert money(START_STAKE + STAKE_STEP * 0) == Decimal("21.00")
     assert money(START_STAKE + STAKE_STEP * 1) == Decimal("21.10")
     assert money(START_STAKE + STAKE_STEP * 3) == Decimal("21.30")

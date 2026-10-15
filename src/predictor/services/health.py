@@ -22,7 +22,7 @@ from predictor.models.odds import FixtureOddsLive
 from predictor.schemas.settings import Settings
 from predictor.services.live_board import load_live_all_fixture_ids
 from predictor.services.lock import HolderInfo, fetch_holder_sqlalchemy
-from predictor.services.quota import quota_gauges_from_params, quota_limit_from_params
+from predictor.services.quota import quota_gauges_from_params
 
 
 def current_alembic_head(config_path: str = "alembic.ini") -> str:
@@ -164,10 +164,7 @@ def live_poll_gauges(last_live: datetime | None, now: datetime) -> tuple[float, 
     """
     if last_live is None:
         return 0.0, 0.0
-    if last_live.tzinfo is None:
-        captured = last_live.replace(tzinfo=UTC)
-    else:
-        captured = last_live
+    captured = last_live.replace(tzinfo=UTC) if last_live.tzinfo is None else last_live
     now_utc = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
     captured = captured.astimezone(UTC)
     now_utc = now_utc.astimezone(UTC)
@@ -243,7 +240,7 @@ def _non_negative_float(params: dict[str, Any] | None, key: str) -> float:
     raw = params.get(key)
     try:
         value = float(raw) if raw is not None else 0.0
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
     return value if value > 0 else 0.0
 

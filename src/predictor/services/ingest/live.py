@@ -81,48 +81,47 @@ class LiveIngest:
             return
         parsed = parse_fixtures(items)
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    task = await session.get(EtlTask, task_id)
-                    if task is None:
-                        return
-                    extra = await upsert_fixtures(session, parsed)
-                    fixture_ids = await drop_untracked_fixture_ids(
-                        session, [int(fid) for fid in extra.get("fixture_ids", [])]
+            async with self._session_factory() as session, session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return
+                extra = await upsert_fixtures(session, parsed)
+                fixture_ids = await drop_untracked_fixture_ids(
+                    session, [int(fid) for fid in extra.get("fixture_ids", [])]
+                )
+                await enqueue_fixture_followups(session, extra)
+                params = dict(task.params)
+                previous = await drop_untracked_fixture_ids(
+                    session, _int_ids(params.get("fixture_ids"))
+                )
+                finishing = set(
+                    await drop_untracked_fixture_ids(
+                        session, _int_ids(params.get("finishing_ids"))
                     )
-                    await enqueue_fixture_followups(session, extra)
-                    params = dict(task.params)
-                    previous = await drop_untracked_fixture_ids(
-                        session, _int_ids(params.get("fixture_ids"))
-                    )
-                    finishing = set(
-                        await drop_untracked_fixture_ids(
-                            session, _int_ids(params.get("finishing_ids"))
-                        )
-                    )
-                    current_ids = set(fixture_ids)
-                    finishing |= set(previous) - current_ids
-                    finishing -= current_ids
-                    finishing_ids = sorted(finishing)
-                    params.update(
-                        {
-                            "live": "all",
-                            "count": extra.get("count", 0),
-                            "skipped": extra.get("skipped", 0),
-                            "fixture_ids": fixture_ids,
-                            "finishing_ids": finishing_ids,
-                        }
-                    )
-                    await complete_task(
-                        session,
-                        task,
-                        "complete",
-                        paging_current=current,
-                        paging_total=total,
-                        params=params,
-                    )
-                    self.last_live_fixture_ids = fixture_ids
-                    self.finishing_fixture_ids = finishing_ids
+                )
+                current_ids = set(fixture_ids)
+                finishing |= set(previous) - current_ids
+                finishing -= current_ids
+                finishing_ids = sorted(finishing)
+                params.update(
+                    {
+                        "live": "all",
+                        "count": extra.get("count", 0),
+                        "skipped": extra.get("skipped", 0),
+                        "fixture_ids": fixture_ids,
+                        "finishing_ids": finishing_ids,
+                    }
+                )
+                await complete_task(
+                    session,
+                    task,
+                    "complete",
+                    paging_current=current,
+                    paging_total=total,
+                    params=params,
+                )
+                self.last_live_fixture_ids = fixture_ids
+                self.finishing_fixture_ids = finishing_ids
         except Exception:
             log_json(
                 logging.ERROR,
@@ -175,43 +174,42 @@ class LiveIngest:
         captured_at = self._now()
         extra: dict[str, Any] = {}
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    task = await session.get(EtlTask, task_id)
-                    if task is None:
-                        return
-                    extra = await persist_odds_live_snapshots(
-                        session,
-                        parsed,
-                        captured_at=captured_at,
-                        mapped_next_goal=mapped,
-                        discovered_fixture_ids=set(self.last_live_fixture_ids),
-                    )
-                    await ensure_prematch_for_fixture_ids(
-                        session,
-                        [int(fid) for fid in extra.get("stored_fixture_ids", [])],
-                    )
-                    params = dict(task.params)
-                    params.update(
-                        {
-                            "count": extra.get("count", 0),
-                            "fixtures": extra.get("fixtures", 0),
-                            "missing_next_goal": extra.get("missing_next_goal", []),
-                            "blocked_without_odds": extra.get(
-                                "blocked_without_odds", []
-                            ),
-                            "last_poll_at": captured_at.isoformat(),
-                            "mapped_next_goal": sorted(mapped),
-                        }
-                    )
-                    await complete_task(
-                        session,
-                        task,
-                        "complete",
-                        paging_current=current,
-                        paging_total=total,
-                        params=params,
-                    )
+            async with self._session_factory() as session, session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return
+                extra = await persist_odds_live_snapshots(
+                    session,
+                    parsed,
+                    captured_at=captured_at,
+                    mapped_next_goal=mapped,
+                    discovered_fixture_ids=set(self.last_live_fixture_ids),
+                )
+                await ensure_prematch_for_fixture_ids(
+                    session,
+                    [int(fid) for fid in extra.get("stored_fixture_ids", [])],
+                )
+                params = dict(task.params)
+                params.update(
+                    {
+                        "count": extra.get("count", 0),
+                        "fixtures": extra.get("fixtures", 0),
+                        "missing_next_goal": extra.get("missing_next_goal", []),
+                        "blocked_without_odds": extra.get(
+                            "blocked_without_odds", []
+                        ),
+                        "last_poll_at": captured_at.isoformat(),
+                        "mapped_next_goal": sorted(mapped),
+                    }
+                )
+                await complete_task(
+                    session,
+                    task,
+                    "complete",
+                    paging_current=current,
+                    paging_total=total,
+                    params=params,
+                )
             missing = extra.get("missing_next_goal", [])
             if missing:
                 log_json(
@@ -238,16 +236,14 @@ class LiveIngest:
             await self._fail(task_id, "retryable_error", "persist_failed")
 
     async def _live_fixtures_task_id(self) -> int | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await get_or_create_live_fixtures_task(session)
-                return int(task.id)
+        async with self._session_factory() as session, session.begin():
+            task = await get_or_create_live_fixtures_task(session)
+            return int(task.id)
 
     async def _odds_live_task_id(self) -> int | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await get_or_create_endpoint_task(session, "/odds/live")
-                return int(task.id)
+        async with self._session_factory() as session, session.begin():
+            task = await get_or_create_endpoint_task(session, "/odds/live")
+            return int(task.id)
 
     async def _mapped_next_goal_ids(self) -> set[int]:
         async with self._session_factory() as session:

@@ -22,13 +22,12 @@ async def release_in_progress_task(
     task_id: int,
 ) -> None:
     """Return a claimed task to pending when the history window closes mid-request."""
-    async with session_factory() as session:
-        async with session.begin():
-            task = await session.get(EtlTask, task_id)
-            if task is None or task.status != "in_progress":
-                return
-            task.status = "pending"
-            task.updated_at = datetime.now(UTC)
+    async with session_factory() as session, session.begin():
+        task = await session.get(EtlTask, task_id)
+        if task is None or task.status != "in_progress":
+            return
+        task.status = "pending"
+        task.updated_at = datetime.now(UTC)
 
 
 async def fail_task(
@@ -37,17 +36,16 @@ async def fail_task(
     status: str,
     error: str,
 ) -> None:
-    async with session_factory() as session:
-        async with session.begin():
-            task = await session.get(EtlTask, task_id)
-            if task is None:
-                return
-            params = None
-            if status == "retryable_error" and error != "quota_exhausted":
-                status, params = error_retry_status(
-                    dict(task.params), now=datetime.now(UTC)
-                )
-            await complete_task(session, task, status, error=error, params=params)
+    async with session_factory() as session, session.begin():
+        task = await session.get(EtlTask, task_id)
+        if task is None:
+            return
+        params = None
+        if status == "retryable_error" and error != "quota_exhausted":
+            status, params = error_retry_status(
+                dict(task.params), now=datetime.now(UTC)
+            )
+        await complete_task(session, task, status, error=error, params=params)
 
 
 async def finish_task(
@@ -59,22 +57,21 @@ async def finish_task(
     paging_current: int | None = None,
     paging_total: int | None = None,
 ) -> None:
-    async with session_factory() as session:
-        async with session.begin():
-            task = await session.get(EtlTask, task_id)
-            if task is None:
-                return
-            merged = dict(task.params)
-            if params:
-                merged.update(params)
-            await complete_task(
-                session,
-                task,
-                status,
-                params=merged,
-                paging_current=paging_current,
-                paging_total=paging_total,
-            )
+    async with session_factory() as session, session.begin():
+        task = await session.get(EtlTask, task_id)
+        if task is None:
+            return
+        merged = dict(task.params)
+        if params:
+            merged.update(params)
+        await complete_task(
+            session,
+            task,
+            status,
+            params=merged,
+            paging_current=paging_current,
+            paging_total=paging_total,
+        )
 
 
 async def retry_or_empty_task(
@@ -86,21 +83,20 @@ async def retry_or_empty_task(
     paging_current: int | None = None,
     paging_total: int | None = None,
 ) -> None:
-    async with session_factory() as session:
-        async with session.begin():
-            task = await session.get(EtlTask, task_id)
-            if task is None:
-                return
-            merged = dict(task.params)
-            merged.update(params)
-            status, merged = empty_retry_status(merged, now=now)
-            error = "empty_retry" if status == "retryable_error" else None
-            await complete_task(
-                session,
-                task,
-                status,
-                error=error,
-                params=merged,
-                paging_current=paging_current,
-                paging_total=paging_total,
-            )
+    async with session_factory() as session, session.begin():
+        task = await session.get(EtlTask, task_id)
+        if task is None:
+            return
+        merged = dict(task.params)
+        merged.update(params)
+        status, merged = empty_retry_status(merged, now=now)
+        error = "empty_retry" if status == "retryable_error" else None
+        await complete_task(
+            session,
+            task,
+            status,
+            error=error,
+            params=merged,
+            paging_current=paging_current,
+            paging_total=paging_total,
+        )

@@ -143,9 +143,12 @@ def assess_lineup(
         note = _sample_note(source, len(matches))
     label = _band(_mean_weight(starters, roles))
     missing_rows = _missing(roles, starters, today, injured_ids, names)
-    if label == LABEL_MIXED and missing_rows:
-        if all(reason == REASON_INJURY for _name, reason in missing_rows):
-            label = LABEL_INJURED
+    if (
+        label == LABEL_MIXED
+        and missing_rows
+        and all(reason == REASON_INJURY for _name, reason in missing_rows)
+    ):
+        label = LABEL_INJURED
     missing = tuple(f"{name} ({reason})" for name, reason in missing_rows)
     return LineupStrength(label, note, missing)
 

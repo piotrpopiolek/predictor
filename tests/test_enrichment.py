@@ -306,57 +306,56 @@ def _client(settings: Settings, transport: httpx.BaseTransport) -> FootballClien
 
 
 async def _reset_w6(factory: async_sessionmaker[AsyncSession]) -> None:
-    async with factory() as session:
-        async with session.begin():
-            await session.execute(
-                delete(EtlTask)
-                .where(
-                    EtlTask.endpoint.in_(
-                        (
-                            "/fixtures",
-                            "/fixtures/statistics",
-                            "/injuries",
-                            *GLOBAL_ENDPOINT_ORDER,
-                            *LOOKUP_WITHOUT_HTTP,
-                        )
-                    )
-                )
-                .where(EtlTask.cursor_kind.is_(None))
-                .where(EtlTask.day_utc.is_(None))
-            )
-            await session.execute(delete(Injury))
-            await session.execute(
-                delete(PredictionH2H).where(
-                    or_(
-                        PredictionH2H.fixture_id.in_((FT_ID, PST_ID, NS_ID)),
-                        PredictionH2H.h2h_fixture_id.in_((FT_ID, PST_ID, NS_ID)),
+    async with factory() as session, session.begin():
+        await session.execute(
+            delete(EtlTask)
+            .where(
+                EtlTask.endpoint.in_(
+                    (
+                        "/fixtures",
+                        "/fixtures/statistics",
+                        "/injuries",
+                        *GLOBAL_ENDPOINT_ORDER,
+                        *LOOKUP_WITHOUT_HTTP,
                     )
                 )
             )
-            await session.execute(
-                delete(Prediction).where(
-                    Prediction.fixture_id.in_((FT_ID, PST_ID, NS_ID))
+            .where(EtlTask.cursor_kind.is_(None))
+            .where(EtlTask.day_utc.is_(None))
+        )
+        await session.execute(delete(Injury))
+        await session.execute(
+            delete(PredictionH2H).where(
+                or_(
+                    PredictionH2H.fixture_id.in_((FT_ID, PST_ID, NS_ID)),
+                    PredictionH2H.h2h_fixture_id.in_((FT_ID, PST_ID, NS_ID)),
                 )
             )
-            await session.execute(
-                delete(FixtureOdds).where(
-                    FixtureOdds.fixture_id.in_((FT_ID, PST_ID, NS_ID))
-                )
+        )
+        await session.execute(
+            delete(Prediction).where(
+                Prediction.fixture_id.in_((FT_ID, PST_ID, NS_ID))
             )
-            await session.execute(
-                delete(OddsFixtureMapping).where(
-                    OddsFixtureMapping.fixture_id.in_((FT_ID, PST_ID, NS_ID))
-                )
+        )
+        await session.execute(
+            delete(FixtureOdds).where(
+                FixtureOdds.fixture_id.in_((FT_ID, PST_ID, NS_ID))
             )
-            await session.execute(delete(FixtureEvent))
-            await session.execute(delete(FixtureLineupPlayer))
-            await session.execute(delete(FixtureLineup))
-            await session.execute(delete(FixtureStatistic))
-            await session.execute(delete(FixturePlayerStats))
-            await session.execute(
-                delete(Fixture).where(Fixture.id.in_((FT_ID, PST_ID, NS_ID)))
+        )
+        await session.execute(
+            delete(OddsFixtureMapping).where(
+                OddsFixtureMapping.fixture_id.in_((FT_ID, PST_ID, NS_ID))
             )
-            await ensure_cursors(session)
+        )
+        await session.execute(delete(FixtureEvent))
+        await session.execute(delete(FixtureLineupPlayer))
+        await session.execute(delete(FixtureLineup))
+        await session.execute(delete(FixtureStatistic))
+        await session.execute(delete(FixturePlayerStats))
+        await session.execute(
+            delete(Fixture).where(Fixture.id.in_((FT_ID, PST_ID, NS_ID)))
+        )
+        await ensure_cursors(session)
 
 
 async def _seed_fixture(
@@ -368,32 +367,30 @@ async def _seed_fixture(
     injuries: bool = False,
 ) -> None:
     detail = FixtureDetail.model_validate(_fixture_core(fixture_id, status=status))
-    async with factory() as session:
-        async with session.begin():
-            await upsert_fixtures(session, [detail])
-            row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
-            if row is not None:
-                row.cov_events = True
-                row.cov_lineups = True
-                row.cov_statistics_fixtures = True
-                row.cov_statistics_players = True
-                row.cov_injuries = True
-            if enrichment:
-                await ensure_enrichment_task(session, fixture_id)
-            if injuries:
-                await ensure_injuries_task(session, LEAGUE_ID, SEASON)
+    async with factory() as session, session.begin():
+        await upsert_fixtures(session, [detail])
+        row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
+        if row is not None:
+            row.cov_events = True
+            row.cov_lineups = True
+            row.cov_statistics_fixtures = True
+            row.cov_statistics_players = True
+            row.cov_injuries = True
+        if enrichment:
+            await ensure_enrichment_task(session, fixture_id)
+        if injuries:
+            await ensure_injuries_task(session, LEAGUE_ID, SEASON)
 
 
 async def _set_coverage(
     factory: async_sessionmaker[AsyncSession],
     **flags: bool | None,
 ) -> None:
-    async with factory() as session:
-        async with session.begin():
-            row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
-            assert row is not None
-            for name, value in flags.items():
-                setattr(row, name, value)
+    async with factory() as session, session.begin():
+        row = await session.get(LeagueSeason, (LEAGUE_ID, SEASON))
+        assert row is not None
+        for name, value in flags.items():
+            setattr(row, name, value)
 
 
 @pytest.mark.asyncio
@@ -593,19 +590,18 @@ async def test_control_refresh_after_due_replaces_events() -> None:
                 .select_from(FixtureEvent)
                 .where(FixtureEvent.fixture_id == FT_ID)
             )
-        async with factory() as session:
-            async with session.begin():
-                task = await session.scalar(
-                    select(EtlTask)
-                    .where(EtlTask.endpoint == "/fixtures")
-                    .where(EtlTask.fixture_id == FT_ID)
-                )
-                assert task is not None
-                params = dict(task.params)
-                params["control_due"] = NOW.isoformat()
-                params["control_done"] = False
-                task.params = params
-                task.status = "complete"
+        async with factory() as session, session.begin():
+            task = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.endpoint == "/fixtures")
+                .where(EtlTask.fixture_id == FT_ID)
+            )
+            assert task is not None
+            params = dict(task.params)
+            params["control_due"] = NOW.isoformat()
+            params["control_done"] = False
+            task.params = params
+            task.status = "complete"
         assert first_events == 1
         extra["event_twice"] = True
         clock["t"] = later
@@ -642,15 +638,14 @@ async def test_events_replace_is_idempotent() -> None:
         await _seed_fixture(factory, FT_ID, status="FT")
         ingest = EnrichmentIngest(client, factory, now_fn=lambda: NOW, per_tick=6)
         await ingest.refresh_pending()
-        async with factory() as session:
-            async with session.begin():
-                task = await session.scalar(
-                    select(EtlTask)
-                    .where(EtlTask.endpoint == "/fixtures")
-                    .where(EtlTask.fixture_id == FT_ID)
-                )
-                assert task is not None
-                task.status = "pending"
+        async with factory() as session, session.begin():
+            task = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.endpoint == "/fixtures")
+                .where(EtlTask.fixture_id == FT_ID)
+            )
+            assert task is not None
+            task.status = "pending"
         await ingest.refresh_pending()
         async with factory() as session:
             events = await session.scalar(

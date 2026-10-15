@@ -131,29 +131,28 @@ class PrematchIngest:
             return
         parsed = _parse_mapping(items)
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    task = await session.get(EtlTask, task_id)
-                    if task is None:
-                        return
-                    extra = await replace_odds_mapping(session, parsed, now=self._now())
-                    for fixture_id in extra.get("fixture_ids", []):
-                        await ensure_odds_task(session, int(fixture_id))
-                    params = dict(task.params)
-                    params.update(
-                        {
-                            "count": extra.get("count", 0),
-                            "skipped": extra.get("skipped", 0),
-                        }
-                    )
-                    await complete_task(
-                        session,
-                        task,
-                        "complete",
-                        paging_current=current,
-                        paging_total=total,
-                        params=params,
-                    )
+            async with self._session_factory() as session, session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return
+                extra = await replace_odds_mapping(session, parsed, now=self._now())
+                for fixture_id in extra.get("fixture_ids", []):
+                    await ensure_odds_task(session, int(fixture_id))
+                params = dict(task.params)
+                params.update(
+                    {
+                        "count": extra.get("count", 0),
+                        "skipped": extra.get("skipped", 0),
+                    }
+                )
+                await complete_task(
+                    session,
+                    task,
+                    "complete",
+                    paging_current=current,
+                    paging_total=total,
+                    params=params,
+                )
         except Exception:
             log_json(
                 logging.ERROR,
@@ -195,28 +194,27 @@ class PrematchIngest:
             await self._retry_or_empty(task_id, {"h2h": h2h, "reason": "empty"})
             return True
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    task = await session.get(EtlTask, task_id)
-                    if task is None:
-                        return True
-                    extra = await upsert_fixtures(session, parsed)
-                    params = dict(task.params)
-                    params.update(
-                        {
-                            "h2h": h2h,
-                            "count": extra.get("count", 0),
-                            "skipped": extra.get("skipped", 0),
-                        }
-                    )
-                    await complete_task(
-                        session,
-                        task,
-                        "complete",
-                        paging_current=current,
-                        paging_total=total,
-                        params=params,
-                    )
+            async with self._session_factory() as session, session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return True
+                extra = await upsert_fixtures(session, parsed)
+                params = dict(task.params)
+                params.update(
+                    {
+                        "h2h": h2h,
+                        "count": extra.get("count", 0),
+                        "skipped": extra.get("skipped", 0),
+                    }
+                )
+                await complete_task(
+                    session,
+                    task,
+                    "complete",
+                    paging_current=current,
+                    paging_total=total,
+                    params=params,
+                )
         except Exception:
             log_json(
                 logging.ERROR,
@@ -299,30 +297,29 @@ class PrematchIngest:
             await self._fail(task_id, "retryable_error", "invalid_prediction")
             return True
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    task = await session.get(EtlTask, task_id)
-                    if task is None:
-                        return True
-                    extra = await persist_predictions(
-                        session, loaded.id, parsed, now=self._now()
-                    )
-                    params = dict(task.params)
-                    params.update(
-                        {
-                            "fixture": loaded.id,
-                            "h2h": extra.get("h2h", 0),
-                            "links": extra.get("links", 0),
-                        }
-                    )
-                    await complete_task(
-                        session,
-                        task,
-                        "complete",
-                        paging_current=current,
-                        paging_total=total,
-                        params=params,
-                    )
+            async with self._session_factory() as session, session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return True
+                extra = await persist_predictions(
+                    session, loaded.id, parsed, now=self._now()
+                )
+                params = dict(task.params)
+                params.update(
+                    {
+                        "fixture": loaded.id,
+                        "h2h": extra.get("h2h", 0),
+                        "links": extra.get("links", 0),
+                    }
+                )
+                await complete_task(
+                    session,
+                    task,
+                    "complete",
+                    paging_current=current,
+                    paging_total=total,
+                    params=params,
+                )
         except Exception as exc:
             log_json(
                 logging.ERROR,
@@ -398,28 +395,27 @@ class PrematchIngest:
             return True
         parsed = _parse_odds(items)
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    task = await session.get(EtlTask, task_id)
-                    if task is None:
-                        return True
-                    extra = await persist_prematch_odds(session, parsed)
-                    params = dict(task.params)
-                    params.update(
-                        {
-                            "fixture": loaded.id,
-                            "count": extra.get("count", 0),
-                            "skipped": extra.get("skipped", 0),
-                        }
-                    )
-                    await complete_task(
-                        session,
-                        task,
-                        "complete",
-                        paging_current=current,
-                        paging_total=total,
-                        params=params,
-                    )
+            async with self._session_factory() as session, session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return True
+                extra = await persist_prematch_odds(session, parsed)
+                params = dict(task.params)
+                params.update(
+                    {
+                        "fixture": loaded.id,
+                        "count": extra.get("count", 0),
+                        "skipped": extra.get("skipped", 0),
+                    }
+                )
+                await complete_task(
+                    session,
+                    task,
+                    "complete",
+                    paging_current=current,
+                    paging_total=total,
+                    params=params,
+                )
         except Exception as exc:
             log_json(
                 logging.ERROR,
@@ -432,36 +428,34 @@ class PrematchIngest:
         return True
 
     async def _mapping_task_id(self) -> int | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await get_or_create_endpoint_task(session, "/odds/mapping")
-                if not mapping_needs_refresh(task, self._now()):
-                    return None
-                return int(task.id)
+        async with self._session_factory() as session, session.begin():
+            task = await get_or_create_endpoint_task(session, "/odds/mapping")
+            if not mapping_needs_refresh(task, self._now()):
+                return None
+            return int(task.id)
 
     async def _claim_h2h(
         self, *, h2h_keys: Sequence[str] | None = None
     ) -> tuple[int, str] | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                if h2h_keys is None:
-                    task = await claim_h2h_task(session)
-                else:
-                    task = await claim_live_param_task(
-                        session,
-                        "/fixtures/headtohead",
-                        [{"h2h": key} for key in h2h_keys],
-                        now=self._now(),
-                    )
-                if task is None:
-                    return None
-                raw = task.params.get("h2h") if task.params else None
-                if not isinstance(raw, str) or not raw.strip():
-                    await complete_task(
-                        session, task, "permanent_error", error="bad_h2h_params"
-                    )
-                    return None
-                return int(task.id), raw.strip()
+        async with self._session_factory() as session, session.begin():
+            if h2h_keys is None:
+                task = await claim_h2h_task(session)
+            else:
+                task = await claim_live_param_task(
+                    session,
+                    "/fixtures/headtohead",
+                    [{"h2h": key} for key in h2h_keys],
+                    now=self._now(),
+                )
+            if task is None:
+                return None
+            raw = task.params.get("h2h") if task.params else None
+            if not isinstance(raw, str) or not raw.strip():
+                await complete_task(
+                    session, task, "permanent_error", error="bad_h2h_params"
+                )
+                return None
+            return int(task.id), raw.strip()
 
     async def _claim_predictions_id(
         self,
@@ -469,17 +463,16 @@ class PrematchIngest:
         urgent: bool = False,
         fixture_ids: Sequence[int] | None = None,
     ) -> int | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                if fixture_ids is not None:
-                    task = await claim_live_fixture_task(
-                        session, "/predictions", fixture_ids, now=self._now()
-                    )
-                elif urgent:
-                    task = await claim_urgent_predictions_task(session, now=self._now())
-                else:
-                    task = await claim_predictions_task(session)
-                return None if task is None else int(task.id)
+        async with self._session_factory() as session, session.begin():
+            if fixture_ids is not None:
+                task = await claim_live_fixture_task(
+                    session, "/predictions", fixture_ids, now=self._now()
+                )
+            elif urgent:
+                task = await claim_urgent_predictions_task(session, now=self._now())
+            else:
+                task = await claim_predictions_task(session)
+            return None if task is None else int(task.id)
 
     async def _claim_odds_id(
         self,
@@ -487,17 +480,16 @@ class PrematchIngest:
         urgent: bool = False,
         fixture_ids: Sequence[int] | None = None,
     ) -> int | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                if fixture_ids is not None:
-                    task = await claim_live_fixture_task(
-                        session, "/odds", fixture_ids, now=self._now()
-                    )
-                elif urgent:
-                    task = await claim_urgent_odds_task(session, now=self._now())
-                else:
-                    task = await claim_odds_task(session)
-                return None if task is None else int(task.id)
+        async with self._session_factory() as session, session.begin():
+            if fixture_ids is not None:
+                task = await claim_live_fixture_task(
+                    session, "/odds", fixture_ids, now=self._now()
+                )
+            elif urgent:
+                task = await claim_urgent_odds_task(session, now=self._now())
+            else:
+                task = await claim_odds_task(session)
+            return None if task is None else int(task.id)
 
     async def _retry_or_empty(
         self,

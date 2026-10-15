@@ -48,12 +48,10 @@ async def test_ensure_cursors_are_idempotent() -> None:
     engine = make_async_engine(settings)
     factory = make_session_factory(engine)
     try:
-        async with factory() as session:
-            async with session.begin():
-                await ensure_cursors(session)
-        async with factory() as session:
-            async with session.begin():
-                await ensure_cursors(session)
+        async with factory() as session, session.begin():
+            await ensure_cursors(session)
+        async with factory() as session, session.begin():
+            await ensure_cursors(session)
         async with factory() as session:
             kinds = set(
                 await session.scalars(
@@ -114,42 +112,40 @@ async def test_requeue_orphans_and_claim_skips_cursors() -> None:
     try:
         orphan_endpoint = f"/w2/orphan-{uuid.uuid4().hex[:8]}"
         claim_endpoint = f"/w2/claim-{uuid.uuid4().hex[:8]}"
-        async with factory() as session:
-            async with session.begin():
-                await ensure_cursors(session)
-                session.add(
-                    EtlTask(endpoint=orphan_endpoint, params={}, status="in_progress")
-                )
-                session.add(
-                    EtlTask(endpoint=claim_endpoint, params={}, status="pending")
-                )
-        async with factory() as session:
-            async with session.begin():
-                n = await requeue_orphans(session)
-                assert n >= 1
-                orphan = await session.scalar(
-                    select(EtlTask).where(EtlTask.endpoint == orphan_endpoint)
-                )
-                assert orphan is not None
-                assert orphan.status == "pending"
-                assert orphan.last_error == "orphaned_in_progress"
-                claimed_endpoints: list[str] = []
-                parked: list[EtlTask] = []
-                while True:
-                    claimed = await claim_next(session)
-                    if claimed is None:
-                        break
-                    claimed_endpoints.append(claimed.endpoint)
-                    assert claimed.cursor_kind is None
-                    if claimed.endpoint.startswith("/w2/"):
-                        await complete_task(session, claimed, "complete")
-                    else:
-                        parked.append(claimed)
-                for task in parked:
-                    task.status = "pending"
-                    task.started_at = None
-                assert claim_endpoint in claimed_endpoints
-                assert orphan_endpoint in claimed_endpoints
+        async with factory() as session, session.begin():
+            await ensure_cursors(session)
+            session.add(
+                EtlTask(endpoint=orphan_endpoint, params={}, status="in_progress")
+            )
+            session.add(
+                EtlTask(endpoint=claim_endpoint, params={}, status="pending")
+            )
+        async with factory() as session, session.begin():
+            n = await requeue_orphans(session)
+            assert n >= 1
+            orphan = await session.scalar(
+                select(EtlTask).where(EtlTask.endpoint == orphan_endpoint)
+            )
+            assert orphan is not None
+            assert orphan.status == "pending"
+            assert orphan.last_error == "orphaned_in_progress"
+            claimed_endpoints: list[str] = []
+            parked: list[EtlTask] = []
+            while True:
+                claimed = await claim_next(session)
+                if claimed is None:
+                    break
+                claimed_endpoints.append(claimed.endpoint)
+                assert claimed.cursor_kind is None
+                if claimed.endpoint.startswith("/w2/"):
+                    await complete_task(session, claimed, "complete")
+                else:
+                    parked.append(claimed)
+            for task in parked:
+                task.status = "pending"
+                task.started_at = None
+            assert claim_endpoint in claimed_endpoints
+            assert orphan_endpoint in claimed_endpoints
         async with factory() as session:
             orphan = await session.scalar(
                 select(EtlTask).where(EtlTask.endpoint == orphan_endpoint)
@@ -229,17 +225,16 @@ async def _purge_prematch_fixtures(session) -> None:
 
 
 async def _drop_marker(factory, marker: int) -> None:
-    async with factory() as session:
-        async with session.begin():
-            await session.execute(
-                delete(EtlTask).where(
-                    or_(
-                        EtlTask.fixture_id == marker,
-                        EtlTask.params.contains({"id": marker}),
-                    )
+    async with factory() as session, session.begin():
+        await session.execute(
+            delete(EtlTask).where(
+                or_(
+                    EtlTask.fixture_id == marker,
+                    EtlTask.params.contains({"id": marker}),
                 )
             )
-            await session.execute(delete(Fixture).where(Fixture.id == marker))
+        )
+        await session.execute(delete(Fixture).where(Fixture.id == marker))
 
 
 @pytest.mark.asyncio
@@ -251,42 +246,40 @@ async def test_count_matches_left_today_skips_finished() -> None:
     done_id = 92093
     kickoff = datetime(2026, 9, 24, 18, 0, tzinfo=UTC)
     try:
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask).where(EtlTask.fixture_id.in_((open_id, done_id)))
-                )
-                await session.execute(
-                    delete(Fixture).where(Fixture.id.in_((open_id, done_id)))
-                )
-                await upsert_fixtures(
-                    session,
-                    [
-                        FixtureItem.model_validate(
-                            _fixture_payload(open_id, kickoff=kickoff, status="NS")
-                        ),
-                        FixtureItem.model_validate(
-                            _fixture_payload(
-                                done_id,
-                                kickoff=kickoff,
-                                status="FT",
-                                home_id=35,
-                                away_id=36,
-                            )
-                        ),
-                    ],
-                )
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask).where(EtlTask.fixture_id.in_((open_id, done_id)))
+            )
+            await session.execute(
+                delete(Fixture).where(Fixture.id.in_((open_id, done_id)))
+            )
+            await upsert_fixtures(
+                session,
+                [
+                    FixtureItem.model_validate(
+                        _fixture_payload(open_id, kickoff=kickoff, status="NS")
+                    ),
+                    FixtureItem.model_validate(
+                        _fixture_payload(
+                            done_id,
+                            kickoff=kickoff,
+                            status="FT",
+                            home_id=35,
+                            away_id=36,
+                        )
+                    ),
+                ],
+            )
         left = await count_matches_left_today(factory, kickoff)
         assert left >= 1
     finally:
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask).where(EtlTask.fixture_id.in_((open_id, done_id)))
-                )
-                await session.execute(
-                    delete(Fixture).where(Fixture.id.in_((open_id, done_id)))
-                )
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask).where(EtlTask.fixture_id.in_((open_id, done_id)))
+            )
+            await session.execute(
+                delete(Fixture).where(Fixture.id.in_((open_id, done_id)))
+            )
         await engine.dispose()
 
 
@@ -301,55 +294,53 @@ async def test_forecast_day_load_skips_expired_windows_and_in_play() -> None:
     live_id = 92096
     try:
         before = await forecast_day_load(factory, now)
-        async with factory() as session:
-            async with session.begin():
-                await upsert_fixtures(
-                    session,
-                    [
-                        FixtureItem.model_validate(
-                            _fixture_payload(
-                                future_id,
-                                kickoff=now + timedelta(hours=1),
-                                status="NS",
-                                home_id=41,
-                                away_id=42,
-                            )
-                        ),
-                        FixtureItem.model_validate(
-                            _fixture_payload(
-                                expired_id,
-                                kickoff=now - timedelta(hours=3),
-                                status="NS",
-                                home_id=43,
-                                away_id=44,
-                            )
-                        ),
-                        FixtureItem.model_validate(
-                            _fixture_payload(
-                                live_id,
-                                kickoff=now - timedelta(minutes=30),
-                                status="1H",
-                                home_id=45,
-                                away_id=46,
-                            )
-                        ),
-                    ],
-                )
+        async with factory() as session, session.begin():
+            await upsert_fixtures(
+                session,
+                [
+                    FixtureItem.model_validate(
+                        _fixture_payload(
+                            future_id,
+                            kickoff=now + timedelta(hours=1),
+                            status="NS",
+                            home_id=41,
+                            away_id=42,
+                        )
+                    ),
+                    FixtureItem.model_validate(
+                        _fixture_payload(
+                            expired_id,
+                            kickoff=now - timedelta(hours=3),
+                            status="NS",
+                            home_id=43,
+                            away_id=44,
+                        )
+                    ),
+                    FixtureItem.model_validate(
+                        _fixture_payload(
+                            live_id,
+                            kickoff=now - timedelta(minutes=30),
+                            status="1H",
+                            home_id=45,
+                            away_id=46,
+                        )
+                    ),
+                ],
+            )
         after = await forecast_day_load(factory, now)
         assert after.matches == before.matches + 1
     finally:
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask).where(
-                        EtlTask.fixture_id.in_((future_id, expired_id, live_id))
-                    )
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask).where(
+                    EtlTask.fixture_id.in_((future_id, expired_id, live_id))
                 )
-                await session.execute(
-                    delete(Fixture).where(
-                        Fixture.id.in_((future_id, expired_id, live_id))
-                    )
+            )
+            await session.execute(
+                delete(Fixture).where(
+                    Fixture.id.in_((future_id, expired_id, live_id))
                 )
+            )
         await engine.dispose()
 
 
@@ -361,32 +352,31 @@ async def test_historical_followups_wait_for_week_old_pending() -> None:
     marker = 92090
     try:
         await _drop_marker(factory, marker)
-        async with factory() as session:
-            async with session.begin():
-                session.add(
-                    EtlTask(
-                        endpoint="/coachs",
-                        params={"id": marker},
-                        status="pending",
-                        created_at=NOW - timedelta(days=8),
-                    )
+        async with factory() as session, session.begin():
+            session.add(
+                EtlTask(
+                    endpoint="/coachs",
+                    params={"id": marker},
+                    status="pending",
+                    created_at=NOW - timedelta(days=8),
                 )
-                blocked = await historical_backlog_blocks(session, NOW)
-                await enqueue_fixture_followups(
-                    session,
-                    {
-                        "discovered": [
-                            {
-                                "id": marker,
-                                "home": 1,
-                                "away": 2,
-                                "league": 9,
-                                "season": 2026,
-                            }
-                        ]
-                    },
-                    historical=True,
-                )
+            )
+            blocked = await historical_backlog_blocks(session, NOW)
+            await enqueue_fixture_followups(
+                session,
+                {
+                    "discovered": [
+                        {
+                            "id": marker,
+                            "home": 1,
+                            "away": 2,
+                            "league": 9,
+                            "season": 2026,
+                        }
+                    ]
+                },
+                historical=True,
+            )
         assert blocked is True
         async with factory() as session:
             odds = await session.scalar(
@@ -408,24 +398,23 @@ async def test_live_followups_still_enqueue_when_backlog_is_old() -> None:
     marker = 92091
     try:
         await _drop_marker(factory, marker)
-        async with factory() as session:
-            async with session.begin():
-                item = FixtureItem.model_validate(
-                    _fixture_payload(marker, kickoff=NOW + timedelta(hours=1))
+        async with factory() as session, session.begin():
+            item = FixtureItem.model_validate(
+                _fixture_payload(marker, kickoff=NOW + timedelta(hours=1))
+            )
+            await upsert_fixtures(session, [item])
+            session.add(
+                EtlTask(
+                    endpoint="/coachs",
+                    params={"id": marker},
+                    status="pending",
+                    created_at=NOW - timedelta(days=8),
                 )
-                await upsert_fixtures(session, [item])
-                session.add(
-                    EtlTask(
-                        endpoint="/coachs",
-                        params={"id": marker},
-                        status="pending",
-                        created_at=NOW - timedelta(days=8),
-                    )
-                )
-                await enqueue_fixture_followups(
-                    session,
-                    {"fixture_ids": [marker]},
-                )
+            )
+            await enqueue_fixture_followups(
+                session,
+                {"fixture_ids": [marker]},
+            )
         async with factory() as session:
             odds = await session.scalar(
                 select(EtlTask.id)
@@ -444,14 +433,13 @@ async def test_enqueue_followups_creates_odds_and_predictions() -> None:
     engine = make_async_engine(settings)
     factory = make_session_factory(engine)
     try:
-        async with factory() as session:
-            async with session.begin():
-                await _purge_prematch_fixtures(session)
-                item = FixtureItem.model_validate(
-                    _fixture_payload(FID_SOON, kickoff=NOW + timedelta(hours=2))
-                )
-                extra = await upsert_fixtures(session, [item])
-                await enqueue_fixture_followups(session, extra)
+        async with factory() as session, session.begin():
+            await _purge_prematch_fixtures(session)
+            item = FixtureItem.model_validate(
+                _fixture_payload(FID_SOON, kickoff=NOW + timedelta(hours=2))
+            )
+            extra = await upsert_fixtures(session, [item])
+            await enqueue_fixture_followups(session, extra)
         async with factory() as session:
             endpoints = set(
                 await session.scalars(
@@ -470,14 +458,13 @@ async def test_ensure_prematch_creates_odds_task() -> None:
     engine = make_async_engine(settings)
     factory = make_session_factory(engine)
     try:
-        async with factory() as session:
-            async with session.begin():
-                await _purge_prematch_fixtures(session)
-                item = FixtureItem.model_validate(
-                    _fixture_payload(FID_LATER, kickoff=NOW + timedelta(hours=3))
-                )
-                await upsert_fixtures(session, [item])
-                await ensure_prematch_for_fixture_ids(session, [FID_LATER])
+        async with factory() as session, session.begin():
+            await _purge_prematch_fixtures(session)
+            item = FixtureItem.model_validate(
+                _fixture_payload(FID_LATER, kickoff=NOW + timedelta(hours=3))
+            )
+            await upsert_fixtures(session, [item])
+            await ensure_prematch_for_fixture_ids(session, [FID_LATER])
         async with factory() as session:
             odds = await session.scalar(
                 select(EtlTask).where(
@@ -503,74 +490,73 @@ async def test_claim_odds_prefers_sooner_kickoff() -> None:
     engine = make_async_engine(settings)
     factory = make_session_factory(engine)
     try:
-        async with factory() as session:
-            async with session.begin():
-                await _purge_prematch_fixtures(session)
-                soon = FixtureItem.model_validate(
-                    _fixture_payload(
-                        FID_SOON,
-                        kickoff=NOW + timedelta(hours=1),
-                        home_id=101,
-                        away_id=102,
+        async with factory() as session, session.begin():
+            await _purge_prematch_fixtures(session)
+            soon = FixtureItem.model_validate(
+                _fixture_payload(
+                    FID_SOON,
+                    kickoff=NOW + timedelta(hours=1),
+                    home_id=101,
+                    away_id=102,
+                )
+            )
+            later = FixtureItem.model_validate(
+                _fixture_payload(
+                    FID_LATER,
+                    kickoff=NOW + timedelta(hours=5),
+                    home_id=103,
+                    away_id=104,
+                )
+            )
+            await upsert_fixtures(session, [soon, later])
+            # Later kickoff gets lower task id (inserted first).
+            session.add(
+                EtlTask(
+                    endpoint="/odds",
+                    fixture_id=FID_LATER,
+                    params={"fixture": FID_LATER},
+                    status="pending",
+                )
+            )
+            await session.flush()
+            session.add(
+                EtlTask(
+                    endpoint="/odds",
+                    fixture_id=FID_SOON,
+                    params={"fixture": FID_SOON},
+                    status="pending",
+                )
+            )
+            foreign = (
+                await session.scalars(
+                    select(EtlTask).where(
+                        EtlTask.endpoint == "/odds",
+                        EtlTask.status.in_(("pending", "retryable_error")),
+                        or_(
+                            EtlTask.fixture_id.is_(None),
+                            ~EtlTask.fixture_id.in_((FID_SOON, FID_LATER)),
+                        ),
                     )
                 )
-                later = FixtureItem.model_validate(
-                    _fixture_payload(
-                        FID_LATER,
-                        kickoff=NOW + timedelta(hours=5),
-                        home_id=103,
-                        away_id=104,
-                    )
-                )
-                await upsert_fixtures(session, [soon, later])
-                # Later kickoff gets lower task id (inserted first).
-                session.add(
-                    EtlTask(
-                        endpoint="/odds",
-                        fixture_id=FID_LATER,
-                        params={"fixture": FID_LATER},
-                        status="pending",
-                    )
-                )
-                await session.flush()
-                session.add(
-                    EtlTask(
-                        endpoint="/odds",
-                        fixture_id=FID_SOON,
-                        params={"fixture": FID_SOON},
-                        status="pending",
-                    )
-                )
-                foreign = (
+            ).all()
+            parked = [int(task.id) for task in foreign]
+            for task in foreign:
+                task.status = "in_progress"
+                task.last_error = "test_park"
+            claimed = await claim_odds_task(session)
+            assert claimed is not None
+            assert claimed.fixture_id == FID_SOON
+            await complete_task(session, claimed, "complete")
+            if parked:
+                for task in (
                     await session.scalars(
-                        select(EtlTask).where(
-                            EtlTask.endpoint == "/odds",
-                            EtlTask.status.in_(("pending", "retryable_error")),
-                            or_(
-                                EtlTask.fixture_id.is_(None),
-                                ~EtlTask.fixture_id.in_((FID_SOON, FID_LATER)),
-                            ),
-                        )
+                        select(EtlTask).where(EtlTask.id.in_(parked))
                     )
-                ).all()
-                parked = [int(task.id) for task in foreign]
-                for task in foreign:
-                    task.status = "in_progress"
-                    task.last_error = "test_park"
-                claimed = await claim_odds_task(session)
-                assert claimed is not None
-                assert claimed.fixture_id == FID_SOON
-                await complete_task(session, claimed, "complete")
-                if parked:
-                    for task in (
-                        await session.scalars(
-                            select(EtlTask).where(EtlTask.id.in_(parked))
-                        )
-                    ).all():
-                        if task.last_error == "test_park":
-                            task.status = "pending"
-                            task.last_error = None
-                            task.started_at = None
+                ).all():
+                    if task.last_error == "test_park":
+                        task.status = "pending"
+                        task.last_error = None
+                        task.started_at = None
     finally:
         await engine.dispose()
 
@@ -583,96 +569,93 @@ async def test_claim_urgent_skips_far_and_finished() -> None:
     ids = (FID_SOON, FID_FAR, FID_FT)
     parked: list[int] = []
     try:
-        async with factory() as session:
-            async with session.begin():
-                await _purge_prematch_fixtures(session)
-                near = FixtureItem.model_validate(
-                    _fixture_payload(
-                        FID_SOON,
-                        kickoff=NOW + timedelta(hours=2),
-                        home_id=201,
-                        away_id=202,
+        async with factory() as session, session.begin():
+            await _purge_prematch_fixtures(session)
+            near = FixtureItem.model_validate(
+                _fixture_payload(
+                    FID_SOON,
+                    kickoff=NOW + timedelta(hours=2),
+                    home_id=201,
+                    away_id=202,
+                )
+            )
+            far = FixtureItem.model_validate(
+                _fixture_payload(
+                    FID_FAR,
+                    kickoff=NOW
+                    + timedelta(hours=URGENT_PREMATCH_HORIZON_HOURS + 2),
+                    home_id=203,
+                    away_id=204,
+                )
+            )
+            finished = FixtureItem.model_validate(
+                _fixture_payload(
+                    FID_FT,
+                    kickoff=NOW + timedelta(hours=1),
+                    status="FT",
+                    home_id=205,
+                    away_id=206,
+                )
+            )
+            await upsert_fixtures(session, [near, far, finished])
+            for fid in (FID_FAR, FID_FT, FID_SOON):
+                session.add(
+                    EtlTask(
+                        endpoint="/odds",
+                        fixture_id=fid,
+                        params={"fixture": fid},
+                        status="pending",
                     )
                 )
-                far = FixtureItem.model_validate(
-                    _fixture_payload(
-                        FID_FAR,
-                        kickoff=NOW
-                        + timedelta(hours=URGENT_PREMATCH_HORIZON_HOURS + 2),
-                        home_id=203,
-                        away_id=204,
+                session.add(
+                    EtlTask(
+                        endpoint="/predictions",
+                        fixture_id=fid,
+                        params={"fixture": fid},
+                        status="pending",
                     )
                 )
-                finished = FixtureItem.model_validate(
-                    _fixture_payload(
-                        FID_FT,
-                        kickoff=NOW + timedelta(hours=1),
-                        status="FT",
-                        home_id=205,
-                        away_id=206,
+            # Isolate from other pending odds/predictions in the shared DB.
+            foreign = (
+                await session.scalars(
+                    select(EtlTask).where(
+                        EtlTask.endpoint.in_(("/odds", "/predictions")),
+                        EtlTask.status.in_(("pending", "retryable_error")),
+                        or_(
+                            EtlTask.fixture_id.is_(None),
+                            ~EtlTask.fixture_id.in_(ids),
+                        ),
                     )
                 )
-                await upsert_fixtures(session, [near, far, finished])
-                for fid in (FID_FAR, FID_FT, FID_SOON):
-                    session.add(
-                        EtlTask(
-                            endpoint="/odds",
-                            fixture_id=fid,
-                            params={"fixture": fid},
-                            status="pending",
-                        )
-                    )
-                    session.add(
-                        EtlTask(
-                            endpoint="/predictions",
-                            fixture_id=fid,
-                            params={"fixture": fid},
-                            status="pending",
-                        )
-                    )
-                # Isolate from other pending odds/predictions in the shared DB.
-                foreign = (
-                    await session.scalars(
-                        select(EtlTask).where(
-                            EtlTask.endpoint.in_(("/odds", "/predictions")),
-                            EtlTask.status.in_(("pending", "retryable_error")),
-                            or_(
-                                EtlTask.fixture_id.is_(None),
-                                ~EtlTask.fixture_id.in_(ids),
-                            ),
-                        )
-                    )
-                ).all()
-                for task in foreign:
-                    parked.append(int(task.id))
-                    task.status = "in_progress"
-                    task.last_error = "test_park"
-        async with factory() as session:
-            async with session.begin():
-                odds = await claim_urgent_odds_task(session, now=NOW)
-                assert odds is not None
-                assert odds.fixture_id == FID_SOON
-                await complete_task(session, odds, "complete")
-                pred = await claim_urgent_predictions_task(session, now=NOW)
-                assert pred is not None
-                assert pred.fixture_id == FID_SOON
-                await complete_task(session, pred, "complete")
-                assert await claim_urgent_odds_task(session, now=NOW) is None
-                assert await claim_urgent_predictions_task(session, now=NOW) is None
+            ).all()
+            for task in foreign:
+                parked.append(int(task.id))
+                task.status = "in_progress"
+                task.last_error = "test_park"
+        async with factory() as session, session.begin():
+            odds = await claim_urgent_odds_task(session, now=NOW)
+            assert odds is not None
+            assert odds.fixture_id == FID_SOON
+            await complete_task(session, odds, "complete")
+            pred = await claim_urgent_predictions_task(session, now=NOW)
+            assert pred is not None
+            assert pred.fixture_id == FID_SOON
+            await complete_task(session, pred, "complete")
+            assert await claim_urgent_odds_task(session, now=NOW) is None
+            assert await claim_urgent_predictions_task(session, now=NOW) is None
     finally:
-        async with factory() as session:
-            async with session.begin():
-                if parked:
-                    for task in (
-                        await session.scalars(
-                            select(EtlTask).where(EtlTask.id.in_(parked))
-                        )
-                    ).all():
-                        if task.last_error == "test_park":
-                            task.status = "pending"
-                            task.last_error = None
-                            task.started_at = None
-                await _purge_prematch_fixtures(session)
+        async with factory() as session, session.begin():
+            if parked:
+                for task in (
+                    await session.scalars(
+                        select(EtlTask).where(EtlTask.id.in_(parked))
+                    )
+                ).all():
+                    if task.last_error == "test_park":
+                        task.status = "pending"
+                        task.last_error = None
+                        task.started_at = None
+            await _purge_prematch_fixtures(session)
         await engine.dispose()
 
 
@@ -719,90 +702,86 @@ async def test_live_claim_ignores_backlog_and_in_play() -> None:
     engine = make_async_engine(settings)
     factory = make_session_factory(engine)
     try:
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask).where(EtlTask.fixture_id.in_((FID_LIVE, FID_OTHER)))
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask).where(EtlTask.fixture_id.in_((FID_LIVE, FID_OTHER)))
+            )
+            await session.execute(
+                delete(Fixture).where(Fixture.id.in_((FID_LIVE, FID_OTHER)))
+            )
+            live = FixtureItem.model_validate(
+                _fixture_payload(
+                    FID_LIVE,
+                    kickoff=NOW,
+                    status="1H",
+                    home_id=301,
+                    away_id=302,
                 )
-                await session.execute(
-                    delete(Fixture).where(Fixture.id.in_((FID_LIVE, FID_OTHER)))
+            )
+            other = FixtureItem.model_validate(
+                _fixture_payload(
+                    FID_OTHER,
+                    kickoff=NOW - timedelta(hours=3),
+                    status="FT",
+                    home_id=303,
+                    away_id=304,
                 )
-                live = FixtureItem.model_validate(
-                    _fixture_payload(
-                        FID_LIVE,
-                        kickoff=NOW,
-                        status="1H",
-                        home_id=301,
-                        away_id=302,
-                    )
+            )
+            await upsert_fixtures(session, [other, live])
+            session.add(
+                EtlTask(
+                    endpoint="/odds",
+                    fixture_id=FID_OTHER,
+                    params={"fixture": FID_OTHER},
+                    status="pending",
                 )
-                other = FixtureItem.model_validate(
-                    _fixture_payload(
-                        FID_OTHER,
-                        kickoff=NOW - timedelta(hours=3),
-                        status="FT",
-                        home_id=303,
-                        away_id=304,
-                    )
+            )
+            await session.flush()
+            session.add(
+                EtlTask(
+                    endpoint="/odds",
+                    fixture_id=FID_LIVE,
+                    params={"fixture": FID_LIVE},
+                    status="pending",
                 )
-                await upsert_fixtures(session, [other, live])
-                session.add(
-                    EtlTask(
-                        endpoint="/odds",
-                        fixture_id=FID_OTHER,
-                        params={"fixture": FID_OTHER},
-                        status="pending",
-                    )
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/fixtures",
+                    fixture_id=FID_LIVE,
+                    params={"id": FID_LIVE},
+                    status="pending",
                 )
-                await session.flush()
-                session.add(
-                    EtlTask(
-                        endpoint="/odds",
-                        fixture_id=FID_LIVE,
-                        params={"fixture": FID_LIVE},
-                        status="pending",
-                    )
-                )
-                session.add(
-                    EtlTask(
-                        endpoint="/fixtures",
-                        fixture_id=FID_LIVE,
-                        params={"id": FID_LIVE},
-                        status="pending",
-                    )
-                )
-        async with factory() as session:
-            async with session.begin():
-                claimed = await claim_live_fixture_task(
-                    session, "/odds", [FID_LIVE], now=NOW
-                )
-                assert claimed is not None
-                assert claimed.fixture_id == FID_LIVE
-                await complete_task(session, claimed, "complete")
-                detail = await claim_live_fixture_task(
-                    session, "/fixtures", [FID_LIVE], now=NOW
-                )
-                assert detail is not None
-                assert detail.fixture_id == FID_LIVE
-                await complete_task(session, detail, "complete")
-        async with factory() as session:
-            async with session.begin():
-                await reopen_live_detail_task(session, FID_LIVE)
-                again = await claim_live_fixture_task(
-                    session, "/fixtures", [FID_LIVE], now=NOW
-                )
-                assert again is not None
-                assert again.status == "in_progress"
-                await complete_task(session, again, "complete")
+            )
+        async with factory() as session, session.begin():
+            claimed = await claim_live_fixture_task(
+                session, "/odds", [FID_LIVE], now=NOW
+            )
+            assert claimed is not None
+            assert claimed.fixture_id == FID_LIVE
+            await complete_task(session, claimed, "complete")
+            detail = await claim_live_fixture_task(
+                session, "/fixtures", [FID_LIVE], now=NOW
+            )
+            assert detail is not None
+            assert detail.fixture_id == FID_LIVE
+            await complete_task(session, detail, "complete")
+        async with factory() as session, session.begin():
+            await reopen_live_detail_task(session, FID_LIVE)
+            again = await claim_live_fixture_task(
+                session, "/fixtures", [FID_LIVE], now=NOW
+            )
+            assert again is not None
+            assert again.status == "in_progress"
+            await complete_task(session, again, "complete")
     finally:
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask).where(EtlTask.fixture_id.in_((FID_LIVE, FID_OTHER)))
-                )
-                await session.execute(
-                    delete(Fixture).where(Fixture.id.in_((FID_LIVE, FID_OTHER)))
-                )
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask).where(EtlTask.fixture_id.in_((FID_LIVE, FID_OTHER)))
+            )
+            await session.execute(
+                delete(Fixture).where(Fixture.id.in_((FID_LIVE, FID_OTHER)))
+            )
         await engine.dispose()
 
 
@@ -812,92 +791,87 @@ async def test_live_claim_respects_backoff_and_finishing() -> None:
     engine = make_async_engine(settings)
     factory = make_session_factory(engine)
     try:
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask).where(EtlTask.fixture_id.in_((FID_LIVE,)))
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask).where(EtlTask.fixture_id.in_((FID_LIVE,)))
+            )
+            await session.execute(delete(Fixture).where(Fixture.id == FID_LIVE))
+            item = FixtureItem.model_validate(
+                _fixture_payload(
+                    FID_LIVE,
+                    kickoff=NOW,
+                    status="FT",
+                    home_id=311,
+                    away_id=312,
                 )
-                await session.execute(delete(Fixture).where(Fixture.id == FID_LIVE))
-                item = FixtureItem.model_validate(
-                    _fixture_payload(
-                        FID_LIVE,
-                        kickoff=NOW,
-                        status="FT",
-                        home_id=311,
-                        away_id=312,
-                    )
+            )
+            await upsert_fixtures(session, [item])
+            session.add(
+                EtlTask(
+                    endpoint="/odds",
+                    fixture_id=FID_LIVE,
+                    params={
+                        "fixture": FID_LIVE,
+                        "next_attempt_at": (
+                            NOW + timedelta(minutes=10)
+                        ).isoformat(),
+                    },
+                    status="retryable_error",
                 )
-                await upsert_fixtures(session, [item])
-                session.add(
-                    EtlTask(
-                        endpoint="/odds",
-                        fixture_id=FID_LIVE,
-                        params={
-                            "fixture": FID_LIVE,
-                            "next_attempt_at": (
-                                NOW + timedelta(minutes=10)
-                            ).isoformat(),
-                        },
-                        status="retryable_error",
-                    )
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/fixtures/headtohead",
+                    params={"h2h": "311-312"},
+                    status="pending",
                 )
-                session.add(
-                    EtlTask(
-                        endpoint="/fixtures/headtohead",
-                        params={"h2h": "311-312"},
-                        status="pending",
-                    )
+            )
+        async with factory() as session, session.begin():
+            assert (
+                await claim_live_fixture_task(session, "/odds", [FID_LIVE], now=NOW)
+                is None
+            )
+            still = await unfinished_context_fixture_ids(session, [FID_LIVE])
+            assert still == [FID_LIVE]
+        async with factory() as session, session.begin():
+            task = await session.scalar(
+                select(EtlTask).where(
+                    EtlTask.endpoint == "/odds",
+                    EtlTask.fixture_id == FID_LIVE,
                 )
-        async with factory() as session:
-            async with session.begin():
-                assert (
-                    await claim_live_fixture_task(session, "/odds", [FID_LIVE], now=NOW)
-                    is None
+            )
+            assert task is not None
+            task.params = {
+                "fixture": FID_LIVE,
+                "next_attempt_at": (NOW - timedelta(minutes=1)).isoformat(),
+            }
+        async with factory() as session, session.begin():
+            claimed = await claim_live_fixture_task(
+                session, "/odds", [FID_LIVE], now=NOW
+            )
+            assert claimed is not None
+            assert claimed.fixture_id == FID_LIVE
+            await complete_task(session, claimed, "complete")
+            h2h = await session.scalar(
+                select(EtlTask).where(
+                    EtlTask.endpoint == "/fixtures/headtohead",
+                    EtlTask.params.contains({"h2h": "311-312"}),
                 )
-                still = await unfinished_context_fixture_ids(session, [FID_LIVE])
-                assert still == [FID_LIVE]
-        async with factory() as session:
-            async with session.begin():
-                task = await session.scalar(
-                    select(EtlTask).where(
-                        EtlTask.endpoint == "/odds",
+            )
+            assert h2h is not None
+            await complete_task(session, h2h, "complete")
+            assert await unfinished_context_fixture_ids(session, [FID_LIVE]) == []
+    finally:
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask).where(
+                    or_(
                         EtlTask.fixture_id == FID_LIVE,
-                    )
-                )
-                assert task is not None
-                task.params = {
-                    "fixture": FID_LIVE,
-                    "next_attempt_at": (NOW - timedelta(minutes=1)).isoformat(),
-                }
-        async with factory() as session:
-            async with session.begin():
-                claimed = await claim_live_fixture_task(
-                    session, "/odds", [FID_LIVE], now=NOW
-                )
-                assert claimed is not None
-                assert claimed.fixture_id == FID_LIVE
-                await complete_task(session, claimed, "complete")
-                h2h = await session.scalar(
-                    select(EtlTask).where(
-                        EtlTask.endpoint == "/fixtures/headtohead",
                         EtlTask.params.contains({"h2h": "311-312"}),
                     )
                 )
-                assert h2h is not None
-                await complete_task(session, h2h, "complete")
-                assert await unfinished_context_fixture_ids(session, [FID_LIVE]) == []
-    finally:
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask).where(
-                        or_(
-                            EtlTask.fixture_id == FID_LIVE,
-                            EtlTask.params.contains({"h2h": "311-312"}),
-                        )
-                    )
-                )
-                await session.execute(delete(Fixture).where(Fixture.id == FID_LIVE))
+            )
+            await session.execute(delete(Fixture).where(Fixture.id == FID_LIVE))
         await engine.dispose()
 
 
@@ -909,69 +883,66 @@ async def test_live_claim_follows_fixture_list_order() -> None:
     first = 93031
     second = 93032
     try:
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask).where(EtlTask.fixture_id.in_((first, second)))
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask).where(EtlTask.fixture_id.in_((first, second)))
+            )
+            await session.execute(
+                delete(Fixture).where(Fixture.id.in_((first, second)))
+            )
+            await upsert_fixtures(
+                session,
+                [
+                    FixtureItem.model_validate(
+                        _fixture_payload(
+                            first,
+                            kickoff=NOW,
+                            status="1H",
+                            home_id=321,
+                            away_id=322,
+                        )
+                    ),
+                    FixtureItem.model_validate(
+                        _fixture_payload(
+                            second,
+                            kickoff=NOW,
+                            status="HT",
+                            home_id=323,
+                            away_id=324,
+                        )
+                    ),
+                ],
+            )
+            session.add(
+                EtlTask(
+                    endpoint="/odds",
+                    fixture_id=first,
+                    params={"fixture": first},
+                    status="pending",
                 )
-                await session.execute(
-                    delete(Fixture).where(Fixture.id.in_((first, second)))
+            )
+            await session.flush()
+            session.add(
+                EtlTask(
+                    endpoint="/odds",
+                    fixture_id=second,
+                    params={"fixture": second},
+                    status="pending",
                 )
-                await upsert_fixtures(
-                    session,
-                    [
-                        FixtureItem.model_validate(
-                            _fixture_payload(
-                                first,
-                                kickoff=NOW,
-                                status="1H",
-                                home_id=321,
-                                away_id=322,
-                            )
-                        ),
-                        FixtureItem.model_validate(
-                            _fixture_payload(
-                                second,
-                                kickoff=NOW,
-                                status="HT",
-                                home_id=323,
-                                away_id=324,
-                            )
-                        ),
-                    ],
-                )
-                session.add(
-                    EtlTask(
-                        endpoint="/odds",
-                        fixture_id=first,
-                        params={"fixture": first},
-                        status="pending",
-                    )
-                )
-                await session.flush()
-                session.add(
-                    EtlTask(
-                        endpoint="/odds",
-                        fixture_id=second,
-                        params={"fixture": second},
-                        status="pending",
-                    )
-                )
-        async with factory() as session:
-            async with session.begin():
-                claimed = await claim_live_fixture_task(
-                    session, "/odds", [second, first], now=NOW
-                )
-                assert claimed is not None
-                assert claimed.fixture_id == second
-                await complete_task(session, claimed, "complete")
+            )
+        async with factory() as session, session.begin():
+            claimed = await claim_live_fixture_task(
+                session, "/odds", [second, first], now=NOW
+            )
+            assert claimed is not None
+            assert claimed.fixture_id == second
+            await complete_task(session, claimed, "complete")
     finally:
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(EtlTask).where(EtlTask.fixture_id.in_((first, second)))
-                )
-                await session.execute(
-                    delete(Fixture).where(Fixture.id.in_((first, second)))
-                )
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask).where(EtlTask.fixture_id.in_((first, second)))
+            )
+            await session.execute(
+                delete(Fixture).where(Fixture.id.in_((first, second)))
+            )
         await engine.dispose()

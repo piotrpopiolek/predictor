@@ -123,14 +123,12 @@ class GlobalIngest:
                 return
 
     async def _requeue_stale(self) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                await requeue_stale_global(session, self._now())
+        async with self._session_factory() as session, session.begin():
+            await requeue_stale_global(session, self._now())
 
     async def _skip_lookups(self) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                await skip_reconstructable_lookups(session)
+        async with self._session_factory() as session, session.begin():
+            await skip_reconstructable_lookups(session)
 
     async def ingest_one_scoped(
         self, needles: Sequence[tuple[str, dict[str, Any]]]
@@ -211,22 +209,21 @@ class GlobalIngest:
                 )
             return True
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    task = await session.get(EtlTask, task_id)
-                    if task is None:
-                        return True
-                    extra = await self._persist(session, endpoint, params, items)
-                    merged = dict(task.params)
-                    merged.update(extra)
-                    await complete_task(
-                        session,
-                        task,
-                        "complete",
-                        params=merged,
-                        paging_current=current,
-                        paging_total=total,
-                    )
+            async with self._session_factory() as session, session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return True
+                extra = await self._persist(session, endpoint, params, items)
+                merged = dict(task.params)
+                merged.update(extra)
+                await complete_task(
+                    session,
+                    task,
+                    "complete",
+                    params=merged,
+                    paging_current=current,
+                    paging_total=total,
+                )
         except Exception as exc:
             log_json(
                 logging.ERROR,
@@ -337,18 +334,16 @@ class GlobalIngest:
         return {"count": 0}
 
     async def _claim_id(self) -> int | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await claim_global_task(session)
-                return None if task is None else int(task.id)
+        async with self._session_factory() as session, session.begin():
+            task = await claim_global_task(session)
+            return None if task is None else int(task.id)
 
     async def _claim_scoped_id(
         self, needles: Sequence[tuple[str, dict[str, Any]]]
     ) -> int | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await claim_live_global_task(session, needles, now=self._now())
-                return None if task is None else int(task.id)
+        async with self._session_factory() as session, session.begin():
+            task = await claim_live_global_task(session, needles, now=self._now())
+            return None if task is None else int(task.id)
 
     async def _retry_or_empty(
         self,

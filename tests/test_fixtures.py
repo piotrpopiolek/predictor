@@ -206,42 +206,41 @@ def _client(settings: Settings, transport: httpx.BaseTransport) -> FootballClien
 
 
 async def _reset_w4_state(factory: async_sessionmaker[AsyncSession]) -> None:
-    async with factory() as session:
-        async with session.begin():
-            await session.execute(
-                delete(EtlTask)
-                .where(
-                    EtlTask.endpoint.in_(
-                        (
-                            "/fixtures",
-                            "/fixtures/rounds",
-                            "/fixtures/statistics",
-                            "/fixtures/headtohead",
-                            "/injuries",
-                            "/predictions",
-                            "/odds",
-                            "/odds/mapping",
-                            *GLOBAL_ENDPOINT_ORDER,
-                            *LOOKUP_WITHOUT_HTTP,
-                            DAILY_REPORT_ENDPOINT,
-                        )
+    async with factory() as session, session.begin():
+        await session.execute(
+            delete(EtlTask)
+            .where(
+                EtlTask.endpoint.in_(
+                    (
+                        "/fixtures",
+                        "/fixtures/rounds",
+                        "/fixtures/statistics",
+                        "/fixtures/headtohead",
+                        "/injuries",
+                        "/predictions",
+                        "/odds",
+                        "/odds/mapping",
+                        *GLOBAL_ENDPOINT_ORDER,
+                        *LOOKUP_WITHOUT_HTTP,
+                        DAILY_REPORT_ENDPOINT,
                     )
                 )
-                .where(EtlTask.cursor_kind.is_(None))
             )
-            await session.execute(delete(Injury))
-            await session.execute(delete(PredictionH2H))
-            await session.execute(delete(Prediction))
-            await session.execute(delete(FixtureOdds))
-            await session.execute(delete(OddsFixtureMapping))
-            await session.execute(delete(Fixture))
-            await session.execute(delete(LeagueRound))
-            await ensure_cursors(session)
-            cursor = await get_cursor_task(session, "backfill")
-            cursor.params = {}
-            cursor.day_utc = None
-            cursor.status = "pending"
-            cursor.completed_at = None
+            .where(EtlTask.cursor_kind.is_(None))
+        )
+        await session.execute(delete(Injury))
+        await session.execute(delete(PredictionH2H))
+        await session.execute(delete(Prediction))
+        await session.execute(delete(FixtureOdds))
+        await session.execute(delete(OddsFixtureMapping))
+        await session.execute(delete(Fixture))
+        await session.execute(delete(LeagueRound))
+        await ensure_cursors(session)
+        cursor = await get_cursor_task(session, "backfill")
+        cursor.params = {}
+        cursor.day_utc = None
+        cursor.status = "pending"
+        cursor.completed_at = None
 
 
 async def _close_match_contract(
@@ -251,27 +250,26 @@ async def _close_match_contract(
     away_id: int,
 ) -> None:
     pair = h2h_param(home_id, away_id)
-    async with factory() as session:
-        async with session.begin():
-            tasks = await session.scalars(
-                select(EtlTask)
-                .where(EtlTask.endpoint.in_(tuple(DAY_CONTRACT_ENDPOINTS)))
-                .where(EtlTask.cursor_kind.is_(None))
-            )
-            for task in tasks:
-                if task.status not in OPEN_ETL_STATUSES:
-                    continue
-                if task.endpoint == "/fixtures" and task.fixture_id is None:
-                    continue
-                if task.fixture_id == fixture_id or (
-                    task.endpoint == "/fixtures/headtohead"
-                    and task.params.get("h2h") == pair
-                ):
-                    await complete_task(session, task, "coverage_empty")
+    async with factory() as session, session.begin():
+        tasks = await session.scalars(
+            select(EtlTask)
+            .where(EtlTask.endpoint.in_(tuple(DAY_CONTRACT_ENDPOINTS)))
+            .where(EtlTask.cursor_kind.is_(None))
+        )
+        for task in tasks:
+            if task.status not in OPEN_ETL_STATUSES:
+                continue
+            if task.endpoint == "/fixtures" and task.fixture_id is None:
+                continue
+            if task.fixture_id == fixture_id or (
+                task.endpoint == "/fixtures/headtohead"
+                and task.params.get("h2h") == pair
+            ):
+                await complete_task(session, task, "coverage_empty")
 
 
 def test_irregular_statuses_match_fr014() -> None:
-    assert IRREGULAR_FIXTURE_STATUSES == {"PST", "CANC", "ABD", "AWD", "WO"}
+    assert {"PST", "CANC", "ABD", "AWD", "WO"} == IRREGULAR_FIXTURE_STATUSES
 
 
 @pytest.mark.asyncio

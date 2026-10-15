@@ -45,13 +45,11 @@ async def day_fixtures_fetched(session: AsyncSession, day: date) -> bool:
     task = await day_fixtures_task(session, day)
     if task is None or task.status != "complete":
         return False
-    if (
+    return not (
         task.paging_total is not None
         and task.paging_current is not None
         and task.paging_current < task.paging_total
-    ):
-        return False
-    return True
+    )
 
 
 async def fixtures_on_utc_day(session: AsyncSession, day: date) -> list[Fixture]:

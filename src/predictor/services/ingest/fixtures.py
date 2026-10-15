@@ -16,7 +16,6 @@ from predictor.client.errors import (
     FootballHttpError,
     QuotaExhaustedError,
     RetryableHttpError,
-    SpendWindowClosed,
 )
 from predictor.client.football import FootballClient
 from predictor.constants import (
@@ -154,9 +153,8 @@ class FixtureIngest:
             await self._advance_backfill(day)
 
     async def _day_complete(self, day: date) -> bool:
-        async with self._session_factory() as session:
-            async with session.begin():
-                return await day_is_complete(session, day)
+        async with self._session_factory() as session, session.begin():
+            return await day_is_complete(session, day)
 
     async def ingest_one_scoped_rounds(self, pairs: Sequence[tuple[int, int]]) -> bool:
         if not pairs or not self._quota_left():
@@ -170,33 +168,32 @@ class FixtureIngest:
     async def _claim_scoped_rounds(
         self, pairs: Sequence[tuple[int, int]]
     ) -> tuple[int | None, int | None, int | None]:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await claim_live_param_task(
-                    session,
-                    "/fixtures/rounds",
-                    [
-                        {"league": league_id, "season": season}
-                        for league_id, season in pairs
-                    ],
-                    now=self._now(),
+        async with self._session_factory() as session, session.begin():
+            task = await claim_live_param_task(
+                session,
+                "/fixtures/rounds",
+                [
+                    {"league": league_id, "season": season}
+                    for league_id, season in pairs
+                ],
+                now=self._now(),
+            )
+            if task is None:
+                return None, None, None
+            league_id = task.params.get("league")
+            season = task.params.get("season")
+            if league_id is None or season is None:
+                await complete_task(
+                    session, task, "permanent_error", error="bad_rounds_params"
                 )
-                if task is None:
-                    return None, None, None
-                league_id = task.params.get("league")
-                season = task.params.get("season")
-                if league_id is None or season is None:
-                    await complete_task(
-                        session, task, "permanent_error", error="bad_rounds_params"
-                    )
-                    return None, None, None
-                try:
-                    return int(task.id), int(league_id), int(season)
-                except (TypeError, ValueError):
-                    await complete_task(
-                        session, task, "permanent_error", error="bad_rounds_params"
-                    )
-                    return None, None, None
+                return None, None, None
+            try:
+                return int(task.id), int(league_id), int(season)
+            except (TypeError, ValueError):
+                await complete_task(
+                    session, task, "permanent_error", error="bad_rounds_params"
+                )
+                return None, None, None
 
     async def refresh_rounds_pending(self) -> None:
         for _ in range(_ROUNDS_PER_TICK):
@@ -213,16 +210,14 @@ class FixtureIngest:
 
     async def _today_fixtures_complete(self) -> bool:
         day = self._today()
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await get_or_create_day_task(session, "/fixtures", day)
-                return task.status == "complete"
+        async with self._session_factory() as session, session.begin():
+            task = await get_or_create_day_task(session, "/fixtures", day)
+            return task.status == "complete"
 
     async def _peek_backfill_day(self) -> date:
-        async with self._session_factory() as session:
-            async with session.begin():
-                cursor = await get_cursor_task(session, "backfill")
-                raw = cursor.params.get("next_day") if cursor.params else None
+        async with self._session_factory() as session, session.begin():
+            cursor = await get_cursor_task(session, "backfill")
+            raw = cursor.params.get("next_day") if cursor.params else None
         if isinstance(raw, str):
             try:
                 return date.fromisoformat(raw)
@@ -232,25 +227,23 @@ class FixtureIngest:
 
     async def _advance_backfill(self, completed: date) -> None:
         nxt = completed - timedelta(days=1)
-        async with self._session_factory() as session:
-            async with session.begin():
-                cursor = await get_cursor_task(session, "backfill")
-                params = dict(cursor.params)
-                params["last_complete"] = completed.isoformat()
-                params["next_day"] = nxt.isoformat()
-                cursor.params = params
-                cursor.day_utc = nxt
-                cursor.updated_at = datetime.now(UTC)
+        async with self._session_factory() as session, session.begin():
+            cursor = await get_cursor_task(session, "backfill")
+            params = dict(cursor.params)
+            params["last_complete"] = completed.isoformat()
+            params["next_day"] = nxt.isoformat()
+            cursor.params = params
+            cursor.day_utc = nxt
+            cursor.updated_at = datetime.now(UTC)
 
     async def _touch_forward_cursor(self, day: date) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                cursor = await get_cursor_task(session, "forward")
-                params = dict(cursor.params)
-                params["day"] = day.isoformat()
-                cursor.params = params
-                cursor.day_utc = day
-                cursor.updated_at = datetime.now(UTC)
+        async with self._session_factory() as session, session.begin():
+            cursor = await get_cursor_task(session, "forward")
+            params = dict(cursor.params)
+            params["day"] = day.isoformat()
+            cursor.params = params
+            cursor.day_utc = day
+            cursor.updated_at = datetime.now(UTC)
 
     async def _ingest_day(self, day: date, *, role: str) -> bool:
         task_id = await self._day_task_id(day, refresh=role == "forward")
@@ -271,32 +264,31 @@ class FixtureIngest:
             return False
         parsed = parse_fixtures(items)
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    task = await session.get(EtlTask, task_id)
-                    if task is None:
-                        return False
-                    extra = await upsert_fixtures(session, parsed)
-                    await enqueue_fixture_followups(
-                        session, extra, historical=role == "backfill"
-                    )
-                    params = dict(task.params)
-                    params.update(
-                        {
-                            "date": date_key,
-                            "role": role,
-                            "count": extra.get("count", 0),
-                            "skipped": extra.get("skipped", 0),
-                        }
-                    )
-                    await complete_task(
-                        session,
-                        task,
-                        "complete",
-                        paging_current=current,
-                        paging_total=total,
-                        params=params,
-                    )
+            async with self._session_factory() as session, session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return False
+                extra = await upsert_fixtures(session, parsed)
+                await enqueue_fixture_followups(
+                    session, extra, historical=role == "backfill"
+                )
+                params = dict(task.params)
+                params.update(
+                    {
+                        "date": date_key,
+                        "role": role,
+                        "count": extra.get("count", 0),
+                        "skipped": extra.get("skipped", 0),
+                    }
+                )
+                await complete_task(
+                    session,
+                    task,
+                    "complete",
+                    paging_current=current,
+                    paging_total=total,
+                    params=params,
+                )
         except Exception:
             log_json(
                 logging.ERROR,
@@ -311,35 +303,33 @@ class FixtureIngest:
         return True
 
     async def _day_task_id(self, day: date, *, refresh: bool) -> int | None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await get_or_create_day_task(session, "/fixtures", day)
-                if refresh:
-                    return int(task.id)
-                if not needs_refresh(task, self._now()):
-                    return None
+        async with self._session_factory() as session, session.begin():
+            task = await get_or_create_day_task(session, "/fixtures", day)
+            if refresh:
                 return int(task.id)
+            if not needs_refresh(task, self._now()):
+                return None
+            return int(task.id)
 
     async def _claim_rounds(self) -> tuple[int | None, int | None, int | None]:
-        async with self._session_factory() as session:
-            async with session.begin():
-                task = await claim_rounds_task(session)
-                if task is None:
-                    return None, None, None
-                league_id = task.params.get("league")
-                season = task.params.get("season")
-                if league_id is None or season is None:
-                    await complete_task(
-                        session, task, "permanent_error", error="bad_rounds_params"
-                    )
-                    return None, None, None
-                try:
-                    return int(task.id), int(league_id), int(season)
-                except (TypeError, ValueError):
-                    await complete_task(
-                        session, task, "permanent_error", error="bad_rounds_params"
-                    )
-                    return None, None, None
+        async with self._session_factory() as session, session.begin():
+            task = await claim_rounds_task(session)
+            if task is None:
+                return None, None, None
+            league_id = task.params.get("league")
+            season = task.params.get("season")
+            if league_id is None or season is None:
+                await complete_task(
+                    session, task, "permanent_error", error="bad_rounds_params"
+                )
+                return None, None, None
+            try:
+                return int(task.id), int(league_id), int(season)
+            except (TypeError, ValueError):
+                await complete_task(
+                    session, task, "permanent_error", error="bad_rounds_params"
+                )
+                return None, None, None
 
     async def _ingest_rounds(self, task_id: int, league_id: int, season: int) -> None:
         try:
@@ -361,24 +351,23 @@ class FixtureIngest:
             await self._fail(task_id, "retryable_error", type(exc).__name__)
             return
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    task = await session.get(EtlTask, task_id)
-                    if task is None:
-                        return
-                    count = await upsert_league_rounds(
-                        session, league_id, season, items
-                    )
-                    params = dict(task.params)
-                    params["count"] = count
-                    await complete_task(
-                        session,
-                        task,
-                        "complete",
-                        paging_current=current,
-                        paging_total=total,
-                        params=params,
-                    )
+            async with self._session_factory() as session, session.begin():
+                task = await session.get(EtlTask, task_id)
+                if task is None:
+                    return
+                count = await upsert_league_rounds(
+                    session, league_id, season, items
+                )
+                params = dict(task.params)
+                params["count"] = count
+                await complete_task(
+                    session,
+                    task,
+                    "complete",
+                    paging_current=current,
+                    paging_total=total,
+                    params=params,
+                )
         except Exception:
             log_json(
                 logging.ERROR,

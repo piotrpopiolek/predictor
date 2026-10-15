@@ -91,32 +91,31 @@ def _fixture_payload(
 
 async def _reset(factory: async_sessionmaker[AsyncSession]) -> None:
     ids = (FT_ID, NS_ID, PST_ID)
-    async with factory() as session:
-        async with session.begin():
-            await session.execute(
-                delete(EtlTask)
-                .where(EtlTask.endpoint == DAILY_REPORT_ENDPOINT)
-                .where(EtlTask.day_utc.in_((DAY, EMPTY_DAY, REPORT_DAY)))
-            )
-            await session.execute(
-                delete(EtlTask)
-                .where(EtlTask.endpoint == "/standings")
-                .where(EtlTask.params.contains({"season": 2099}))
-            )
-            await session.execute(
-                delete(EtlTask)
-                .where(EtlTask.endpoint == "/fixtures/headtohead")
-                .where(EtlTask.params.contains({"h2h": f"{HOME_ID}-{AWAY_ID}"}))
-            )
-            await session.execute(
-                delete(EtlTask).where(EtlTask.endpoint == "/w9/report-error")
-            )
-            await session.execute(
-                delete(EtlTask).where(EtlTask.day_utc.in_((DAY, EMPTY_DAY)))
-            )
-            await session.execute(delete(EtlTask).where(EtlTask.fixture_id.in_(ids)))
-            await session.execute(delete(Fixture).where(Fixture.id.in_(ids)))
-            await ensure_cursors(session)
+    async with factory() as session, session.begin():
+        await session.execute(
+            delete(EtlTask)
+            .where(EtlTask.endpoint == DAILY_REPORT_ENDPOINT)
+            .where(EtlTask.day_utc.in_((DAY, EMPTY_DAY, REPORT_DAY)))
+        )
+        await session.execute(
+            delete(EtlTask)
+            .where(EtlTask.endpoint == "/standings")
+            .where(EtlTask.params.contains({"season": 2099}))
+        )
+        await session.execute(
+            delete(EtlTask)
+            .where(EtlTask.endpoint == "/fixtures/headtohead")
+            .where(EtlTask.params.contains({"h2h": f"{HOME_ID}-{AWAY_ID}"}))
+        )
+        await session.execute(
+            delete(EtlTask).where(EtlTask.endpoint == "/w9/report-error")
+        )
+        await session.execute(
+            delete(EtlTask).where(EtlTask.day_utc.in_((DAY, EMPTY_DAY)))
+        )
+        await session.execute(delete(EtlTask).where(EtlTask.fixture_id.in_(ids)))
+        await session.execute(delete(Fixture).where(Fixture.id.in_(ids)))
+        await ensure_cursors(session)
 
 
 async def _mark_day_fetched(
@@ -148,9 +147,8 @@ async def _seed_fixture(
     item = FixtureItem.model_validate(
         _fixture_payload(fixture_id, status=status, kickoff=kickoff)
     )
-    async with factory() as session:
-        async with session.begin():
-            await upsert_fixtures(session, [item])
+    async with factory() as session, session.begin():
+        await upsert_fixtures(session, [item])
 
 
 @pytest.mark.asyncio
@@ -160,10 +158,9 @@ async def test_empty_fetched_day_is_complete() -> None:
     factory = make_session_factory(engine)
     try:
         await _reset(factory)
-        async with factory() as session:
-            async with session.begin():
-                await _mark_day_fetched(session, EMPTY_DAY)
-                assert await day_is_complete(session, EMPTY_DAY) is True
+        async with factory() as session, session.begin():
+            await _mark_day_fetched(session, EMPTY_DAY)
+            assert await day_is_complete(session, EMPTY_DAY) is True
     finally:
         await engine.dispose()
 
@@ -175,12 +172,11 @@ async def test_incomplete_paging_is_not_complete() -> None:
     factory = make_session_factory(engine)
     try:
         await _reset(factory)
-        async with factory() as session:
-            async with session.begin():
-                await _mark_day_fetched(
-                    session, EMPTY_DAY, paging_current=1, paging_total=2
-                )
-                assert await day_is_complete(session, EMPTY_DAY) is False
+        async with factory() as session, session.begin():
+            await _mark_day_fetched(
+                session, EMPTY_DAY, paging_current=1, paging_total=2
+            )
+            assert await day_is_complete(session, EMPTY_DAY) is False
     finally:
         await engine.dispose()
 
@@ -198,16 +194,15 @@ async def test_ns_open_children_do_not_block_the_day() -> None:
             status="NS",
             kickoff="2099-01-02T15:00:00+00:00",
         )
-        async with factory() as session:
-            async with session.begin():
-                await _mark_day_fetched(session, DAY)
-                await ensure_enrichment_task(session, NS_ID)
-                await ensure_predictions_task(session, NS_ID)
-                fixture = await session.get(Fixture, NS_ID)
-                assert fixture is not None
-                assert await match_blockers(session, fixture) == []
-                assert await match_is_complete(session, fixture) is True
-                assert await day_is_complete(session, DAY) is True
+        async with factory() as session, session.begin():
+            await _mark_day_fetched(session, DAY)
+            await ensure_enrichment_task(session, NS_ID)
+            await ensure_predictions_task(session, NS_ID)
+            fixture = await session.get(Fixture, NS_ID)
+            assert fixture is not None
+            assert await match_blockers(session, fixture) == []
+            assert await match_is_complete(session, fixture) is True
+            assert await day_is_complete(session, DAY) is True
     finally:
         await engine.dispose()
 
@@ -225,29 +220,28 @@ async def test_ft_pending_enrichment_blocks_the_day() -> None:
             status="FT",
             kickoff="2099-01-02T18:00:00+00:00",
         )
-        async with factory() as session:
-            async with session.begin():
-                await _mark_day_fetched(session, DAY)
-                await ensure_enrichment_task(session, FT_ID)
-                fixture = await session.get(Fixture, FT_ID)
-                assert fixture is not None
-                assert "/fixtures" in await match_blockers(session, fixture)
-                assert await day_is_complete(session, DAY) is False
-                enrichment = await session.scalar(
-                    select(EtlTask)
-                    .where(EtlTask.endpoint == "/fixtures")
-                    .where(EtlTask.fixture_id == FT_ID)
+        async with factory() as session, session.begin():
+            await _mark_day_fetched(session, DAY)
+            await ensure_enrichment_task(session, FT_ID)
+            fixture = await session.get(Fixture, FT_ID)
+            assert fixture is not None
+            assert "/fixtures" in await match_blockers(session, fixture)
+            assert await day_is_complete(session, DAY) is False
+            enrichment = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.endpoint == "/fixtures")
+                .where(EtlTask.fixture_id == FT_ID)
+            )
+            assert enrichment is not None
+            await complete_task(session, enrichment, "coverage_empty")
+            session.add(
+                EtlTask(
+                    endpoint="/standings",
+                    params={"league": LEAGUE_ID, "season": 2099},
+                    status="pending",
                 )
-                assert enrichment is not None
-                await complete_task(session, enrichment, "coverage_empty")
-                session.add(
-                    EtlTask(
-                        endpoint="/standings",
-                        params={"league": LEAGUE_ID, "season": 2099},
-                        status="pending",
-                    )
-                )
-                assert await day_is_complete(session, DAY) is True
+            )
+            assert await day_is_complete(session, DAY) is True
     finally:
         await engine.dispose()
 
@@ -265,50 +259,49 @@ async def test_ft_open_half_and_predictions_block() -> None:
             status="FT",
             kickoff="2099-01-02T18:00:00+00:00",
         )
-        async with factory() as session:
-            async with session.begin():
-                await _mark_day_fetched(session, DAY)
-                await ensure_enrichment_task(session, FT_ID)
-                enrichment = await session.scalar(
-                    select(EtlTask)
-                    .where(EtlTask.endpoint == "/fixtures")
-                    .where(EtlTask.fixture_id == FT_ID)
-                )
-                assert enrichment is not None
-                await complete_task(session, enrichment, "complete")
-                await ensure_half_stats_task(session, FT_ID)
-                await ensure_predictions_task(session, FT_ID)
-                await ensure_odds_task(session, FT_ID)
-                await ensure_h2h_task(session, HOME_ID, AWAY_ID)
-                fixture = await session.get(Fixture, FT_ID)
-                assert fixture is not None
-                blockers = await match_blockers(session, fixture)
-                assert "/fixtures/statistics" in blockers
-                assert "/predictions" in blockers
-                assert "/odds" in blockers
-                assert "/fixtures/headtohead" in blockers
-                assert await day_is_complete(session, DAY) is False
-                pair = f"{HOME_ID}-{AWAY_ID}"
-                for task in await session.scalars(
-                    select(EtlTask).where(
-                        EtlTask.endpoint.in_(
-                            (
-                                "/fixtures/statistics",
-                                "/predictions",
-                                "/odds",
-                                "/fixtures/headtohead",
-                            )
+        async with factory() as session, session.begin():
+            await _mark_day_fetched(session, DAY)
+            await ensure_enrichment_task(session, FT_ID)
+            enrichment = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.endpoint == "/fixtures")
+                .where(EtlTask.fixture_id == FT_ID)
+            )
+            assert enrichment is not None
+            await complete_task(session, enrichment, "complete")
+            await ensure_half_stats_task(session, FT_ID)
+            await ensure_predictions_task(session, FT_ID)
+            await ensure_odds_task(session, FT_ID)
+            await ensure_h2h_task(session, HOME_ID, AWAY_ID)
+            fixture = await session.get(Fixture, FT_ID)
+            assert fixture is not None
+            blockers = await match_blockers(session, fixture)
+            assert "/fixtures/statistics" in blockers
+            assert "/predictions" in blockers
+            assert "/odds" in blockers
+            assert "/fixtures/headtohead" in blockers
+            assert await day_is_complete(session, DAY) is False
+            pair = f"{HOME_ID}-{AWAY_ID}"
+            for task in await session.scalars(
+                select(EtlTask).where(
+                    EtlTask.endpoint.in_(
+                        (
+                            "/fixtures/statistics",
+                            "/predictions",
+                            "/odds",
+                            "/fixtures/headtohead",
                         )
                     )
+                )
+            ):
+                if task.status != "pending":
+                    continue
+                if task.fixture_id == FT_ID or (
+                    task.endpoint == "/fixtures/headtohead"
+                    and task.params.get("h2h") == pair
                 ):
-                    if task.status != "pending":
-                        continue
-                    if task.fixture_id == FT_ID or (
-                        task.endpoint == "/fixtures/headtohead"
-                        and task.params.get("h2h") == pair
-                    ):
-                        await complete_task(session, task, "not_supported")
-                assert await day_is_complete(session, DAY) is True
+                    await complete_task(session, task, "not_supported")
+            assert await day_is_complete(session, DAY) is True
     finally:
         await engine.dispose()
 
@@ -326,21 +319,20 @@ async def test_irregular_coverage_empty_is_complete_without_half() -> None:
             status="PST",
             kickoff="2099-01-02T12:00:00+00:00",
         )
-        async with factory() as session:
-            async with session.begin():
-                await _mark_day_fetched(session, DAY)
-                await ensure_enrichment_task(session, PST_ID)
-                enrichment = await session.scalar(
-                    select(EtlTask)
-                    .where(EtlTask.endpoint == "/fixtures")
-                    .where(EtlTask.fixture_id == PST_ID)
-                )
-                assert enrichment is not None
-                await complete_task(session, enrichment, "coverage_empty")
-                fixture = await session.get(Fixture, PST_ID)
-                assert fixture is not None
-                assert await match_blockers(session, fixture) == []
-                assert await day_is_complete(session, DAY) is True
+        async with factory() as session, session.begin():
+            await _mark_day_fetched(session, DAY)
+            await ensure_enrichment_task(session, PST_ID)
+            enrichment = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.endpoint == "/fixtures")
+                .where(EtlTask.fixture_id == PST_ID)
+            )
+            assert enrichment is not None
+            await complete_task(session, enrichment, "coverage_empty")
+            fixture = await session.get(Fixture, PST_ID)
+            assert fixture is not None
+            assert await match_blockers(session, fixture) == []
+            assert await day_is_complete(session, DAY) is True
     finally:
         await engine.dispose()
 
@@ -359,39 +351,38 @@ async def test_daily_report_is_idempotent_and_records_quota() -> None:
     )
     try:
         await _reset(factory)
-        async with factory() as session:
-            async with session.begin():
-                await _mark_day_fetched(session, DAY)
-                live = await session.scalar(
-                    select(EtlTask)
-                    .where(EtlTask.endpoint == "/odds/live")
-                    .where(EtlTask.cursor_kind.is_(None))
-                    .order_by(EtlTask.id)
-                    .limit(1)
-                )
-                if live is None:
-                    session.add(
-                        EtlTask(
-                            endpoint="/odds/live",
-                            params={"last_poll_at": "2026-09-10T23:59:00+00:00"},
-                            status="complete",
-                        )
-                    )
-                else:
-                    live.params = {
-                        **dict(live.params),
-                        "last_poll_at": "2026-09-10T23:59:00+00:00",
-                    }
+        async with factory() as session, session.begin():
+            await _mark_day_fetched(session, DAY)
+            live = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.endpoint == "/odds/live")
+                .where(EtlTask.cursor_kind.is_(None))
+                .order_by(EtlTask.id)
+                .limit(1)
+            )
+            if live is None:
                 session.add(
                     EtlTask(
-                        endpoint="/w9/report-error",
-                        params={},
-                        status="retryable_error",
-                        last_error="boom",
+                        endpoint="/odds/live",
+                        params={"last_poll_at": "2026-09-10T23:59:00+00:00"},
+                        status="complete",
                     )
                 )
-                first = await write_daily_report(session, DAY, quota=quota, now=NOW)
-                second = await write_daily_report(session, DAY, quota=quota, now=NOW)
+            else:
+                live.params = {
+                    **dict(live.params),
+                    "last_poll_at": "2026-09-10T23:59:00+00:00",
+                }
+            session.add(
+                EtlTask(
+                    endpoint="/w9/report-error",
+                    params={},
+                    status="retryable_error",
+                    last_error="boom",
+                )
+            )
+            first = await write_daily_report(session, DAY, quota=quota, now=NOW)
+            second = await write_daily_report(session, DAY, quota=quota, now=NOW)
         assert first is True
         assert second is False
         async with factory() as session:
