@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -31,6 +32,42 @@ _SECRET_ATTR_KEYS = frozenset(
         "postgres_password",
     }
 )
+_HEADER_SANITIZE_ENV = "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS"
+_SANITIZED_HEADERS = ("x-apisports-key", "authorization")
+
+
+def _ensure_header_sanitize() -> None:
+    """Redact the API key if header capture is turned on via env."""
+    current = [
+        part.strip()
+        for part in os.environ.get(_HEADER_SANITIZE_ENV, "").split(",")
+        if part.strip()
+    ]
+    folded = {part.casefold() for part in current}
+    for name in _SANITIZED_HEADERS:
+        if name not in folded:
+            current.append(name)
+    os.environ[_HEADER_SANITIZE_ENV] = ",".join(current)
+
+
+def scrub_client_span(span: Span, request: Any) -> None:
+    """Drop API-key header attributes the httpx instrumentor may have copied."""
+    del request
+    store = getattr(span, "_attributes", None)
+    if not store:
+        return
+    secret_markers = tuple(name.casefold() for name in _SANITIZED_HEADERS)
+    for key in list(store):
+        folded = str(key).casefold().replace("_", "-")
+        if any(marker in folded for marker in secret_markers):
+            try:
+                del store[key]
+            except TypeError:
+                span.set_attribute(key, "[REDACTED]")
+
+
+async def _scrub_client_span_async(span: Span, request: Any) -> None:
+    scrub_client_span(span, request)
 
 
 def _resource(service: str, settings: Settings) -> Resource:
@@ -85,7 +122,11 @@ def configure_telemetry(settings: Settings, *, service: str) -> bool:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
         from opentelemetry.instrumentation.logging import LoggingInstrumentor
 
-        HTTPXClientInstrumentor().instrument()
+        _ensure_header_sanitize()
+        HTTPXClientInstrumentor().instrument(
+            request_hook=scrub_client_span,
+            async_request_hook=_scrub_client_span_async,
+        )
         LoggingInstrumentor().instrument(set_logging_format=False)
         _configured = True
         return True

@@ -10,7 +10,22 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from predictor.logutil import configure_logging, log_json
 from predictor.schemas.settings import load_settings
-from predictor.telemetry import configure_telemetry, start_span
+from predictor.telemetry import configure_telemetry, scrub_client_span, start_span
+
+
+def test_scrub_client_span_drops_api_sports_key() -> None:
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test")
+    with tracer.start_as_current_span("client") as span:
+        span.set_attribute("http.request.header.x-apisports-key", "super-secret")
+        span.set_attribute("http.request.method", "GET")
+        scrub_client_span(span, None)
+    attrs = dict(exporter.get_finished_spans()[0].attributes or {})
+    assert "http.request.header.x-apisports-key" not in attrs
+    assert "super-secret" not in attrs.values()
+    assert attrs["http.request.method"] == "GET"
 
 
 def test_configure_telemetry_without_endpoint_is_noop(valid_env: None) -> None:

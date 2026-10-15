@@ -53,11 +53,13 @@ def test_enrichment_uses_id_not_ids_batch() -> None:
         "src/predictor/services/ingest/global_entities.py",
         "src/predictor/services/ingest/persist_seasonal.py",
         "src/predictor/services/ingest/persist_people.py",
-        "src/predictor/services/queue.py",
+        "src/predictor/services/queue",
         "src/predictor/services/completeness.py",
         "src/predictor/worker/main.py",
     ):
-        text = Path(relative).read_text(encoding="utf-8")
+        path = Path(relative)
+        files = sorted(path.rglob("*.py")) if path.is_dir() else [path]
+        text = "\n".join(item.read_text(encoding="utf-8") for item in files)
         assert '"ids"' not in text
         assert "'ids'" not in text
     worker = Path("src/predictor/worker/main.py").read_text(encoding="utf-8")
@@ -82,7 +84,10 @@ def test_global_catalog_skips_lookups_and_uses_coachs() -> None:
     ingest = Path("src/predictor/services/ingest/global_entities.py").read_text(
         encoding="utf-8"
     )
-    queue = Path("src/predictor/services/queue.py").read_text(encoding="utf-8")
+    queue = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("src/predictor/services/queue").glob("*.py"))
+    )
     worker = Path("src/predictor/worker/main.py").read_text(encoding="utf-8")
     assert "/teams/seasons" not in ingest
     assert "/players/seasons" not in ingest
@@ -211,6 +216,8 @@ def test_status_api_surface_and_no_get_settle() -> None:
         assert route in source
     assert "settle_open_from_engine" not in source
     assert "settle_and_list_open" not in source
+    worker = Path("src/predictor/worker/main.py").read_text(encoding="utf-8")
+    assert "settle_open_from_engine" in worker
     assert "list_open_from_engine" in source
     assert "mutation_token_ok" in source
     assert "operator_bet_token" in source

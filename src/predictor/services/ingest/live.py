@@ -80,6 +80,8 @@ class LiveIngest:
             await self._fail(task_id, "retryable_error", type(exc).__name__)
             return
         parsed = parse_fixtures(items)
+        committed_ids: list[int] | None = None
+        committed_finishing: list[int] | None = None
         try:
             async with self._session_factory() as session, session.begin():
                 task = await session.get(EtlTask, task_id)
@@ -120,8 +122,8 @@ class LiveIngest:
                     paging_total=total,
                     params=params,
                 )
-                self.last_live_fixture_ids = fixture_ids
-                self.finishing_fixture_ids = finishing_ids
+                committed_ids = fixture_ids
+                committed_finishing = finishing_ids
         except Exception:
             log_json(
                 logging.ERROR,
@@ -130,6 +132,10 @@ class LiveIngest:
                 endpoint="/fixtures",
             )
             await self._fail(task_id, "retryable_error", "persist_failed")
+        else:
+            if committed_ids is not None and committed_finishing is not None:
+                self.last_live_fixture_ids = committed_ids
+                self.finishing_fixture_ids = committed_finishing
 
     async def refresh_next_goal_snapshots(
         self, *, min_gap_seconds: int | None = None
@@ -274,7 +280,7 @@ def _int_ids(raw: object) -> list[int]:
     for item in raw:
         try:
             out.append(int(item))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return out
 

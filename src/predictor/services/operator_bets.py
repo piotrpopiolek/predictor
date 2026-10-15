@@ -488,6 +488,7 @@ async def load_history_payload(engine: AsyncEngine) -> dict[str, Any]:
 
 
 async def settle_open_from_engine(engine: AsyncEngine) -> int:
+    """Worker-tick settle. Not for GET handlers."""
     async with AsyncSession(engine, expire_on_commit=False) as session:
         settled = await settle_open_tickets(session)
         await session.commit()
@@ -502,15 +503,6 @@ async def current_stake_label(engine: AsyncEngine) -> str:
 
 async def list_open_from_engine(engine: AsyncEngine) -> dict[int, OperatorBet]:
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        return await list_open_by_fixture(session)
-
-
-async def settle_and_list_open(
-    engine: AsyncEngine,
-) -> dict[int, OperatorBet]:
-    async with AsyncSession(engine, expire_on_commit=False) as session:
-        await settle_open_tickets(session)
-        await session.commit()
         return await list_open_by_fixture(session)
 
 
