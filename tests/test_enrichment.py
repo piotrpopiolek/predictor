@@ -333,9 +333,7 @@ async def _reset_w6(factory: async_sessionmaker[AsyncSession]) -> None:
             )
         )
         await session.execute(
-            delete(Prediction).where(
-                Prediction.fixture_id.in_((FT_ID, PST_ID, NS_ID))
-            )
+            delete(Prediction).where(Prediction.fixture_id.in_((FT_ID, PST_ID, NS_ID)))
         )
         await session.execute(
             delete(FixtureOdds).where(

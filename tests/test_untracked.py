@@ -82,9 +82,7 @@ async def _cleanup(factory: Any) -> None:
         await session.execute(
             delete(UntrackedLeague).where(UntrackedLeague.league_id == LEAGUE)
         )
-        await session.execute(
-            delete(Fixture).where(Fixture.id.in_((TRACKED, IGNORED)))
-        )
+        await session.execute(delete(Fixture).where(Fixture.id.in_((TRACKED, IGNORED))))
 
 
 @pytest.mark.asyncio
@@ -215,9 +213,7 @@ async def test_forecast_and_prematch_skip_untracked_league() -> None:
         await _cleanup(factory)
         before = await forecast_day_load(factory, NOW)
         async with factory() as session, session.begin():
-            tracked = FixtureItem.model_validate(
-                _payload(TRACKED, 39, kickoff=kickoff)
-            )
+            tracked = FixtureItem.model_validate(_payload(TRACKED, 39, kickoff=kickoff))
             ignored = FixtureItem.model_validate(
                 _payload(IGNORED, LEAGUE, kickoff=kickoff)
             )

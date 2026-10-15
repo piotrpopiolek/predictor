@@ -463,9 +463,7 @@ async def _reset_w8(factory: async_sessionmaker[AsyncSession]) -> None:
             delete(CoachCareer).where(CoachCareer.coach_id == COACH_ID)
         )
         await session.execute(
-            delete(SquadMember).where(
-                SquadMember.player_id.in_((PLAYER_ID, PLAYER_B))
-            )
+            delete(SquadMember).where(SquadMember.player_id.in_((PLAYER_ID, PLAYER_B)))
         )
         await session.execute(
             delete(PlayerCareerTeam).where(
@@ -1104,9 +1102,7 @@ async def test_coachs_career_and_xor_catalog() -> None:
             await ensure_param_task(session, "/trophies", {"player": PLAYER_ID})
             await ensure_param_task(session, "/sidelined", {"player": PLAYER_ID})
             await ensure_param_task(session, "/players/squads", {"team": 33})
-            await ensure_param_task(
-                session, "/players/teams", {"player": PLAYER_ID}
-            )
+            await ensure_param_task(session, "/players/teams", {"player": PLAYER_ID})
         ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=10)
         await ingest.refresh_pending()
         async with factory() as session:

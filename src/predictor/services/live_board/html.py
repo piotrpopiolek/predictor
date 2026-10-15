@@ -1090,7 +1090,7 @@ def _fnum(raw: object) -> float | None:
         return None
     try:
         return float(str(raw).strip().replace(",", "."))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 

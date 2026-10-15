@@ -192,9 +192,7 @@ async def _reset_w7(factory: async_sessionmaker[AsyncSession]) -> None:
             delete(FixtureOdds).where(FixtureOdds.fixture_id.in_(W7_IDS))
         )
         await session.execute(
-            delete(OddsFixtureMapping).where(
-                OddsFixtureMapping.fixture_id.in_(W7_IDS)
-            )
+            delete(OddsFixtureMapping).where(OddsFixtureMapping.fixture_id.in_(W7_IDS))
         )
         await session.execute(delete(Fixture).where(Fixture.id.in_(W7_IDS)))
         await ensure_cursors(session)

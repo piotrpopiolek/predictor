@@ -189,7 +189,7 @@ class FixtureIngest:
                 return None, None, None
             try:
                 return int(task.id), int(league_id), int(season)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 await complete_task(
                     session, task, "permanent_error", error="bad_rounds_params"
                 )
@@ -325,7 +325,7 @@ class FixtureIngest:
                 return None, None, None
             try:
                 return int(task.id), int(league_id), int(season)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 await complete_task(
                     session, task, "permanent_error", error="bad_rounds_params"
                 )
@@ -355,9 +355,7 @@ class FixtureIngest:
                 task = await session.get(EtlTask, task_id)
                 if task is None:
                     return
-                count = await upsert_league_rounds(
-                    session, league_id, season, items
-                )
+                count = await upsert_league_rounds(session, league_id, season, items)
                 params = dict(task.params)
                 params["count"] = count
                 await complete_task(

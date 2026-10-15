@@ -195,9 +195,7 @@ class LiveIngest:
                         "count": extra.get("count", 0),
                         "fixtures": extra.get("fixtures", 0),
                         "missing_next_goal": extra.get("missing_next_goal", []),
-                        "blocked_without_odds": extra.get(
-                            "blocked_without_odds", []
-                        ),
+                        "blocked_without_odds": extra.get("blocked_without_odds", []),
                         "last_poll_at": captured_at.isoformat(),
                         "mapped_next_goal": sorted(mapped),
                     }
@@ -276,7 +274,7 @@ def _int_ids(raw: object) -> list[int]:
     for item in raw:
         try:
             out.append(int(item))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return out
 

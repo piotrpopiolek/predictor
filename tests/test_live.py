@@ -176,12 +176,8 @@ async def _reset_w5(factory: async_sessionmaker[AsyncSession]) -> None:
                 )
             )
         )
-        await session.execute(
-            delete(Prediction).where(Prediction.fixture_id == 9001)
-        )
-        await session.execute(
-            delete(FixtureOdds).where(FixtureOdds.fixture_id == 9001)
-        )
+        await session.execute(delete(Prediction).where(Prediction.fixture_id == 9001))
+        await session.execute(delete(FixtureOdds).where(FixtureOdds.fixture_id == 9001))
         await session.execute(
             delete(OddsFixtureMapping).where(OddsFixtureMapping.fixture_id == 9001)
         )
@@ -374,9 +370,7 @@ async def test_live_gap_is_logged_not_filled(
         await _reset_w5(factory)
         async with factory() as session, session.begin():
             task = await get_or_create_endpoint_task(session, "/odds/live")
-            task.params = {
-                "last_poll_at": (START - timedelta(minutes=10)).isoformat()
-            }
+            task.params = {"last_poll_at": (START - timedelta(minutes=10)).isoformat()}
         ingest = LiveIngest(client, factory, now_fn=lambda: START, target_seconds=60)
         with caplog.at_level("WARNING"):
             await ingest.refresh_live_fixtures()
@@ -402,9 +396,7 @@ async def test_live_odds_wait_for_the_stretched_gap(
         await _reset_w5(factory)
         async with factory() as session, session.begin():
             task = await get_or_create_endpoint_task(session, "/odds/live")
-            task.params = {
-                "last_poll_at": (START - timedelta(minutes=2)).isoformat()
-            }
+            task.params = {"last_poll_at": (START - timedelta(minutes=2)).isoformat()}
         ingest = LiveIngest(client, factory, now_fn=lambda: START, target_seconds=60)
         with caplog.at_level("WARNING"):
             await ingest.refresh_next_goal_snapshots(min_gap_seconds=600)

@@ -117,9 +117,7 @@ async def test_requeue_orphans_and_claim_skips_cursors() -> None:
             session.add(
                 EtlTask(endpoint=orphan_endpoint, params={}, status="in_progress")
             )
-            session.add(
-                EtlTask(endpoint=claim_endpoint, params={}, status="pending")
-            )
+            session.add(EtlTask(endpoint=claim_endpoint, params={}, status="pending"))
         async with factory() as session, session.begin():
             n = await requeue_orphans(session)
             assert n >= 1
@@ -337,9 +335,7 @@ async def test_forecast_day_load_skips_expired_windows_and_in_play() -> None:
                 )
             )
             await session.execute(
-                delete(Fixture).where(
-                    Fixture.id.in_((future_id, expired_id, live_id))
-                )
+                delete(Fixture).where(Fixture.id.in_((future_id, expired_id, live_id)))
             )
         await engine.dispose()
 
@@ -549,9 +545,7 @@ async def test_claim_odds_prefers_sooner_kickoff() -> None:
             await complete_task(session, claimed, "complete")
             if parked:
                 for task in (
-                    await session.scalars(
-                        select(EtlTask).where(EtlTask.id.in_(parked))
-                    )
+                    await session.scalars(select(EtlTask).where(EtlTask.id.in_(parked)))
                 ).all():
                     if task.last_error == "test_park":
                         task.status = "pending"
@@ -582,8 +576,7 @@ async def test_claim_urgent_skips_far_and_finished() -> None:
             far = FixtureItem.model_validate(
                 _fixture_payload(
                     FID_FAR,
-                    kickoff=NOW
-                    + timedelta(hours=URGENT_PREMATCH_HORIZON_HOURS + 2),
+                    kickoff=NOW + timedelta(hours=URGENT_PREMATCH_HORIZON_HOURS + 2),
                     home_id=203,
                     away_id=204,
                 )
@@ -647,9 +640,7 @@ async def test_claim_urgent_skips_far_and_finished() -> None:
         async with factory() as session, session.begin():
             if parked:
                 for task in (
-                    await session.scalars(
-                        select(EtlTask).where(EtlTask.id.in_(parked))
-                    )
+                    await session.scalars(select(EtlTask).where(EtlTask.id.in_(parked)))
                 ).all():
                     if task.last_error == "test_park":
                         task.status = "pending"
@@ -812,9 +803,7 @@ async def test_live_claim_respects_backoff_and_finishing() -> None:
                     fixture_id=FID_LIVE,
                     params={
                         "fixture": FID_LIVE,
-                        "next_attempt_at": (
-                            NOW + timedelta(minutes=10)
-                        ).isoformat(),
+                        "next_attempt_at": (NOW + timedelta(minutes=10)).isoformat(),
                     },
                     status="retryable_error",
                 )
