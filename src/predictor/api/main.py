@@ -34,16 +34,9 @@ from predictor.services.live_board import (
     list_live_matches,
     list_next_goal_matches,
     parse_query_day,
-    render_bets_html,
-    render_day_html,
-    render_live_html,
 )
 from predictor.services.lock import fetch_holder_sqlalchemy
-from predictor.services.match_detail import (
-    load_match_detail,
-    render_match_html,
-    render_match_missing,
-)
+from predictor.services.match_detail import load_match_detail
 from predictor.services.metrics import (
     metrics_token_ok,
     mutation_token_ok,
@@ -68,6 +61,13 @@ from predictor.telemetry import (
     configure_telemetry,
     instrument_engine,
     instrument_fastapi,
+)
+from predictor.ui import (
+    render_bets_html,
+    render_day_html,
+    render_live_html,
+    render_match_html,
+    render_match_missing,
 )
 
 

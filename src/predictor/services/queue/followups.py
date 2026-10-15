@@ -41,7 +41,7 @@ async def enqueue_fixture_followups(
                 fixture_id = int(row["id"])
                 home_id = int(row["home"])
                 away_id = int(row["away"])
-            except KeyError, TypeError, ValueError:
+            except (KeyError, TypeError, ValueError):
                 continue
             league_id = row.get("league")
             if league_id is not None and int(league_id) in ignored:

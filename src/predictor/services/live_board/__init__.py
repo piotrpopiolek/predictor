@@ -45,17 +45,6 @@ from predictor.services.live_board.domain import (
     sort_matches_by_clock,
     summarize_team_goal_form,
 )
-from predictor.services.live_board.html import (
-    _img,
-    _live_nav,
-    _score,
-    format_day_heading,
-    render_bets_hit_chart,
-    render_bets_html,
-    render_bets_saldo_chart,
-    render_day_html,
-    render_live_html,
-)
 from predictor.services.live_board.sql import (
     list_day_matches,
     list_live_matches,
@@ -113,13 +102,4 @@ __all__ = [
     "load_fixture_match",
     "load_first_legs",
     "list_next_goal_matches",
-    "_img",
-    "_score",
-    "_live_nav",
-    "format_day_heading",
-    "render_live_html",
-    "render_day_html",
-    "render_bets_saldo_chart",
-    "render_bets_hit_chart",
-    "render_bets_html",
 ]

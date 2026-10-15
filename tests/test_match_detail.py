@@ -30,10 +30,9 @@ from predictor.services.match_detail import (
     build_group_table,
     read_goal_price,
     recent_attack_changes,
-    render_match_html,
-    render_match_missing,
     select_display_markets,
 )
+from predictor.ui import render_match_html, render_match_missing
 
 
 def _detail() -> MatchDetail:

@@ -29,10 +29,6 @@ from predictor.services.match_detail.domain import (
     recent_attack_changes,
     select_display_markets,
 )
-from predictor.services.match_detail.html import (
-    render_match_html,
-    render_match_missing,
-)
 from predictor.services.match_detail.sql import (
     _goal_price,
     _lineup_strength,
@@ -70,6 +66,4 @@ __all__ = [
     "_live_markets",
     "_none_odd",
     "_over_odd",
-    "render_match_missing",
-    "render_match_html",
 ]

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from predictor.services.live_board import LiveMatch, render_bets_html, render_live_html
+from predictor.services.live_board import LiveMatch
 from predictor.services.operator_bets import (
     STAKE_STEP,
     START_STAKE,
@@ -26,6 +26,7 @@ from predictor.services.operator_bets import (
     settle_bet_manual,
     settle_open_tickets,
 )
+from predictor.ui import render_bets_html, render_live_html
 
 
 def _bet(

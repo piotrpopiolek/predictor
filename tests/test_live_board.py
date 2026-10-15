@@ -34,8 +34,6 @@ from predictor.services.live_board import (
     parse_live_fixture_ids,
     parse_query_day,
     pick_venue,
-    render_day_html,
-    render_live_html,
     safe_http_url,
     scoring_team_id,
     select_live_1x2,
@@ -45,6 +43,7 @@ from predictor.services.live_board import (
     sort_matches_by_clock,
     summarize_team_goal_form,
 )
+from predictor.ui import render_day_html, render_live_html
 
 _SAMPLE = LiveMatch(
     fixture_id=1,

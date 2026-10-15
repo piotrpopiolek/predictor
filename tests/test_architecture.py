@@ -35,6 +35,12 @@ def test_api_does_not_import_football_client() -> None:
     assert "pg_try_advisory_lock" not in source
     assert "FootballClient" not in board
     assert "httpx" not in board
+    ui = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("src/predictor/ui").glob("*.py"))
+    )
+    assert "FootballClient" not in ui
+    assert "httpx" not in ui
 
 
 def test_catalog_ingest_does_not_call_fixtures() -> None:
@@ -243,7 +249,11 @@ def test_mutation_token_accepts_bearer_or_form() -> None:
 def test_board_packages_split_domain_sql_html() -> None:
     for package in ("live_board", "match_detail"):
         root = Path("src/predictor/services") / package
-        for name in ("domain.py", "sql.py", "html.py", "__init__.py"):
+        for name in ("domain.py", "sql.py", "__init__.py"):
             assert (root / name).is_file(), f"missing {package}/{name}"
+        assert not (root / "html.py").exists()
+    ui = Path("src/predictor/ui")
+    assert (ui / "live_board.py").is_file()
+    assert (ui / "match_detail.py").is_file()
     assert not Path("src/predictor/services/live_board.py").exists()
     assert not Path("src/predictor/services/match_detail.py").exists()

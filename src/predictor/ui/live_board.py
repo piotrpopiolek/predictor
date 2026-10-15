@@ -1,4 +1,4 @@
-"""HTML renderers for live_board."""
+"""HTML for the live board. Reads domain types only."""
 
 from __future__ import annotations
 
