@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from enum import StrEnum
 
 from predictor.constants import (
@@ -125,6 +125,24 @@ def period_for(status_short: str) -> Period | None:
     if status_short in _EXTRA_TIME:
         return Period.EXTRA_TIME
     return None
+
+
+def over_half_line(n: int) -> Decimal:
+    """The Over price line for N goals already scored: N+0.5."""
+    return (Decimal(n) + Decimal("0.5")).quantize(Decimal("0.1"))
+
+
+def over_line_matches(label: str, handicap: str, n: int) -> bool:
+    """True when this live row is Over N+0.5, not another total."""
+    target = over_half_line(n)
+    folded = " ".join(label.strip().casefold().split())
+    handicap_line = _line_number(handicap)
+    if folded == "over" and handicap_line == target:
+        return True
+    if folded.startswith("over "):
+        named = _line_number(folded.removeprefix("over "))
+        return named == target and handicap_line in (None, target)
+    return False
 
 
 def over_under_market(period: Period) -> str | None:
@@ -273,6 +291,16 @@ def settled_pnl(
     if outcome is Settlement.VOID:
         return Decimal("0.00")
     raise ValueError("coupon is not settled")
+
+
+def _line_number(text: str) -> Decimal | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        return Decimal(stripped).quantize(Decimal("0.1"))
+    except InvalidOperation:
+        return None
 
 
 def _scoreboard(candidate: CandidateView) -> tuple[int, int] | None:

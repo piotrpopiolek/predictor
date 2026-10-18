@@ -143,6 +143,17 @@ def test_alembic_head_helper_matches_w1() -> None:
     assert current_alembic_head() == "0022_advisor_langfuse_outbox"
 
 
+def test_advisor_process_does_not_call_api_football() -> None:
+    root = Path("src/predictor/advisor")
+    bodies = [path.read_text(encoding="utf-8") for path in root.rglob("*.py")]
+    assert bodies
+    for body in bodies:
+        assert "FootballClient" not in body
+        assert "api-sports.io" not in body.lower()
+        assert "google.genai" not in body
+        assert "from google" not in body
+
+
 def test_advisor_lock_is_not_the_writer_lock() -> None:
     from predictor.constants import ADVISOR_LOCK_KEY
 

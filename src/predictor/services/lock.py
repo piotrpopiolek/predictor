@@ -71,12 +71,12 @@ def lock_lookup_sql() -> TextClause:
         """)
 
 
-def lock_busy_message(info: HolderInfo | None) -> str:
+def lock_busy_message(info: HolderInfo | None, key: int = WRITER_LOCK_KEY) -> str:
     if info is None:
-        return f"writer lock {WRITER_LOCK_KEY} is held by another backend"
+        return f"advisory lock {key} is held by another backend"
     app = info.application_name or "unknown"
     return (
-        f"writer lock {WRITER_LOCK_KEY} is held by backend pid {info.backend_pid} "
+        f"advisory lock {key} is held by backend pid {info.backend_pid} "
         f"(application_name={app})"
     )
 
@@ -91,8 +91,10 @@ def _row_to_holder(row: tuple[Any, ...] | None) -> HolderInfo | None:
     )
 
 
-async def fetch_holder_psycopg(conn: psycopg.AsyncConnection[Any]) -> HolderInfo | None:
-    classid, objid = advisory_lock_parts()
+async def fetch_holder_psycopg(
+    conn: psycopg.AsyncConnection[Any], key: int = WRITER_LOCK_KEY
+) -> HolderInfo | None:
+    classid, objid = advisory_lock_parts(key)
     cursor = await conn.execute(_holder_sql_psycopg(), (classid, objid))
     row = await cursor.fetchone()
     return _row_to_holder(row)
@@ -122,8 +124,16 @@ async def hold_session_lock(engine: AsyncEngine, key: int) -> AsyncIterator[None
 
 
 class WriterLock:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        key: int = WRITER_LOCK_KEY,
+        application_name: str = LOCK_APPLICATION_NAME,
+    ) -> None:
         self._settings = settings
+        self._key = key
+        self._application_name = application_name
         self._conn: psycopg.AsyncConnection[Any] | None = None
         self._held = False
         self._backend_pid: int | None = None
@@ -142,7 +152,7 @@ class WriterLock:
         self._conn = await psycopg.AsyncConnection.connect(
             **connect_kwargs(self._settings),
             autocommit=True,
-            application_name=LOCK_APPLICATION_NAME,
+            application_name=self._application_name,
             keepalives=1,
             keepalives_idle=LOCK_KEEPALIVES_IDLE_SECONDS,
             keepalives_interval=LOCK_KEEPALIVES_INTERVAL_SECONDS,
@@ -154,9 +164,7 @@ class WriterLock:
             raise RuntimeError("could not read pg_backend_pid")
         self._backend_pid = int(pid_row[0])
         lock_row = await (
-            await self._conn.execute(
-                "SELECT pg_try_advisory_lock(%s)", (WRITER_LOCK_KEY,)
-            )
+            await self._conn.execute("SELECT pg_try_advisory_lock(%s)", (self._key,))
         ).fetchone()
         self._held = bool(lock_row[0]) if lock_row is not None else False
         return self._held
@@ -164,12 +172,12 @@ class WriterLock:
     async def holder_info(self) -> HolderInfo | None:
         if self._conn is None:
             raise RuntimeError("lock connection is closed")
-        return await fetch_holder_psycopg(self._conn)
+        return await fetch_holder_psycopg(self._conn, self._key)
 
     async def release(self) -> None:
         if self._conn is None or not self._held:
             return
-        await self._conn.execute("SELECT pg_advisory_unlock(%s)", (WRITER_LOCK_KEY,))
+        await self._conn.execute("SELECT pg_advisory_unlock(%s)", (self._key,))
         self._held = False
 
     async def close(self) -> None:

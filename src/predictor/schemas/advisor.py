@@ -27,6 +27,7 @@ _ADVISOR_ENV: dict[str, str] = {
     "llm_price_input_pln_per_mtok": "LLM_PRICE_INPUT_PLN_PER_MTOK",
     "llm_price_output_pln_per_mtok": "LLM_PRICE_OUTPUT_PLN_PER_MTOK",
     "advisor_daily_budget_pln": "ADVISOR_DAILY_BUDGET_PLN",
+    "advisor_debounce_seconds": "ADVISOR_DEBOUNCE_SECONDS",
     "langfuse_public_key": "LANGFUSE_PUBLIC_KEY",
     "langfuse_secret_key": "LANGFUSE_SECRET_KEY",
     "langfuse_host": "LANGFUSE_HOST",
@@ -97,6 +98,7 @@ class AdvisorSettings(BaseSettings):
     llm_price_input_pln_per_mtok: Decimal
     llm_price_output_pln_per_mtok: Decimal
     advisor_daily_budget_pln: Decimal = Decimal("10")
+    advisor_debounce_seconds: int = 20
     langfuse_public_key: SecretStr = SecretStr("")
     langfuse_secret_key: SecretStr = SecretStr("")
     langfuse_host: str = "https://cloud.langfuse.com"
@@ -149,6 +151,13 @@ class AdvisorSettings(BaseSettings):
             raise ValueError("must be an https origin without a path")
         port = f":{parts.port}" if parts.port else ""
         return f"https://{parts.hostname}{port}"
+
+    @field_validator("advisor_debounce_seconds")
+    @classmethod
+    def _debounce(cls, value: int) -> int:
+        if value < 15 or value > 30:
+            raise ValueError("must be between 15 and 30 seconds")
+        return value
 
     @field_validator("langfuse_timeout_seconds")
     @classmethod
