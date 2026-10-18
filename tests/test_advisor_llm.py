@@ -15,7 +15,7 @@ from predictor.schemas.settings import Settings, SettingsError
 from predictor.services.advisor.llm import review_model_output
 from predictor.services.advisor.llm.gemini import GeminiProvider
 from predictor.services.advisor.llm.protocol import ProviderError
-from predictor.services.advisor.llm.validate import PricedCandidate
+from predictor.services.advisor.llm.validate import PricedCandidate, Verdict
 
 MIN = Decimal("1.6")
 ODD = Decimal("1.70")
@@ -49,6 +49,12 @@ def _raw(candidates: list[dict[str, object]], coupons: list[list[int]]) -> str:
 
 def _playable(*fixture_ids: int) -> list[PricedCandidate]:
     return [PricedCandidate(fixture_id, ODD) for fixture_id in fixture_ids]
+
+
+def _assert_no_bet(verdict: Verdict, detail: str) -> None:
+    assert verdict.status == "invalid_output"
+    assert verdict.coupons == ()
+    assert verdict.detail == detail
 
 
 def test_worker_settings_do_not_require_an_llm_key() -> None:
@@ -102,27 +108,31 @@ def test_valid_coupon_uses_database_odds_not_the_reply() -> None:
 
 def test_schema_failures_are_invalid_output_and_place_nothing() -> None:
     playable = _playable(1)
-    assert review_model_output(
-        "nope", playable, set(), min_odd=MIN, max_legs=3
-    ).detail == ("not_json")
-    fenced = "```json\n" + _raw([_row(1, "reject")], []) + "\n```"
-    fenced_verdict = review_model_output(
-        fenced, playable, set(), min_odd=MIN, max_legs=3
+    _assert_no_bet(
+        review_model_output("nope", playable, set(), min_odd=MIN, max_legs=3),
+        "not_json",
     )
-    assert fenced_verdict.status == "invalid_output"
-    assert fenced_verdict.coupons == ()
+    fenced = "```json\n" + _raw([_row(1, "reject")], []) + "\n```"
+    _assert_no_bet(
+        review_model_output(fenced, playable, set(), min_odd=MIN, max_legs=3),
+        "not_json",
+    )
     extra = json.loads(_raw([_row(1, "reject")], []))
     extra["candidates"][0]["odd"] = "1.90"
-    odd_verdict = review_model_output(
-        json.dumps(extra), playable, set(), min_odd=MIN, max_legs=3
+    _assert_no_bet(
+        review_model_output(
+            json.dumps(extra), playable, set(), min_odd=MIN, max_legs=3
+        ),
+        "schema",
     )
-    assert odd_verdict.detail == "schema"
     unknown = json.loads(_raw([_row(1, "reject")], []))
     unknown["candidates"][0]["reasons"] = ["because"]
-    reason = review_model_output(
-        json.dumps(unknown), playable, set(), min_odd=MIN, max_legs=3
+    _assert_no_bet(
+        review_model_output(
+            json.dumps(unknown), playable, set(), min_odd=MIN, max_legs=3
+        ),
+        "schema",
     )
-    assert reason.detail == "schema"
 
 
 def test_every_candidate_needs_exactly_one_decision() -> None:
@@ -133,7 +143,7 @@ def test_every_candidate_needs_exactly_one_decision() -> None:
         min_odd=MIN,
         max_legs=3,
     )
-    assert missing.detail == "candidate_set"
+    _assert_no_bet(missing, "candidate_set")
     duplicate = review_model_output(
         _raw([_row(1, "reject"), _row(1, "wait")], []),
         _playable(1),
@@ -141,7 +151,7 @@ def test_every_candidate_needs_exactly_one_decision() -> None:
         min_odd=MIN,
         max_legs=3,
     )
-    assert duplicate.detail == "duplicate_candidate"
+    _assert_no_bet(duplicate, "duplicate_candidate")
 
 
 def test_coupon_rules_reject_the_whole_cycle() -> None:
@@ -152,7 +162,7 @@ def test_coupon_rules_reject_the_whole_cycle() -> None:
         min_odd=MIN,
         max_legs=3,
     )
-    assert unknown.detail == "unknown_fixture"
+    _assert_no_bet(unknown, "unknown_fixture")
     opened = review_model_output(
         _raw([_row(1, "bet")], [[1]]),
         _playable(1),
@@ -160,7 +170,7 @@ def test_coupon_rules_reject_the_whole_cycle() -> None:
         min_odd=MIN,
         max_legs=3,
     )
-    assert opened.detail == "open_coupon"
+    _assert_no_bet(opened, "open_coupon")
     twice = review_model_output(
         _raw(
             [_row(1, "bet"), _row(2, "bet"), _row(3, "reject")],
@@ -171,7 +181,7 @@ def test_coupon_rules_reject_the_whole_cycle() -> None:
         min_odd=MIN,
         max_legs=3,
     )
-    assert twice.detail == "duplicate_leg"
+    _assert_no_bet(twice, "duplicate_leg")
     low = review_model_output(
         _raw([_row(1, "bet")], [[1]]),
         _playable(1),
@@ -179,8 +189,7 @@ def test_coupon_rules_reject_the_whole_cycle() -> None:
         min_odd=Decimal("2.0"),
         max_legs=3,
     )
-    assert low.detail == "below_threshold"
-    assert low.coupons == ()
+    _assert_no_bet(low, "below_threshold")
     too_many = review_model_output(
         _raw(
             [_row(1, "bet"), _row(2, "bet"), _row(3, "bet"), _row(4, "reject")],
@@ -191,7 +200,7 @@ def test_coupon_rules_reject_the_whole_cycle() -> None:
         min_odd=Decimal("1.0"),
         max_legs=3,
     )
-    assert too_many.detail == "too_many_legs"
+    _assert_no_bet(too_many, "too_many_legs")
     orphan = review_model_output(
         _raw([_row(1, "bet"), _row(2, "reject")], []),
         _playable(1, 2),
@@ -199,7 +208,7 @@ def test_coupon_rules_reject_the_whole_cycle() -> None:
         min_odd=MIN,
         max_legs=3,
     )
-    assert orphan.detail == "bet_not_in_coupon"
+    _assert_no_bet(orphan, "bet_not_in_coupon")
     smuggled = review_model_output(
         _raw([_row(1, "reject"), _row(2, "bet")], [[1]]),
         _playable(1, 2),
@@ -207,7 +216,7 @@ def test_coupon_rules_reject_the_whole_cycle() -> None:
         min_odd=MIN,
         max_legs=3,
     )
-    assert smuggled.detail == "not_a_bet"
+    _assert_no_bet(smuggled, "not_a_bet")
 
 
 class _Models:
