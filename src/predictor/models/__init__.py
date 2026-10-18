@@ -1,3 +1,13 @@
+from predictor.models.advisor import (
+    AdvisorCounterfactual,
+    AdvisorCoupon,
+    AdvisorCycle,
+    AdvisorDecision,
+    AdvisorLeg,
+    AdvisorSettlementEvent,
+    AdvisorStrategy,
+    AdvisorStrategyVersion,
+)
 from predictor.models.base import Base
 from predictor.models.catalog import (
     Bookmaker,
@@ -40,6 +50,14 @@ from predictor.models.seasonal import (
 )
 
 __all__ = [
+    "AdvisorCounterfactual",
+    "AdvisorCoupon",
+    "AdvisorCycle",
+    "AdvisorDecision",
+    "AdvisorLeg",
+    "AdvisorSettlementEvent",
+    "AdvisorStrategy",
+    "AdvisorStrategyVersion",
     "Base",
     "Bookmaker",
     "Coach",

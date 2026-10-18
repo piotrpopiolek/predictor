@@ -140,7 +140,27 @@ def test_no_vendor_api_host_in_application() -> None:
 
 
 def test_alembic_head_helper_matches_w1() -> None:
-    assert current_alembic_head() == "0020_untracked_leagues"
+    assert current_alembic_head() == "0021_advisor_ledger"
+
+
+def test_advisor_lock_is_not_the_writer_lock() -> None:
+    from predictor.constants import ADVISOR_LOCK_KEY
+
+    assert ADVISOR_LOCK_KEY != WRITER_LOCK_KEY
+    assert ADVISOR_LOCK_KEY == 739202
+
+
+def test_advisor_domain_does_not_touch_io() -> None:
+    text = Path("src/predictor/services/advisor/domain.py").read_text(encoding="utf-8")
+    assert "FootballClient" not in text
+    assert "sqlalchemy" not in text
+    assert "httpx" not in text
+    assert "pg_try_advisory_lock" not in text
+    package = Path("src/predictor/services/advisor")
+    for path in package.rglob("*.py"):
+        body = path.read_text(encoding="utf-8")
+        assert "FootballClient" not in body
+        assert "api-sports.io" not in body.lower()
 
 
 def test_advisory_lock_parts_split_bigint() -> None:

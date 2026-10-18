@@ -15,6 +15,7 @@ from typing import Any, Literal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from predictor.constants import PAYOUT_KEEP
 from predictor.models.children import FixtureEvent
 from predictor.models.fixtures import Fixture
 from predictor.models.operator_bets import OperatorBet
@@ -23,7 +24,6 @@ from predictor.services.odds_parse import parse_odd_value
 
 START_STAKE = Decimal("21.00")
 STAKE_STEP = Decimal("0.10")
-PAYOUT_KEEP = Decimal("0.880")
 ODD_MIN = Decimal("1.200")
 ODD_MAX = Decimal("6.000")
 

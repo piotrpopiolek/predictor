@@ -1,6 +1,10 @@
 """Process-wide constants. The writer lock key is shared by worker and status."""
 
+from decimal import Decimal
+
 WRITER_LOCK_KEY = 739201
+ADVISOR_LOCK_KEY = 739202
+PAYOUT_KEEP = Decimal("0.880")
 LOCK_KEEPALIVES_IDLE_SECONDS = 20
 LOCK_KEEPALIVES_INTERVAL_SECONDS = 5
 LOCK_KEEPALIVES_COUNT = 3
