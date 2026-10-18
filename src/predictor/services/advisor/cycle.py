@@ -1,4 +1,9 @@
-"""Run one model call and append the cycle. Coupons are a later step."""
+"""Run one model call and append the cycle.
+
+A sandbox cycle whose status is ``ok`` writes its virtual coupons in that
+same transaction. Any other status leaves no coupon. Recommendation
+coupons are not created here.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ from predictor.services.advisor.budget import (
 )
 from predictor.services.advisor.llm.protocol import LlmProvider, ProviderError
 from predictor.services.advisor.llm.validate import PricedCandidate, review_model_output
+from predictor.services.advisor.sandbox import place_sandbox_coupons, reply_slips
 from predictor.services.lock import hold_session_lock
 
 
@@ -61,6 +67,7 @@ class CycleOutcome:
     cycle_id: int | None
     detail: str
     skipped_fixture_ids: tuple[int, ...] = ()
+    coupon_ids: tuple[int, ...] = ()
 
 
 def _clock() -> datetime:
@@ -88,7 +95,7 @@ async def run_cycle(
     *,
     clock: Callable[[], datetime] = _clock,
 ) -> CycleOutcome:
-    """Append one cycle and commit it. Does not create coupons.
+    """Append one cycle and commit it.
 
     The model call sits between two short transactions: the budget read and
     the insert. A session advisory lock is held across that gap, so a second
@@ -96,7 +103,9 @@ async def run_cycle(
     A crash after the call still leaves the paid cost in the sum.
 
     A parsed rejection is stored only when the reply is valid. An invalid
-    reply stays in ``raw_output`` so the match can be asked again.
+    reply stays in ``raw_output`` so the match can be asked again. Virtual
+    coupons are inserted in the same transaction as those decisions, and
+    only when the reply is valid and the mode is sandbox.
     """
     _require_idle(session)
     async with hold_session_lock(_engine(session), ADVISOR_CYCLE_LOCK_KEY):
@@ -136,7 +145,7 @@ async def _run_locked(
         # The SDK error has no usage. Bill the pre-call estimate so the day
         # still counts a call Google may already have metered.
         input_tokens, output_tokens, thoughts_tokens = estimate_tokens(request.prompt)
-        cycle_id, _skipped = await _commit_cycle(
+        cycle_id, _skipped, _coupons = await _commit_cycle(
             session,
             _cycle(
                 request,
@@ -186,14 +195,23 @@ async def _run_locked(
         finished_at=clock(),
         latency_ms=_latency(started),
     )
-    decisions = (
-        verdict.decision.candidates
-        if verdict.status == "ok" and verdict.decision is not None
+    parsed = verdict.decision if verdict.status == "ok" else None
+    decisions = parsed.candidates if parsed is not None else ()
+    coupon_fixtures = (
+        tuple(coupon.fixture_ids for coupon in verdict.coupons)
+        if parsed is not None
         else ()
     )
-    cycle_id, skipped = await _commit_cycle(session, cycle, request, decisions)
+    cycle_id, skipped, coupon_ids = await _commit_cycle(
+        session, cycle, request, decisions, coupon_fixtures
+    )
     return CycleOutcome(
-        True, verdict.status, cycle_id, verdict.detail, skipped_fixture_ids=skipped
+        True,
+        verdict.status,
+        cycle_id,
+        verdict.detail,
+        skipped_fixture_ids=skipped,
+        coupon_ids=coupon_ids,
     )
 
 
@@ -251,16 +269,51 @@ async def _commit_cycle(
     cycle: AdvisorCycle,
     request: CycleRequest | None = None,
     decisions: Sequence[CandidateDecision] = (),
-) -> tuple[int, tuple[int, ...]]:
+    coupon_fixtures: Sequence[Sequence[int]] = (),
+) -> tuple[int, tuple[int, ...], tuple[int, ...]]:
     skipped: list[int] = []
+    coupon_ids: tuple[int, ...] = ()
     async with session.begin():
         session.add(cycle)
         await session.flush()
         if request is not None:
+            stored: set[int] = set()
             for decision in decisions:
-                if not await _insert_decision(session, cycle.id, request, decision):
+                if await _insert_decision(session, cycle.id, request, decision):
+                    stored.add(decision.fixture_id)
+                else:
                     skipped.append(decision.fixture_id)
-        return cycle.id, tuple(skipped)
+            coupon_ids = await _place_if_sandbox(
+                session, cycle, request, stored, coupon_fixtures
+            )
+        return cycle.id, tuple(skipped), coupon_ids
+
+
+async def _place_if_sandbox(
+    session: AsyncSession,
+    cycle: AdvisorCycle,
+    request: CycleRequest,
+    stored: set[int],
+    coupon_fixtures: Sequence[Sequence[int]],
+) -> tuple[int, ...]:
+    """Coupons share the decision transaction. Only a valid sandbox reply."""
+    if request.mode != "sandbox" or cycle.validation_status != "ok":
+        return ()
+    if cycle.finished_at is None:
+        return ()
+    slips = reply_slips(coupon_fixtures, request.candidates, stored)
+    if not slips:
+        return ()
+    placement = await place_sandbox_coupons(
+        session,
+        strategy_id=request.strategy_id,
+        strategy_version_id=request.strategy_version_id,
+        slips=slips,
+        cycle_id=cycle.id,
+        placed_at=cycle.finished_at,
+        kind="llm",
+    )
+    return placement.coupon_ids
 
 
 async def _insert_decision(

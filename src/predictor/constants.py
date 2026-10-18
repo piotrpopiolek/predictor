@@ -7,6 +7,9 @@ ADVISOR_LOCK_KEY = 739202
 # Serializes one budget check plus its model call. Not the process-lifetime lock.
 ADVISOR_CYCLE_LOCK_KEY = 739203
 PAYOUT_KEEP = Decimal("0.880")
+# Virtual portfolio (FR-120). The balance is the sum of coupons, not a stored column.
+SANDBOX_BANKROLL = Decimal("1000.00")
+SANDBOX_STAKE = Decimal("10.00")
 LOCK_KEEPALIVES_IDLE_SECONDS = 20
 LOCK_KEEPALIVES_INTERVAL_SECONDS = 5
 LOCK_KEEPALIVES_COUNT = 3

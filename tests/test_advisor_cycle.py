@@ -15,6 +15,7 @@ from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorCycle,
     AdvisorDecision,
+    AdvisorLeg,
     AdvisorStrategy,
     AdvisorStrategyVersion,
 )
@@ -193,7 +194,13 @@ async def test_run_cycle_appends_a_valid_call_and_respects_the_budget() -> None:
                     .select_from(AdvisorDecision)
                     .where(AdvisorDecision.cycle_id == invalid.cycle_id)
                 )
+                invalid_coupons = await session.scalar(
+                    select(func.count())
+                    .select_from(AdvisorCoupon)
+                    .where(AdvisorCoupon.cycle_id == invalid.cycle_id)
+                )
                 assert invalid_rows == 0
+                assert invalid_coupons == 0
 
             failed = _Provider(error=ProviderError("timeout"))
             failed.session = session
@@ -215,6 +222,13 @@ async def test_run_cycle_appends_a_valid_call_and_respects_the_budget() -> None:
                 price_output=Decimal("1.25"),
             )
             assert failed_cycle.cost_pln > 0
+            async with session.begin():
+                failed_coupons = await session.scalar(
+                    select(func.count())
+                    .select_from(AdvisorCoupon)
+                    .where(AdvisorCoupon.cycle_id == provider_error.cycle_id)
+                )
+            assert failed_coupons == 0
 
             async with session.begin():
                 session.add(
@@ -252,6 +266,14 @@ async def test_run_cycle_appends_a_valid_call_and_respects_the_budget() -> None:
             assert blocked.open_during_call is False
             assert allowed.called
             assert allowed.status == "ok"
+            assert allowed.coupon_ids == ()
+            async with session.begin():
+                recommend_coupons = await session.scalar(
+                    select(func.count())
+                    .select_from(AdvisorCoupon)
+                    .where(AdvisorCoupon.cycle_id == allowed.cycle_id)
+                )
+            assert recommend_coupons == 0
     finally:
         async with factory() as session, session.begin():
             await _cleanup(session, strategy_id, version_id)
@@ -423,17 +445,14 @@ async def _cleanup(
 ) -> None:
     if strategy_id:
         await session.execute(
+            delete(AdvisorLeg).where(AdvisorLeg.strategy_id == strategy_id)
+        )
+        await session.execute(
             delete(AdvisorDecision).where(AdvisorDecision.strategy_id == strategy_id)
         )
     if version_id:
         await session.execute(
-            delete(AdvisorCoupon).where(
-                AdvisorCoupon.cycle_id.in_(
-                    select(AdvisorCycle.id).where(
-                        AdvisorCycle.strategy_version_id == version_id
-                    )
-                )
-            )
+            delete(AdvisorCoupon).where(AdvisorCoupon.strategy_version_id == version_id)
         )
         await session.execute(
             delete(AdvisorCycle).where(AdvisorCycle.strategy_version_id == version_id)
