@@ -28,15 +28,20 @@ def call_cost(
     return raw.quantize(_QUANTUM, rounding=ROUND_HALF_UP)
 
 
+def estimate_tokens(prompt: str) -> tuple[int, int, int]:
+    """Input from the prompt length, plus a fixed output reserve. Thoughts are 0."""
+    return max(1, len(prompt) // 4), RESERVED_OUTPUT_TOKENS, 0
+
+
 def estimate_call_cost(
     prompt: str, *, price_input: Decimal, price_output: Decimal
 ) -> Decimal:
-    """Upper bound used before the call. Output includes a reserve for thoughts."""
-    input_tokens = max(1, len(prompt) // 4)
+    """Cost of ``estimate_tokens`` at the configured prices."""
+    input_tokens, output_tokens, thoughts_tokens = estimate_tokens(prompt)
     return call_cost(
         input_tokens,
-        RESERVED_OUTPUT_TOKENS,
-        0,
+        output_tokens,
+        thoughts_tokens,
         price_input=price_input,
         price_output=price_output,
     )

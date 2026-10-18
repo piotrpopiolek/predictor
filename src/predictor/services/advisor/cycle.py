@@ -10,6 +10,7 @@ from time import perf_counter
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from predictor.constants import ADVISOR_CYCLE_LOCK_KEY
@@ -19,6 +20,7 @@ from predictor.services.advisor.budget import (
     budget_allows,
     call_cost,
     estimate_call_cost,
+    estimate_tokens,
     utc_day_bounds,
 )
 from predictor.services.advisor.llm.protocol import LlmProvider, ProviderError
@@ -58,6 +60,7 @@ class CycleOutcome:
     status: str
     cycle_id: int | None
     detail: str
+    skipped_fixture_ids: tuple[int, ...] = ()
 
 
 def _clock() -> datetime:
@@ -130,7 +133,10 @@ async def _run_locked(
             request.prompt, timeout=float(settings.llm_timeout_seconds)
         )
     except ProviderError as exc:
-        cycle_id = await _commit_cycle(
+        # The SDK error has no usage. Bill the pre-call estimate so the day
+        # still counts a call Google may already have metered.
+        input_tokens, output_tokens, thoughts_tokens = estimate_tokens(request.prompt)
+        cycle_id, _skipped = await _commit_cycle(
             session,
             _cycle(
                 request,
@@ -139,10 +145,10 @@ async def _run_locked(
                 model_version=provider.model,
                 status="provider_error",
                 raw_output=None,
-                input_tokens=0,
-                output_tokens=0,
-                thoughts_tokens=0,
-                cost=Decimal("0"),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                thoughts_tokens=thoughts_tokens,
+                cost=estimated,
                 started_at=now,
                 finished_at=clock(),
                 latency_ms=_latency(started),
@@ -185,8 +191,10 @@ async def _run_locked(
         if verdict.status == "ok" and verdict.decision is not None
         else ()
     )
-    cycle_id = await _commit_cycle(session, cycle, request, decisions)
-    return CycleOutcome(True, verdict.status, cycle_id, verdict.detail)
+    cycle_id, skipped = await _commit_cycle(session, cycle, request, decisions)
+    return CycleOutcome(
+        True, verdict.status, cycle_id, verdict.detail, skipped_fixture_ids=skipped
+    )
 
 
 def _cycle(
@@ -243,44 +251,75 @@ async def _commit_cycle(
     cycle: AdvisorCycle,
     request: CycleRequest | None = None,
     decisions: Sequence[CandidateDecision] = (),
-) -> int:
+) -> tuple[int, tuple[int, ...]]:
+    skipped: list[int] = []
     async with session.begin():
         session.add(cycle)
         await session.flush()
-        if request is not None and decisions:
-            _add_decisions(session, cycle.id, request, decisions)
-            await session.flush()
-        return cycle.id
+        if request is not None:
+            for decision in decisions:
+                if not await _insert_decision(session, cycle.id, request, decision):
+                    skipped.append(decision.fixture_id)
+        return cycle.id, tuple(skipped)
 
 
-def _add_decisions(
+async def _insert_decision(
     session: AsyncSession,
     cycle_id: int,
     request: CycleRequest,
-    candidates: Sequence[CandidateDecision],
-) -> None:
-    by_id = {item.fixture_id: item for item in request.candidates}
-    for decision in candidates:
-        context = by_id[decision.fixture_id]
-        session.add(
-            AdvisorDecision(
-                cycle_id=cycle_id,
-                strategy_id=request.strategy_id,
-                fixture_id=context.fixture_id,
-                period=context.period,
-                goals_home=context.goals_home,
-                goals_away=context.goals_away,
-                ordinal=context.ordinal,
-                candidate_rule=context.candidate_rule,
-                decision=decision.decision,
-                reasons=[reason.value for reason in decision.reasons],
-                rationale=decision.rationale,
-                estimated_probability=decision.estimated_probability,
-                confidence=decision.confidence,
-                odd_at_eval=context.odd,
-                n=context.n,
-            )
-        )
+    decision: CandidateDecision,
+) -> bool:
+    """False when this reject or wait_timeout is already stored for the state."""
+    context = _context(request, decision.fixture_id)
+    try:
+        async with session.begin_nested():
+            session.add(_decision_row(cycle_id, request.strategy_id, context, decision))
+            await session.flush()
+    except IntegrityError as exc:
+        if not _is_rejected_state_conflict(exc):
+            raise
+        return False
+    return True
+
+
+def _context(request: CycleRequest, fixture_id: int) -> CycleCandidate:
+    for item in request.candidates:
+        if item.fixture_id == fixture_id:
+            return item
+    raise KeyError(fixture_id)
+
+
+def _is_rejected_state_conflict(exc: IntegrityError) -> bool:
+    orig = getattr(exc, "orig", None)
+    diag = getattr(orig, "diag", None)
+    return (
+        getattr(diag, "constraint_name", None) == "uq_advisor_decisions_rejected_state"
+    )
+
+
+def _decision_row(
+    cycle_id: int,
+    strategy_id: int,
+    context: CycleCandidate,
+    decision: CandidateDecision,
+) -> AdvisorDecision:
+    return AdvisorDecision(
+        cycle_id=cycle_id,
+        strategy_id=strategy_id,
+        fixture_id=context.fixture_id,
+        period=context.period,
+        goals_home=context.goals_home,
+        goals_away=context.goals_away,
+        ordinal=context.ordinal,
+        candidate_rule=context.candidate_rule,
+        decision=decision.decision,
+        reasons=[reason.value for reason in decision.reasons],
+        rationale=decision.rationale,
+        estimated_probability=decision.estimated_probability,
+        confidence=decision.confidence,
+        odd_at_eval=context.odd,
+        n=context.n,
+    )
 
 
 def _latency(started: float) -> int:

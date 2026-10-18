@@ -23,7 +23,10 @@ from predictor.models.fixtures import Fixture, Team
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.advisor import AdvisorSettings
 from predictor.schemas.settings import Settings
-from predictor.services.advisor.budget import RESERVED_OUTPUT_TOKENS
+from predictor.services.advisor.budget import (
+    RESERVED_OUTPUT_TOKENS,
+    estimate_call_cost,
+)
 from predictor.services.advisor.cycle import (
     CycleCandidate,
     CycleRequest,
@@ -200,6 +203,18 @@ async def test_run_cycle_appends_a_valid_call_and_respects_the_budget() -> None:
             assert failed.open_during_call is False
             assert provider_error.status == "provider_error"
             assert provider_error.detail == "timeout"
+            async with session.begin():
+                failed_cycle = await session.get(AdvisorCycle, provider_error.cycle_id)
+            assert failed_cycle is not None
+            assert failed_cycle.input_tokens == max(1, len(request.prompt) // 4)
+            assert failed_cycle.output_tokens == RESERVED_OUTPUT_TOKENS
+            assert failed_cycle.thoughts_tokens == 0
+            assert failed_cycle.cost_pln == estimate_call_cost(
+                request.prompt,
+                price_input=Decimal("0.50"),
+                price_output=Decimal("1.25"),
+            )
+            assert failed_cycle.cost_pln > 0
 
             async with session.begin():
                 session.add(
@@ -240,6 +255,71 @@ async def test_run_cycle_appends_a_valid_call_and_respects_the_budget() -> None:
     finally:
         async with factory() as session, session.begin():
             await _cleanup(session, strategy_id, version_id)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_reject_keeps_the_paid_cycle() -> None:
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    version_id = 0
+    strategy_id = 0
+    try:
+        async with factory() as session:
+            async with session.begin():
+                version_id, strategy_id = await _seed(
+                    session,
+                    league=880_021,
+                    home=880_022,
+                    away=880_023,
+                    fixture=880_024,
+                    name="advisor-cycle-reject",
+                )
+            request = replace(
+                _request(),
+                strategy_id=strategy_id,
+                strategy_version_id=version_id,
+                candidates=(replace(_request().candidates[0], fixture_id=880_024),),
+            )
+            first = _Provider(_reply("reject", 880_024))
+            first.session = session
+            original = await run_cycle(
+                session, first, _settings(), request, clock=lambda: NOW
+            )
+            again = _Provider(_reply("reject", 880_024))
+            again.session = session
+            repeat = await run_cycle(
+                session, again, _settings(), request, clock=lambda: NOW
+            )
+            assert repeat.status == "ok"
+            assert repeat.skipped_fixture_ids == (880_024,)
+            async with session.begin():
+                repeat_rows = await session.scalar(
+                    select(func.count())
+                    .select_from(AdvisorDecision)
+                    .where(AdvisorDecision.cycle_id == repeat.cycle_id)
+                )
+                kept = await session.scalar(
+                    select(func.count())
+                    .select_from(AdvisorDecision)
+                    .where(AdvisorDecision.cycle_id == original.cycle_id)
+                )
+                repeat_cycle = await session.get(AdvisorCycle, repeat.cycle_id)
+            assert repeat_rows == 0
+            assert kept == 1
+            assert repeat_cycle is not None
+            assert repeat_cycle.cost_pln == Decimal("1.1250")
+    finally:
+        async with factory() as session, session.begin():
+            await _cleanup(
+                session,
+                strategy_id,
+                version_id,
+                league=880_021,
+                home=880_022,
+                away=880_023,
+                fixture=880_024,
+            )
         await engine.dispose()
 
 
