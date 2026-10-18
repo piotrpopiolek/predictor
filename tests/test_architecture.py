@@ -161,6 +161,14 @@ def test_advisor_domain_does_not_touch_io() -> None:
         body = path.read_text(encoding="utf-8")
         assert "FootballClient" not in body
         assert "api-sports.io" not in body.lower()
+        if path.name != "gemini.py":
+            assert "google.genai" not in body
+            assert "from google" not in body
+    gemini = Path("src/predictor/services/advisor/llm/gemini.py").read_text(
+        encoding="utf-8"
+    )
+    assert "tenacity" not in gemini
+    assert "google.genai" in gemini
 
 
 def test_advisory_lock_parts_split_bigint() -> None:

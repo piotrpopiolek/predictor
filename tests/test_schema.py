@@ -47,6 +47,14 @@ EXPECTED_TABLES = frozenset(
         "etl_tasks",
         "operator_bets",
         "untracked_leagues",
+        "advisor_strategies",
+        "advisor_strategy_versions",
+        "advisor_cycles",
+        "advisor_decisions",
+        "advisor_counterfactuals",
+        "advisor_coupons",
+        "advisor_legs",
+        "advisor_settlement_events",
     }
 )
 
@@ -85,11 +93,11 @@ def test_migrated_schema_has_domain_and_etl_tables() -> None:
     assert "alembic_version" in names
 
 
-def test_alembic_head_is_untracked_leagues() -> None:
+def test_alembic_head_is_advisor_ledger() -> None:
     with app_connect() as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     assert version is not None
-    assert version[0] == "0020_untracked_leagues"
+    assert version[0] == "0021_advisor_ledger"
 
 
 def test_fixture_odds_live_pk_is_append_only() -> None:
