@@ -169,6 +169,8 @@ def test_advisor_domain_does_not_touch_io() -> None:
     )
     assert "tenacity" not in gemini
     assert "google.genai" in gemini
+    assert "_ATTEMPTS = 5" in gemini
+    assert "HttpRetryOptions(attempts=_ATTEMPTS)" in gemini
 
 
 def test_advisory_lock_parts_split_bigint() -> None:

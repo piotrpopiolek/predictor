@@ -80,6 +80,15 @@ def test_advisor_settings_load(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.llm_api_key.get_secret_value() == "secret"
 
 
+def test_nan_timeout_is_rejected_at_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_API_KEY", "secret")
+    monkeypatch.setenv("LLM_PRICE_INPUT_PLN_PER_MTOK", "0.50")
+    monkeypatch.setenv("LLM_PRICE_OUTPUT_PLN_PER_MTOK", "1.25")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "nan")
+    with pytest.raises(SettingsError, match="LLM_TIMEOUT_SECONDS"):
+        load_advisor_settings()
+
+
 def test_valid_coupon_uses_database_odds_not_the_reply() -> None:
     raw = _raw(
         [_row(1, "bet"), _row(2, "reject")],
@@ -206,12 +215,14 @@ class _Models:
         self.behavior = behavior
         self.calls = 0
         self.prompts: list[str] = []
+        self.configs: list[object] = []
 
     async def generate_content(
         self, *, model: str, contents: str, config: object
     ) -> object:
         self.calls += 1
         self.prompts.append(contents)
+        self.configs.append(config)
         behavior = self.behavior
         if isinstance(behavior, Exception):
             raise behavior
@@ -232,7 +243,11 @@ def _provider(behavior: object) -> tuple[GeminiProvider, _Models]:
 
 
 def _ok() -> SimpleNamespace:
-    usage = SimpleNamespace(prompt_token_count=11, candidates_token_count=7)
+    usage = SimpleNamespace(
+        prompt_token_count=11,
+        candidates_token_count=7,
+        thoughts_token_count=5,
+    )
     return SimpleNamespace(
         text='{"candidates":[]}',
         usage_metadata=usage,
@@ -252,6 +267,10 @@ async def test_gemini_calls_once_and_keeps_the_key_out_of_the_prompt() -> None:
     assert completion.model_version == "gemini-2.5-flash-001"
     assert completion.input_tokens == 11
     assert completion.output_tokens == 7
+    assert completion.thoughts_tokens == 5
+    assert completion.billed_output_tokens == 12
+    retry = models.configs[0].http_options.retry_options  # type: ignore[attr-defined]
+    assert retry.attempts == 5
 
 
 @pytest.mark.asyncio
@@ -262,6 +281,8 @@ async def test_missing_model_version_falls_back_to_the_requested_model() -> None
     completion = await provider.decide("prompt", timeout=1)
     assert completion.model == "gemini-2.5-flash"
     assert completion.model_version == "gemini-2.5-flash"
+    assert completion.thoughts_tokens == 0
+    assert completion.billed_output_tokens == 1
 
 
 @pytest.mark.asyncio
@@ -289,6 +310,12 @@ async def test_gemini_timeout_network_and_status_do_not_retry() -> None:
         await network.decide("prompt", timeout=1)
     assert down.value.code == "network"
     assert network_models.calls == 1
+
+    expired, expired_models = _provider(_Status(408))
+    with pytest.raises(ProviderError) as http_timeout:
+        await expired.decide("prompt", timeout=1)
+    assert http_timeout.value.code == "timeout"
+    assert expired_models.calls == 1
 
     limited, limited_models = _provider(_Status(429))
     with pytest.raises(ProviderError) as rate:

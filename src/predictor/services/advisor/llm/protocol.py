@@ -24,6 +24,12 @@ class LlmCompletion:
     model_version: str
     input_tokens: int
     output_tokens: int
+    thoughts_tokens: int
+
+    @property
+    def billed_output_tokens(self) -> int:
+        """Candidate tokens plus thinking tokens. Both are priced as output."""
+        return self.output_tokens + self.thoughts_tokens
 
 
 class LlmProvider(Protocol):
@@ -35,7 +41,7 @@ class LlmProvider(Protocol):
 
 
 def provider_failure_code(exc: Exception) -> str | None:
-    """Timeout, network, 429, and 5xx. Other errors are not relabelled."""
+    """Timeout, network, 408, 429, and 5xx. Other errors are not relabelled."""
     if isinstance(exc, TimeoutError):
         return "timeout"
     if isinstance(exc, httpx.TimeoutException):
@@ -43,6 +49,8 @@ def provider_failure_code(exc: Exception) -> str | None:
     if isinstance(exc, httpx.TransportError):
         return "network"
     code = getattr(exc, "code", None)
+    if code == 408:
+        return "timeout"
     if code == 429:
         return "rate_limit"
     if isinstance(code, int) and code >= 500:

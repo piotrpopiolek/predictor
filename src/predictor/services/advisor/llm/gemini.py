@@ -12,6 +12,8 @@ from predictor.services.advisor.llm.protocol import (
 )
 
 _PROVIDER = "google"
+# Includes the first call. The SDK retries 408, 429 and 5xx inside this one request.
+_ATTEMPTS = 5
 
 
 class GeminiProvider:
@@ -51,6 +53,7 @@ class GeminiProvider:
             model_version=_model_version(response, self.model),
             input_tokens=_tokens(usage, "prompt_token_count"),
             output_tokens=_tokens(usage, "candidates_token_count"),
+            thoughts_tokens=_tokens(usage, "thoughts_token_count"),
         )
 
     async def _generate(self, prompt: str, timeout: float) -> Any:
@@ -63,7 +66,10 @@ class GeminiProvider:
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 temperature=0,
-                http_options=types.HttpOptions(timeout=int(timeout * 1000)),
+                http_options=types.HttpOptions(
+                    timeout=int(timeout * 1000),
+                    retry_options=types.HttpRetryOptions(attempts=_ATTEMPTS),
+                ),
             ),
         )
 

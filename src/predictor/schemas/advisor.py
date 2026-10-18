@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from decimal import Decimal
 from enum import StrEnum
 
@@ -116,8 +117,8 @@ class AdvisorSettings(BaseSettings):
     @field_validator("llm_timeout_seconds")
     @classmethod
     def _timeout(cls, value: float) -> float:
-        if value <= 0 or value > 120:
-            raise ValueError("must be between 0 and 120 seconds")
+        if not math.isfinite(value) or value <= 0 or value > 120:
+            raise ValueError("must be finite and between 0 and 120 seconds")
         return value
 
     @field_validator("llm_price_input_pln_per_mtok", "llm_price_output_pln_per_mtok")
