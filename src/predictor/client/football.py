@@ -111,7 +111,7 @@ class FootballClient:
         call_ceiling: int,
         per_minute: int,
     ) -> None:
-        """Refuse HTTP once the sleep, the call pool, or the minute cap is spent."""
+        """Refuse HTTP once the deadline, the call pool, or the minute cap is spent."""
         self._window_deadline = deadline
         self._window_ceiling = call_ceiling
         self._window_per_minute = per_minute

@@ -145,35 +145,54 @@ class Scheduler:
         return self._live_interval_seconds
 
     async def run(self, stop: asyncio.Event) -> None:
+        """Score polls keep their clock. History sends one allowance."""
+        score_clock = [time.monotonic()]
         while not stop.is_set():
-            await self._tick(stop)
-            await self._drain_during_sleep(stop, self._sleep_seconds())
+            if time.monotonic() >= score_clock[0]:
+                await self._tick(stop)
+                score_clock[0] = time.monotonic() + self._sleep_seconds()
+            if stop.is_set():
+                return
+            if not self._work_started:
+                await self._sleep_until(stop, score_clock[0])
+                continue
+            await self._spend_history(
+                stop,
+                self._sleep_seconds(),
+                score_clock=score_clock,
+            )
+            if stop.is_set():
+                return
+            await self._sleep_until(stop, score_clock[0])
+
+    async def _sleep_until(self, stop: asyncio.Event, when: float) -> None:
+        leftover = when - time.monotonic()
+        if leftover > 0 and not stop.is_set():
+            with suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=leftover)
 
     async def _drain_during_sleep(self, stop: asyncio.Event, window: float) -> None:
-        """Spend the history call pool inside the sleep that already follows a tick.
-
-        The next score poll still starts when this window ends. A slow API
-        stops early and leaves the unused calls for the next window. The
-        vendor minute cap stops a burst.
-        """
-        started = time.monotonic()
-        deadline = started + window
+        """Spend one history allowance. ``window`` sizes it and does not end it."""
         try:
             if window > 0 and self._work_started and not stop.is_set():
-                await self._spend_history(stop, deadline, window)
+                await self._spend_history(stop, window)
         finally:
             self._close_history_window()
-            leftover = deadline - time.monotonic()
-            if leftover > 0 and not stop.is_set():
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(stop.wait(), timeout=leftover)
+
+    def _history_deadline(self) -> float:
+        """Window stays open until UTC reset. The call cap ends it sooner."""
+        return time.monotonic() + seconds_until_utc_midnight(self._now())
 
     async def _spend_history(
         self,
         stop: asyncio.Event,
-        deadline: float,
         window: float,
+        score_clock: list[float] | None = None,
     ) -> None:
+        """Send one cycle's allowance. A due score tick does not reset it.
+
+        The minute cap ends this drain. The next score tick starts a new one.
+        """
         quota = self._quota
         plan = self._plan
         if quota is None or plan is None or quota.source != "api" or plan.overloaded:
@@ -190,27 +209,59 @@ class Scheduler:
         if allowance <= 0:
             return
         baseline = self._client_calls()
+        deadline = self._history_deadline()
         self._open_history_window(deadline, baseline + allowance)
         once_done: set[int] = set()
-        while not stop.is_set() and time.monotonic() < deadline:
-            if self._client_calls() - baseline >= allowance or self._minute_full():
-                break
-            made = await self._one_history_pass(
-                stop,
-                deadline,
-                baseline,
-                allowance,
-                once_done,
+        spent = 0
+        try:
+            while not stop.is_set():
+                spent = max(0, self._client_calls() - baseline)
+                if score_clock is not None and time.monotonic() >= score_clock[0]:
+                    kept = await self._yield_score_tick(stop, score_clock, baseline)
+                    if kept is None:
+                        break
+                    baseline = kept
+                    deadline = self._history_deadline()
+                    self._open_history_window(deadline, baseline + allowance)
+                    continue
+                if spent >= allowance or self._minute_full():
+                    break
+                made = await self._one_history_pass(
+                    stop,
+                    deadline,
+                    baseline,
+                    allowance,
+                    once_done,
+                )
+                if not made:
+                    break
+        finally:
+            self._close_history_window()
+            log_json(
+                logging.INFO,
+                service="worker",
+                event="history_window",
+                allowance=allowance,
+                spent=spent,
             )
-            if not made:
-                break
-        log_json(
-            logging.INFO,
-            service="worker",
-            event="history_window",
-            allowance=allowance,
-            spent=self._client_calls() - baseline,
-        )
+
+    async def _yield_score_tick(
+        self,
+        stop: asyncio.Event,
+        score_clock: list[float],
+        baseline: int,
+    ) -> int | None:
+        """Run a due score tick. History calls already made stay on ``baseline``.
+
+        Returns the baseline to keep using, or None when history should stop.
+        """
+        self._close_history_window()
+        history_spent = self._client_calls() - baseline
+        await self._tick(stop)
+        score_clock[0] = time.monotonic() + self._sleep_seconds()
+        if stop.is_set() or not self._work_started:
+            return None
+        return self._client_calls() - history_spent
 
     async def _one_history_pass(
         self,

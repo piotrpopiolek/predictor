@@ -781,13 +781,67 @@ async def test_sleep_spends_the_history_pool(valid_env: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sleep_stops_when_the_window_ends(valid_env: None) -> None:
-    now = datetime(2026, 10, 11, 23, 59, 50, tzinfo=UTC)
+async def test_history_drains_past_the_score_sleep(valid_env: None) -> None:
+    now = datetime(2026, 10, 11, 16, 0, tzinfo=UTC)
     client = _history_client(now)
+    opened: dict[str, float] = {}
 
     async def history() -> None:
         client.calls += 1
-        await asyncio.sleep(0.08)
+        if client.calls == 1:
+            await asyncio.sleep(0.2)
+
+    def open_history_window(
+        *,
+        deadline: float,
+        call_ceiling: int,
+        per_minute: int,
+    ) -> None:
+        del call_ceiling, per_minute
+        opened["deadline"] = deadline
+        opened["at"] = time.monotonic()
+
+    client.open_history_window = open_history_window
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        client,
+        _unused_factory(),
+        handlers={9: history},
+        now_fn=lambda: now,
+        live_match_count=lambda: 0,
+    )
+    scheduler._work_started = True
+    scheduler._quota = client.quota
+    scheduler._plan = plan_live_budget(
+        live_matches=0,
+        remaining=70000,
+        now=now,
+        limit_day=75000,
+        buffer_percent=0.1,
+    )
+    window = 0.05
+    allowance = history_call_allowance(
+        surplus=70000 - scheduler._plan.safety_buffer - scheduler._plan.full_reserve,
+        seconds_left=seconds_until_utc_midnight(now),
+        cycle_seconds=queue_cycle_seconds(window, 60),
+    )
+    await scheduler._drain_during_sleep(asyncio.Event(), window)
+    assert allowance > 1
+    assert client.calls == allowance
+    assert opened["deadline"] - opened["at"] > window
+
+
+@pytest.mark.asyncio
+async def test_score_tick_runs_on_its_clock_during_history(valid_env: None) -> None:
+    now = datetime(2026, 10, 11, 16, 0, tzinfo=UTC)
+    client = _history_client(now)
+    ticks: list[int] = []
+
+    async def history() -> None:
+        client.calls += 1
+        if client.calls <= 3:
+            await asyncio.sleep(0.04)
 
     settings = load_settings()
     scheduler = Scheduler(
@@ -796,21 +850,40 @@ async def test_sleep_stops_when_the_window_ends(valid_env: None) -> None:
         _unused_factory(),
         handlers={9: history},
         now_fn=lambda: now,
-        live_match_count=lambda: 1,
+        live_match_count=lambda: 0,
     )
     scheduler._work_started = True
     scheduler._quota = client.quota
     scheduler._plan = plan_live_budget(
-        live_matches=1,
+        live_matches=0,
         remaining=70000,
         now=now,
         limit_day=75000,
         buffer_percent=0.1,
     )
-    started = time.monotonic()
-    await scheduler._drain_during_sleep(asyncio.Event(), 0.15)
-    assert 1 <= client.calls <= 4
-    assert time.monotonic() - started < 0.6
+    window = 0.05
+    allowance = history_call_allowance(
+        surplus=70000 - scheduler._plan.safety_buffer - scheduler._plan.full_reserve,
+        seconds_left=seconds_until_utc_midnight(now),
+        cycle_seconds=queue_cycle_seconds(window, 60),
+    )
+
+    async def fake_tick(stop: asyncio.Event) -> None:
+        del stop
+        ticks.append(client.calls)
+        scheduler._work_started = True
+
+    scheduler._tick = fake_tick  # type: ignore[method-assign]
+    scheduler._sleep_seconds = lambda: window  # type: ignore[method-assign]
+    await scheduler._spend_history(
+        asyncio.Event(),
+        window,
+        score_clock=[time.monotonic() + window],
+    )
+    assert allowance > 3
+    assert ticks
+    assert ticks[0] < client.calls
+    assert client.calls == allowance
 
 
 @pytest.mark.asyncio
