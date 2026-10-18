@@ -240,7 +240,7 @@ def _non_negative_float(params: dict[str, Any] | None, key: str) -> float:
     raw = params.get(key)
     try:
         value = float(raw) if raw is not None else 0.0
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
     return value if value > 0 else 0.0
 

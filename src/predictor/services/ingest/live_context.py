@@ -670,7 +670,7 @@ def _unique(raw: Sequence[int]) -> list[int]:
     for item in raw:
         try:
             value = int(item)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if value in seen:
             continue

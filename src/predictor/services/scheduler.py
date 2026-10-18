@@ -452,7 +452,7 @@ class Scheduler:
                         None if plan is None else plan.allowed_per_minute
                     ),
                 )
-        except (TypeError, AttributeError):
+        except TypeError, AttributeError:
             return
         except Exception:
             log_json(logging.WARNING, service="worker", event="quota_persist_failed")
@@ -472,7 +472,7 @@ class Scheduler:
                     quota=self._quota,
                     now=self._now(),
                 )
-        except (TypeError, AttributeError):
+        except TypeError, AttributeError:
             return
         if wrote:
             log_json(
@@ -621,7 +621,7 @@ class Scheduler:
             )
             self._remember_status(spent)
             return spent
-        except (RetryableHttpError, FootballHttpError):
+        except RetryableHttpError, FootballHttpError:
             log_json(logging.WARNING, service="worker", event="quota_refresh_failed")
             if cached is not None:
                 return cached

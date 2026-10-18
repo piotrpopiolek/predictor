@@ -79,7 +79,7 @@ def next_goal_ids_from_mapping(raw: object) -> set[int]:
     for item in raw:
         try:
             found.add(int(item))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return found
 
