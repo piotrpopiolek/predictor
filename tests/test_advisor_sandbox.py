@@ -15,6 +15,7 @@ from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorCycle,
     AdvisorDecision,
+    AdvisorLangfuseOutbox,
     AdvisorLeg,
     AdvisorStrategy,
     AdvisorStrategyVersion,
@@ -583,6 +584,105 @@ async def test_paused_strategy_keeps_the_decision_and_skips_the_coupon() -> None
         await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_an_open_match_does_not_block_a_new_one() -> None:
+    """Skip an open leg. Keep a new single. Drop a coupon that mixes both."""
+    baseline = _World(0, 0, 880_451, 880_452, 880_453, (880_454, 880_455))
+    llm = _World(0, 0, 880_461, 880_462, 880_463, (880_464, 880_465, 880_466))
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    try:
+        async with factory() as session:
+            async with session.begin():
+                baseline = await _seed(
+                    session, baseline, name="advisor-sandbox-mix", kind="baseline"
+                )
+                await _open_coupon(
+                    session,
+                    baseline,
+                    fixture_id=880_454,
+                    stake=SANDBOX_STAKE,
+                    odd=Decimal("1.500"),
+                )
+            placed = await place_baseline(
+                session,
+                strategy_id=baseline.strategy_id,
+                strategy_version_id=baseline.version_id,
+                candidates=(_leg(880_454, "1.40"), _leg(880_455, "1.20")),
+                clock=lambda: NOW,
+            )
+            assert placed.paused is False
+            assert len(placed.coupon_ids) == 1
+            async with session.begin():
+                fresh = (
+                    await session.scalars(
+                        select(AdvisorLeg.fixture_id).where(
+                            AdvisorLeg.coupon_id == placed.coupon_ids[0]
+                        )
+                    )
+                ).all()
+                held = await _fixture_ids(session, baseline.strategy_id)
+            assert list(fresh) == [880_455]
+            assert held == [880_454, 880_455]
+
+            async with session.begin():
+                llm = await _seed(
+                    session, llm, name="advisor-sandbox-mix-llm", kind="llm"
+                )
+                await _open_coupon(
+                    session,
+                    llm,
+                    fixture_id=880_464,
+                    stake=SANDBOX_STAKE,
+                    odd=Decimal("1.700"),
+                )
+            combined = await run_cycle(
+                session,
+                _Provider(
+                    _reply(
+                        ((880_464, "bet"), (880_465, "bet")),
+                        ((880_464, 880_465),),
+                    )
+                ),
+                _settings(),
+                _request(llm, (_leg(880_464, "1.70"), _leg(880_465, "1.80"))),
+                clock=lambda: NOW,
+            )
+            assert combined.status == "ok"
+            assert combined.coupon_ids == ()
+            async with session.begin():
+                assert await _fixture_ids(session, llm.strategy_id) == [880_464]
+            singles = await run_cycle(
+                session,
+                _Provider(
+                    _reply(
+                        ((880_464, "bet"), (880_466, "bet")),
+                        ((880_464,), (880_466,)),
+                    )
+                ),
+                _settings(),
+                _request(llm, (_leg(880_464, "1.70"), _leg(880_466, "1.75"))),
+                clock=lambda: NOW,
+            )
+            assert singles.status == "ok"
+            assert len(singles.coupon_ids) == 1
+            async with session.begin():
+                added = (
+                    await session.scalars(
+                        select(AdvisorLeg.fixture_id).where(
+                            AdvisorLeg.coupon_id == singles.coupon_ids[0]
+                        )
+                    )
+                ).all()
+                held = await _fixture_ids(session, llm.strategy_id)
+            assert list(added) == [880_466]
+            assert held == [880_464, 880_466]
+    finally:
+        async with factory() as session, session.begin():
+            await _wipe(session, (baseline, llm))
+        await engine.dispose()
+
+
 def _request(world: _World, candidates: tuple[CycleCandidate, ...]) -> CycleRequest:
     return CycleRequest(
         strategy_id=world.strategy_id,
@@ -684,15 +784,26 @@ async def _open_coupon(
     )
 
 
+async def _fixture_ids(session, strategy_id: int) -> list[int]:
+    rows = (
+        await session.scalars(
+            select(AdvisorLeg.fixture_id)
+            .where(AdvisorLeg.strategy_id == strategy_id)
+            .order_by(AdvisorLeg.fixture_id)
+        )
+    ).all()
+    return list(rows)
+
+
 async def _wipe(session, worlds: tuple[_World, ...]) -> None:
-    league = 0
-    home = 0
-    away = 0
+    leagues: set[int] = set()
+    teams: set[int] = set()
     fixtures: set[int] = set()
     for world in worlds:
         if not world.strategy_id:
             continue
-        league, home, away = world.league, world.home, world.away
+        leagues.add(world.league)
+        teams.update((world.home, world.away))
         fixtures.update(world.fixtures)
         await session.execute(
             delete(AdvisorLeg).where(AdvisorLeg.strategy_id == world.strategy_id)
@@ -706,6 +817,15 @@ async def _wipe(session, worlds: tuple[_World, ...]) -> None:
             await session.execute(
                 delete(AdvisorCoupon).where(
                     AdvisorCoupon.strategy_version_id == world.version_id
+                )
+            )
+            await session.execute(
+                delete(AdvisorLangfuseOutbox).where(
+                    AdvisorLangfuseOutbox.cycle_id.in_(
+                        select(AdvisorCycle.id).where(
+                            AdvisorCycle.strategy_version_id == world.version_id
+                        )
+                    )
                 )
             )
             await session.execute(
@@ -723,5 +843,7 @@ async def _wipe(session, worlds: tuple[_World, ...]) -> None:
         )
     if fixtures:
         await session.execute(delete(Fixture).where(Fixture.id.in_(fixtures)))
-        await session.execute(delete(Team).where(Team.id.in_((home, away))))
-        await session.execute(delete(League).where(League.id == league))
+    if teams:
+        await session.execute(delete(Team).where(Team.id.in_(teams)))
+    if leagues:
+        await session.execute(delete(League).where(League.id.in_(leagues)))

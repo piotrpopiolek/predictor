@@ -15,6 +15,7 @@ from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorCycle,
     AdvisorDecision,
+    AdvisorLangfuseOutbox,
     AdvisorLeg,
     AdvisorStrategy,
     AdvisorStrategyVersion,
@@ -453,6 +454,15 @@ async def _cleanup(
     if version_id:
         await session.execute(
             delete(AdvisorCoupon).where(AdvisorCoupon.strategy_version_id == version_id)
+        )
+        await session.execute(
+            delete(AdvisorLangfuseOutbox).where(
+                AdvisorLangfuseOutbox.cycle_id.in_(
+                    select(AdvisorCycle.id).where(
+                        AdvisorCycle.strategy_version_id == version_id
+                    )
+                )
+            )
         )
         await session.execute(
             delete(AdvisorCycle).where(AdvisorCycle.strategy_version_id == version_id)

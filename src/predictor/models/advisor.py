@@ -363,3 +363,39 @@ class AdvisorSettlementEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class AdvisorLangfuseOutbox(Base):
+    """One export attempt list for a cycle. Status changes; the cycle does not."""
+
+    __tablename__ = "advisor_langfuse_outbox"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'sending', 'sent', 'abandoned')",
+            name="advisor_langfuse_outbox_status_check",
+        ),
+        CheckConstraint(
+            "attempts >= 0 AND attempts <= 5",
+            name="advisor_langfuse_outbox_attempts_check",
+        ),
+        Index(
+            "idx_advisor_langfuse_outbox_pending",
+            "id",
+            postgresql_where="status = 'pending'",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    cycle_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("advisor_cycles.id", ondelete="RESTRICT"),
+        unique=True,
+    )
+    trace_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    last_error: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

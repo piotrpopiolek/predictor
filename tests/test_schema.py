@@ -55,6 +55,7 @@ EXPECTED_TABLES = frozenset(
         "advisor_coupons",
         "advisor_legs",
         "advisor_settlement_events",
+        "advisor_langfuse_outbox",
     }
 )
 
@@ -93,11 +94,11 @@ def test_migrated_schema_has_domain_and_etl_tables() -> None:
     assert "alembic_version" in names
 
 
-def test_alembic_head_is_advisor_ledger() -> None:
+def test_alembic_head_is_langfuse_outbox() -> None:
     with app_connect() as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     assert version is not None
-    assert version[0] == "0021_advisor_ledger"
+    assert version[0] == "0022_advisor_langfuse_outbox"
 
 
 def test_fixture_odds_live_pk_is_append_only() -> None:

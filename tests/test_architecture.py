@@ -140,7 +140,7 @@ def test_no_vendor_api_host_in_application() -> None:
 
 
 def test_alembic_head_helper_matches_w1() -> None:
-    assert current_alembic_head() == "0021_advisor_ledger"
+    assert current_alembic_head() == "0022_advisor_langfuse_outbox"
 
 
 def test_advisor_lock_is_not_the_writer_lock() -> None:

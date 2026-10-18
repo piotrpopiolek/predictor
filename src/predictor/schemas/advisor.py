@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from decimal import Decimal
 from enum import StrEnum
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -26,6 +27,10 @@ _ADVISOR_ENV: dict[str, str] = {
     "llm_price_input_pln_per_mtok": "LLM_PRICE_INPUT_PLN_PER_MTOK",
     "llm_price_output_pln_per_mtok": "LLM_PRICE_OUTPUT_PLN_PER_MTOK",
     "advisor_daily_budget_pln": "ADVISOR_DAILY_BUDGET_PLN",
+    "langfuse_public_key": "LANGFUSE_PUBLIC_KEY",
+    "langfuse_secret_key": "LANGFUSE_SECRET_KEY",
+    "langfuse_host": "LANGFUSE_HOST",
+    "langfuse_timeout_seconds": "LANGFUSE_TIMEOUT_SECONDS",
 }
 
 
@@ -92,6 +97,10 @@ class AdvisorSettings(BaseSettings):
     llm_price_input_pln_per_mtok: Decimal
     llm_price_output_pln_per_mtok: Decimal
     advisor_daily_budget_pln: Decimal = Decimal("10")
+    langfuse_public_key: SecretStr = SecretStr("")
+    langfuse_secret_key: SecretStr = SecretStr("")
+    langfuse_host: str = "https://cloud.langfuse.com"
+    langfuse_timeout_seconds: float = 5
 
     @field_validator("llm_provider")
     @classmethod
@@ -121,6 +130,31 @@ class AdvisorSettings(BaseSettings):
     def _timeout(cls, value: float) -> float:
         if not math.isfinite(value) or value <= 0 or value > 120:
             raise ValueError("must be finite and between 0 and 120 seconds")
+        return value
+
+    @field_validator("langfuse_host")
+    @classmethod
+    def _langfuse_host(cls, value: str) -> str:
+        stripped = value.strip().rstrip("/")
+        parts = urlsplit(stripped)
+        if (
+            parts.scheme != "https"
+            or not parts.hostname
+            or parts.username
+            or parts.password
+            or parts.path not in ("", "/")
+            or parts.query
+            or parts.fragment
+        ):
+            raise ValueError("must be an https origin without a path")
+        port = f":{parts.port}" if parts.port else ""
+        return f"https://{parts.hostname}{port}"
+
+    @field_validator("langfuse_timeout_seconds")
+    @classmethod
+    def _langfuse_timeout(cls, value: float) -> float:
+        if not math.isfinite(value) or value <= 0 or value > 30:
+            raise ValueError("must be finite and between 0 and 30 seconds")
         return value
 
     @field_validator(

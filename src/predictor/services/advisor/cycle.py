@@ -19,7 +19,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from predictor.constants import ADVISOR_CYCLE_LOCK_KEY
-from predictor.models.advisor import AdvisorCycle, AdvisorDecision
+from predictor.models.advisor import (
+    AdvisorCycle,
+    AdvisorDecision,
+    AdvisorLangfuseOutbox,
+)
 from predictor.schemas.advisor import AdvisorSettings, CandidateDecision
 from predictor.services.advisor.budget import (
     budget_allows,
@@ -27,6 +31,13 @@ from predictor.services.advisor.budget import (
     estimate_call_cost,
     estimate_tokens,
     utc_day_bounds,
+)
+from predictor.services.advisor.langfuse import (
+    TraceDraft,
+    TraceExport,
+    TraceSink,
+    build_trace,
+    deliver_trace,
 )
 from predictor.services.advisor.llm.protocol import LlmProvider, ProviderError
 from predictor.services.advisor.llm.validate import PricedCandidate, review_model_output
@@ -94,6 +105,8 @@ async def run_cycle(
     request: CycleRequest,
     *,
     clock: Callable[[], datetime] = _clock,
+    traces: TraceSink | None = None,
+    redact_secrets: tuple[str, ...] = (),
 ) -> CycleOutcome:
     """Append one cycle and commit it.
 
@@ -106,10 +119,25 @@ async def run_cycle(
     reply stays in ``raw_output`` so the match can be asked again. Virtual
     coupons are inserted in the same transaction as those decisions, and
     only when the reply is valid and the mode is sandbox.
+
+    When ``traces`` is set, the same transaction stores a Langfuse export.
+    The HTTP send happens after the lock, and a failure leaves the decision
+    committed.
     """
     _require_idle(session)
     async with hold_session_lock(_engine(session), ADVISOR_CYCLE_LOCK_KEY):
-        return await _run_locked(session, provider, settings, request, clock=clock)
+        outcome = await _run_locked(
+            session,
+            provider,
+            settings,
+            request,
+            clock=clock,
+            traces=traces,
+            redact_secrets=redact_secrets,
+        )
+    if traces is not None and outcome.cycle_id is not None:
+        await deliver_trace(session, traces, outcome.cycle_id)
+    return outcome
 
 
 async def _run_locked(
@@ -119,6 +147,8 @@ async def _run_locked(
     request: CycleRequest,
     *,
     clock: Callable[[], datetime],
+    traces: TraceSink | None,
+    redact_secrets: tuple[str, ...],
 ) -> CycleOutcome:
     now = clock()
     estimated = estimate_call_cost(
@@ -145,23 +175,25 @@ async def _run_locked(
         # The SDK error has no usage. Bill the pre-call estimate so the day
         # still counts a call Google may already have metered.
         input_tokens, output_tokens, thoughts_tokens = estimate_tokens(request.prompt)
+        failed = _cycle(
+            request,
+            provider_name=provider.provider_name,
+            model=provider.model,
+            model_version=provider.model,
+            status="provider_error",
+            raw_output=None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            thoughts_tokens=thoughts_tokens,
+            cost=estimated,
+            started_at=now,
+            finished_at=clock(),
+            latency_ms=_latency(started),
+        )
         cycle_id, _skipped, _coupons = await _commit_cycle(
             session,
-            _cycle(
-                request,
-                provider_name=provider.provider_name,
-                model=provider.model,
-                model_version=provider.model,
-                status="provider_error",
-                raw_output=None,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                thoughts_tokens=thoughts_tokens,
-                cost=estimated,
-                started_at=now,
-                finished_at=clock(),
-                latency_ms=_latency(started),
-            ),
+            failed,
+            export=_export(traces, failed, redact_secrets),
         )
         return CycleOutcome(True, "provider_error", cycle_id, exc.code)
     verdict = review_model_output(
@@ -203,7 +235,12 @@ async def _run_locked(
         else ()
     )
     cycle_id, skipped, coupon_ids = await _commit_cycle(
-        session, cycle, request, decisions, coupon_fixtures
+        session,
+        cycle,
+        request,
+        decisions,
+        coupon_fixtures,
+        export=_export(traces, cycle, redact_secrets),
     )
     return CycleOutcome(
         True,
@@ -270,12 +307,25 @@ async def _commit_cycle(
     request: CycleRequest | None = None,
     decisions: Sequence[CandidateDecision] = (),
     coupon_fixtures: Sequence[Sequence[int]] = (),
+    export: TraceExport | None = None,
 ) -> tuple[int, tuple[int, ...], tuple[int, ...]]:
     skipped: list[int] = []
     coupon_ids: tuple[int, ...] = ()
     async with session.begin():
+        if export is not None:
+            cycle.langfuse_trace_id = export.trace_id
         session.add(cycle)
         await session.flush()
+        if export is not None:
+            session.add(
+                AdvisorLangfuseOutbox(
+                    cycle_id=cycle.id,
+                    trace_id=export.trace_id,
+                    payload=export.body,
+                    attempts=0,
+                    status="pending",
+                )
+            )
         if request is not None:
             stored: set[int] = set()
             for decision in decisions:
@@ -377,3 +427,34 @@ def _decision_row(
 
 def _latency(started: float) -> int:
     return int((perf_counter() - started) * 1000)
+
+
+def _export(
+    traces: TraceSink | None,
+    cycle: AdvisorCycle,
+    secrets: tuple[str, ...],
+) -> TraceExport | None:
+    if traces is None:
+        return None
+    finished = cycle.finished_at or cycle.started_at
+    return build_trace(
+        TraceDraft(
+            prompt_version=cycle.prompt_version,
+            prompt=cycle.prompt_text,
+            model_input=cycle.input_json,
+            output=cycle.raw_output,
+            provider=cycle.provider,
+            model=cycle.model,
+            model_version=cycle.model_version,
+            mode=cycle.mode,
+            status=cycle.validation_status,
+            input_tokens=cycle.input_tokens,
+            output_tokens=cycle.output_tokens,
+            thoughts_tokens=cycle.thoughts_tokens,
+            cost_pln=cycle.cost_pln,
+            latency_ms=cycle.latency_ms,
+            started_at=cycle.started_at,
+            finished_at=finished,
+        ),
+        secrets,
+    )
