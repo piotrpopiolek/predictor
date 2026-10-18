@@ -66,6 +66,7 @@ CREATE TABLE advisor_cycles (
     finished_at          TIMESTAMPTZ,
     provider             VARCHAR(32) NOT NULL,
     model                VARCHAR(64) NOT NULL,
+    model_version        VARCHAR(128) NOT NULL,
     prompt_version       VARCHAR(64) NOT NULL,
     prompt_text          TEXT NOT NULL,
     input_json           JSONB NOT NULL,
@@ -73,6 +74,7 @@ CREATE TABLE advisor_cycles (
     validation_status    VARCHAR(16) NOT NULL,
     input_tokens         INT NOT NULL DEFAULT 0,
     output_tokens        INT NOT NULL DEFAULT 0,
+    thoughts_tokens      INT NOT NULL DEFAULT 0,
     cost_pln             NUMERIC(12,4) NOT NULL,
     latency_ms           INT,
     langfuse_trace_id    VARCHAR(64),
@@ -82,7 +84,8 @@ CREATE TABLE advisor_cycles (
     CONSTRAINT advisor_cycles_validation_check CHECK (
         validation_status IN ('ok', 'invalid_output', 'provider_error')
     ),
-    CONSTRAINT advisor_cycles_cost_check CHECK (cost_pln >= 0)
+    CONSTRAINT advisor_cycles_cost_check CHECK (cost_pln >= 0),
+    CONSTRAINT advisor_cycles_thoughts_check CHECK (thoughts_tokens >= 0)
 );
 
 CREATE INDEX idx_advisor_cycles_started ON advisor_cycles (started_at);

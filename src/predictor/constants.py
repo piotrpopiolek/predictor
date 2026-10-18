@@ -4,6 +4,8 @@ from decimal import Decimal
 
 WRITER_LOCK_KEY = 739201
 ADVISOR_LOCK_KEY = 739202
+# Serializes one budget check plus its model call. Not the process-lifetime lock.
+ADVISOR_CYCLE_LOCK_KEY = 739203
 PAYOUT_KEEP = Decimal("0.880")
 LOCK_KEEPALIVES_IDLE_SECONDS = 20
 LOCK_KEEPALIVES_INTERVAL_SECONDS = 5

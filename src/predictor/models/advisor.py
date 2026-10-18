@@ -117,6 +117,7 @@ class AdvisorCycle(Base):
         ),
         CheckConstraint(_MODE, name="advisor_cycles_mode_check"),
         CheckConstraint("cost_pln >= 0", name="advisor_cycles_cost_check"),
+        CheckConstraint("thoughts_tokens >= 0", name="advisor_cycles_thoughts_check"),
         Index("idx_advisor_cycles_started", "started_at"),
     )
 
@@ -134,6 +135,7 @@ class AdvisorCycle(Base):
     )
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     model: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(128), nullable=False)
     prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
     prompt_text: Mapped[str] = mapped_column(Text, nullable=False)
     input_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
@@ -141,6 +143,7 @@ class AdvisorCycle(Base):
     validation_status: Mapped[str] = mapped_column(String(16), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    thoughts_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cost_pln: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     langfuse_trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

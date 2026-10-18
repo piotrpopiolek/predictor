@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
 import psycopg
 from sqlalchemy import TextClause, text
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from predictor.constants import (
     LOCK_APPLICATION_NAME,
@@ -103,6 +105,20 @@ async def fetch_holder_sqlalchemy(conn: AsyncConnection) -> HolderInfo | None:
     if row is None:
         return None
     return _row_to_holder((row[0], row[1], row[2]))
+
+
+@asynccontextmanager
+async def hold_session_lock(engine: AsyncEngine, key: int) -> AsyncIterator[None]:
+    """Block until this session holds ``key``. The wait itself holds no transaction."""
+    conn = await engine.connect()
+    try:
+        await conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": key})
+        await conn.commit()
+        yield
+    finally:
+        await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+        await conn.commit()
+        await conn.close()
 
 
 class WriterLock:

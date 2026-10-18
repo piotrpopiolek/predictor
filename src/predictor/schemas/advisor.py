@@ -25,6 +25,7 @@ _ADVISOR_ENV: dict[str, str] = {
     "llm_timeout_seconds": "LLM_TIMEOUT_SECONDS",
     "llm_price_input_pln_per_mtok": "LLM_PRICE_INPUT_PLN_PER_MTOK",
     "llm_price_output_pln_per_mtok": "LLM_PRICE_OUTPUT_PLN_PER_MTOK",
+    "advisor_daily_budget_pln": "ADVISOR_DAILY_BUDGET_PLN",
 }
 
 
@@ -90,6 +91,7 @@ class AdvisorSettings(BaseSettings):
     llm_timeout_seconds: float = 20
     llm_price_input_pln_per_mtok: Decimal
     llm_price_output_pln_per_mtok: Decimal
+    advisor_daily_budget_pln: Decimal = Decimal("10")
 
     @field_validator("llm_provider")
     @classmethod
@@ -121,11 +123,15 @@ class AdvisorSettings(BaseSettings):
             raise ValueError("must be finite and between 0 and 120 seconds")
         return value
 
-    @field_validator("llm_price_input_pln_per_mtok", "llm_price_output_pln_per_mtok")
+    @field_validator(
+        "llm_price_input_pln_per_mtok",
+        "llm_price_output_pln_per_mtok",
+        "advisor_daily_budget_pln",
+    )
     @classmethod
     def _price(cls, value: Decimal) -> Decimal:
-        if value <= 0:
-            raise ValueError("must be > 0")
+        if not value.is_finite() or value <= 0:
+            raise ValueError("must be finite and > 0")
         return value
 
 
