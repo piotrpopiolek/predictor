@@ -12,4 +12,4 @@ build/
 *.pyc
 .ai/
 .cursor/
-main.py
+/main.py

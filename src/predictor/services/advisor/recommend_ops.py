@@ -118,13 +118,11 @@ async def modify_coupon(
     if not priced_odds:
         raise ActionError("empty")
     priced = combined_odd(tuple(priced_odds))
-    if priced is None:
-        raise ActionError("odd")
-    for leg, odd in changes:
-        if odd is None:
+    for leg, next_odd in changes:
+        if next_odd is None:
             leg.status = "removed"
         else:
-            leg.odd = odd
+            leg.odd = next_odd
     if coupon.proposed_stake is None:
         coupon.proposed_stake = coupon.stake
     coupon.stake = stake

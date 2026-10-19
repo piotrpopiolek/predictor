@@ -125,13 +125,17 @@ def render_recommendation_cards(cards: list[dict[str, object]]) -> str:
 
 
 def _recommendation_card(card: dict[str, object]) -> str:
-    coupon_id = int(card["id"])  # type: ignore[arg-type]
+    raw_id = card["id"]
+    assert isinstance(raw_id, int)
+    coupon_id = raw_id
     legs = card["legs"]
     leg_html = []
     assert isinstance(legs, list)
     for leg in legs:
         assert isinstance(leg, dict)
-        fixture_id = int(leg["fixture_id"])
+        raw_fixture = leg["fixture_id"]
+        assert isinstance(raw_fixture, int)
+        fixture_id = raw_fixture
         leg_html.append(
             "<li>"
             f"Mecz {fixture_id}, {escape(str(leg['score']))}, "
