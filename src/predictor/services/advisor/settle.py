@@ -32,8 +32,9 @@ from predictor.services.advisor.domain import (
 )
 
 _OPEN_LEG = ("open", "won", "lost", "void", "manual")
-_COUPON = ("open", "placed", "accepted", "won", "lost", "void")
-_FIRST_SETTLE = ("open", "placed", "accepted")
+# Sandbox is open at placement. Recommendation waits for placed.
+_COUPON = ("open", "placed", "won", "lost", "void")
+_FIRST_SETTLE = ("open", "placed")
 _COUNTED = ("bet", "reject", "wait_timeout")
 _TERMINAL = {
     Settlement.WON: "won",

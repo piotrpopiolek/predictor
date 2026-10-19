@@ -288,6 +288,8 @@ class LiveMatch:
             "clock": self.clock,
             "home_team_id": self.home_team_id,
             "away_team_id": self.away_team_id,
+            "league_id": self.league_id,
+            "season": self.season,
             "league_logo": self.league_logo,
             "venue": self.venue,
             "venue_city": self.venue_city,
@@ -308,6 +310,9 @@ class LiveMatch:
             "next_goal": (None if self.next_goal is None else self.next_goal.as_dict()),
             "form_home": None if self.form_home is None else self.form_home.as_dict(),
             "form_away": None if self.form_away is None else self.form_away.as_dict(),
+            "prediction_winner_team_id": self.prediction_winner_team_id,
+            "prediction_pct_home": self.prediction_pct_home,
+            "prediction_pct_away": self.prediction_pct_away,
         }
 
 

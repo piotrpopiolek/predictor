@@ -1,14 +1,16 @@
-"""Prompt for one sandbox cycle. Version p1. Odds are context, not an output."""
+"""Prompt for one sandbox cycle. Version p2. Odds are context, not an output."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from typing import Any
 
 from predictor.services.advisor.cycle import CycleCandidate
+from predictor.services.advisor.domain import MIN_ANALYSIS_ODD
 
-PROMPT_VERSION = "p1"
+PROMPT_VERSION = "p2"
 
 _REASONS = (
     "favorite_pressure",
@@ -23,8 +25,13 @@ _REASONS = (
 
 def render_cycle_prompt(
     candidates: Sequence[CycleCandidate],
+    *,
+    min_combined_odd: Decimal,
+    max_legs: int,
+    match_details: Mapping[int, dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Return the prompt and the JSON stored on the cycle."""
+    details = {} if match_details is None else match_details
     body = {
         "candidates": [
             {
@@ -36,9 +43,13 @@ def render_cycle_prompt(
                 "n": item.n,
                 "odd": str(item.odd),
                 "candidate_rule": item.candidate_rule,
+                "detail": details.get(item.fixture_id),
             }
             for item in candidates
-        ]
+        ],
+        "min_analysis_odd": str(MIN_ANALYSIS_ODD),
+        "min_combined_odd": str(min_combined_odd),
+        "max_legs": max_legs,
     }
     prompt = (
         "You decide a next-goal Over bet for every candidate below. "
@@ -48,7 +59,17 @@ def render_cycle_prompt(
         "decision is bet, reject, or wait. "
         f"reasons use only {_REASONS}. "
         "Do not add fields and do not send an odd. "
-        "A bet must appear in exactly one coupon of 1 to 3 fixture ids. "
+        "A bet must appear in exactly one coupon of 1 to "
+        f"{max_legs} fixture ids. "
+        f"Each listed candidate already has odd >= {MIN_ANALYSIS_ODD}. "
+        f"A coupon is accepted only when the product of its odds is "
+        f">= {min_combined_odd}. Prefer coupons of 2–{max_legs} legs so "
+        "the combined odd clears that floor; use wait when more priced "
+        "candidates are needed. "
+        "Each candidate.detail is the full /live/match/{fixture_id} "
+        "payload: live score/clock, events, FT stats, lineups and "
+        "strength, attack subs, goal price, form, prediction, H2H, "
+        "table, and live markets. Use it for the decision. "
         f"Candidates: {json.dumps(body, ensure_ascii=True)}"
     )
     return prompt, body

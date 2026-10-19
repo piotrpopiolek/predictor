@@ -85,6 +85,24 @@ def _detail() -> MatchDetail:
     )
 
 
+def test_match_detail_as_dict_covers_match_page_sections() -> None:
+    payload = _detail().as_dict()
+    assert payload["match"]["fixture_id"] == 42
+    assert payload["match"]["prediction_pct_home"] == 45.0
+    assert payload["stats"][0]["label"] == "Posiadanie"
+    assert payload["events"][0]["type"] == "Goal"
+    assert payload["home_xi"][0]["name"] == "Ali"
+    assert payload["away_bench"][0]["number"] == 17
+    assert payload["advice"] == "Double chance : Saipa or draw"
+    assert payload["expected_home"] == "1.1"
+    assert payload["comparison"][0]["label"] == "Forma"
+    assert payload["h2h"][0]["score"] == "1–0"
+    assert payload["form_results"][0]["team"] == "Mes Kerman"
+    assert payload["table"] is None
+    assert payload["markets"] == []
+    assert payload["goal_price"] is None
+
+
 def test_read_goal_price_treats_over_line_as_another_goal() -> None:
     price = read_goal_price(
         none_odd=Decimal("3.40"),

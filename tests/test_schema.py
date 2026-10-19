@@ -56,6 +56,11 @@ EXPECTED_TABLES = frozenset(
         "advisor_legs",
         "advisor_settlement_events",
         "advisor_langfuse_outbox",
+        "advisor_coupon_events",
+        "advisor_strategy_events",
+        "advisor_telegram_outbox",
+        "advisor_strategy_events",
+        "advisor_telegram_outbox",
     }
 )
 
@@ -98,7 +103,7 @@ def test_alembic_head_is_langfuse_outbox() -> None:
     with app_connect() as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     assert version is not None
-    assert version[0] == "0022_advisor_langfuse_outbox"
+    assert version[0] == "0023_advisor_coupon_events"
 
 
 def test_fixture_odds_live_pk_is_append_only() -> None:

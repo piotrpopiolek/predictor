@@ -152,6 +152,7 @@ class MatchDetail:
     away_strength: LineupStrength | None = None
 
     def as_dict(self) -> dict[str, Any]:
+        """Full match-page payload (same sections as /live/match/{id})."""
         return {
             "match": self.match.as_dict(),
             "events": [
@@ -169,17 +170,130 @@ class MatchDetail:
                 {"label": item.label, "home": item.home, "away": item.away}
                 for item in self.stats
             ],
+            "home_xi": [_player_dict(item) for item in self.home_xi],
+            "away_xi": [_player_dict(item) for item in self.away_xi],
+            "home_bench": [_player_dict(item) for item in self.home_bench],
+            "away_bench": [_player_dict(item) for item in self.away_bench],
+            "home_strength": _strength_dict(self.home_strength),
+            "away_strength": _strength_dict(self.away_strength),
             "advice": self.advice,
-            "h2h": [
-                {
-                    "when": item.when,
-                    "home": item.home,
-                    "away": item.away,
-                    "score": item.score,
-                }
-                for item in self.h2h
+            "expected_home": self.expected_home,
+            "expected_away": self.expected_away,
+            "pct_draw": self.pct_draw,
+            "comparison": [
+                {"label": label, "home": home, "away": away}
+                for label, home, away in self.comparison
             ],
+            "h2h": [_h2h_dict(item) for item in self.h2h],
+            "form_results": [
+                {"team": name, "results": [_h2h_dict(row) for row in rows]}
+                for name, rows in self.form_results
+            ],
+            "table": None if self.table is None else _table_dict(self.table),
+            "markets": [
+                {
+                    "title": market.title,
+                    "quotes": [
+                        {"label": quote.label, "odd": quote.odd}
+                        for quote in market.quotes
+                    ],
+                }
+                for market in self.markets
+            ],
+            "attack_subs": [
+                {
+                    "clock": item.clock,
+                    "team": item.team,
+                    "summary": item.summary,
+                    "effect": item.effect,
+                }
+                for item in self.attack_subs
+            ],
+            "goal_price": (
+                None
+                if self.goal_price is None
+                else {
+                    "none_odd": self.goal_price.none_odd,
+                    "none_implied": self.goal_price.none_implied,
+                    "line": self.goal_price.line,
+                    "over_odd": self.goal_price.over_odd,
+                    "over_implied": self.goal_price.over_implied,
+                    "move": self.goal_price.move,
+                }
+            ),
         }
+
+
+def _player_dict(item: DetailPlayer) -> dict[str, Any]:
+    return {
+        "name": item.name,
+        "number": item.number,
+        "position": item.position,
+        "starter": item.starter,
+    }
+
+
+def _h2h_dict(item: DetailH2H) -> dict[str, Any]:
+    return {
+        "when": item.when,
+        "home": item.home,
+        "away": item.away,
+        "score": item.score,
+    }
+
+
+def _strength_dict(item: LineupStrength | None) -> dict[str, Any] | None:
+    if item is None:
+        return None
+    return {
+        "label": item.label,
+        "note": item.note,
+        "missing": list(item.missing),
+    }
+
+
+def _ranked_dict(item: RankedSlot) -> dict[str, Any]:
+    return {
+        "team_id": item.slot.team_id,
+        "name": item.slot.name,
+        "points": item.slot.points,
+        "played": item.slot.played,
+        "gf": item.slot.gf,
+        "ga": item.slot.ga,
+        "gd": item.slot.gd,
+        "api_rank": item.slot.api_rank,
+        "rank": item.rank,
+        "delta": item.delta,
+    }
+
+
+def _table_dict(table: GroupTable) -> dict[str, Any]:
+    return {
+        "group": table.group,
+        "heading": table.heading,
+        "split": table.split,
+        "moves": table.moves,
+        "captured": table.captured,
+        "before": [_ranked_dict(item) for item in table.before],
+        "projected": (
+            None
+            if table.projected is None
+            else [_ranked_dict(item) for item in table.projected]
+        ),
+        "splits": [
+            {
+                "label": item.label,
+                "home_rank": item.home_rank,
+                "away_rank": item.away_rank,
+                "home_points": item.home_points,
+                "away_points": item.away_points,
+                "home_delta": item.home_delta,
+                "away_delta": item.away_delta,
+                "active": item.active,
+            }
+            for item in table.splits
+        ],
+    }
 
 
 def points_split(home_goals: int, away_goals: int) -> tuple[int, int]:

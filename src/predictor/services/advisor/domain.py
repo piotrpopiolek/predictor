@@ -22,6 +22,9 @@ from predictor.constants import (
 _ODD_QUANTUM = Decimal("0.001")
 _MONEY_QUANTUM = Decimal("0.01")
 _ONE = Decimal(1)
+# Single-leg floor to enter LLM analysis. Coupon profitability stays on
+# strategy min_combined_odd (typically 1.600) across 1–3 legs.
+MIN_ANALYSIS_ODD = Decimal("1.300")
 
 REGULATION_OVER_UNDER = "over/under line"
 # Name in /odds/live/bets is not identified yet (prd2 §4.3). None means

@@ -8,6 +8,7 @@ from enum import StrEnum
 from urllib.parse import urlsplit
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -18,6 +19,7 @@ from pydantic import (
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from predictor.schemas.settings import SettingsError
+from predictor.services.advisor.recommend import parse_hours, parse_leagues
 
 _ADVISOR_ENV: dict[str, str] = {
     "llm_provider": "LLM_PROVIDER",
@@ -28,6 +30,15 @@ _ADVISOR_ENV: dict[str, str] = {
     "llm_price_output_pln_per_mtok": "LLM_PRICE_OUTPUT_PLN_PER_MTOK",
     "advisor_daily_budget_pln": "ADVISOR_DAILY_BUDGET_PLN",
     "advisor_debounce_seconds": "ADVISOR_DEBOUNCE_SECONDS",
+    "recommendation_stake": "ADVISOR_RECOMMENDATION_STAKE",
+    "recommendation_loss_limit": "ADVISOR_RECOMMENDATION_LOSS_LIMIT",
+    "operator_hours": "ADVISOR_OPERATOR_HOURS",
+    "recommendation_leagues": "ADVISOR_RECOMMENDATION_LEAGUES",
+    "recommendation_coupon_limit": "ADVISOR_RECOMMENDATION_COUPON_LIMIT",
+    "recommendation_ttl_seconds": "ADVISOR_RECOMMENDATION_TTL_SECONDS",
+    "withdraw_yield": "ADVISOR_WITHDRAW_YIELD",
+    "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
+    "telegram_chat_id": "TELEGRAM_CHAT_ID",
     "langfuse_public_key": "LANGFUSE_PUBLIC_KEY",
     "langfuse_secret_key": "LANGFUSE_SECRET_KEY",
     "langfuse_host": "LANGFUSE_HOST",
@@ -99,6 +110,52 @@ class AdvisorSettings(BaseSettings):
     llm_price_output_pln_per_mtok: Decimal
     advisor_daily_budget_pln: Decimal = Decimal("10")
     advisor_debounce_seconds: int = 20
+    recommendation_stake: Decimal | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "ADVISOR_RECOMMENDATION_STAKE", "recommendation_stake"
+        ),
+    )
+    recommendation_loss_limit: Decimal | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "ADVISOR_RECOMMENDATION_LOSS_LIMIT", "recommendation_loss_limit"
+        ),
+    )
+    operator_hours: str = Field(
+        default="",
+        validation_alias=AliasChoices("ADVISOR_OPERATOR_HOURS", "operator_hours"),
+    )
+    recommendation_leagues: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ADVISOR_RECOMMENDATION_LEAGUES", "recommendation_leagues"
+        ),
+    )
+    recommendation_coupon_limit: int = Field(
+        default=10,
+        validation_alias=AliasChoices(
+            "ADVISOR_RECOMMENDATION_COUPON_LIMIT", "recommendation_coupon_limit"
+        ),
+    )
+    recommendation_ttl_seconds: int = Field(
+        default=180,
+        validation_alias=AliasChoices(
+            "ADVISOR_RECOMMENDATION_TTL_SECONDS", "recommendation_ttl_seconds"
+        ),
+    )
+    withdraw_yield: Decimal = Field(
+        default=Decimal("0"),
+        validation_alias=AliasChoices("ADVISOR_WITHDRAW_YIELD", "withdraw_yield"),
+    )
+    telegram_bot_token: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices("TELEGRAM_BOT_TOKEN", "telegram_bot_token"),
+    )
+    telegram_chat_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("TELEGRAM_CHAT_ID", "telegram_chat_id"),
+    )
     langfuse_public_key: SecretStr = SecretStr("")
     langfuse_secret_key: SecretStr = SecretStr("")
     langfuse_host: str = "https://cloud.langfuse.com"
@@ -151,6 +208,55 @@ class AdvisorSettings(BaseSettings):
             raise ValueError("must be an https origin without a path")
         port = f":{parts.port}" if parts.port else ""
         return f"https://{parts.hostname}{port}"
+
+    @field_validator("operator_hours")
+    @classmethod
+    def _hours(cls, value: str) -> str:
+        parse_hours(value)
+        return value.strip()
+
+    @field_validator("recommendation_leagues")
+    @classmethod
+    def _leagues(cls, value: str) -> str:
+        parse_leagues(value)
+        return value.strip()
+
+    @field_validator("recommendation_coupon_limit")
+    @classmethod
+    def _coupon_limit(cls, value: int) -> int:
+        if value < 1 or value > 100:
+            raise ValueError("must be between 1 and 100")
+        return value
+
+    @field_validator("recommendation_ttl_seconds")
+    @classmethod
+    def _ttl(cls, value: int) -> int:
+        if value < 30 or value > 600:
+            raise ValueError("must be between 30 and 600 seconds")
+        return value
+
+    @field_validator("recommendation_stake", "recommendation_loss_limit", mode="before")
+    @classmethod
+    def _empty_optional_money(cls, value: object) -> object:
+        if value is None or value == "":
+            return None
+        return value
+
+    @field_validator("recommendation_stake", "recommendation_loss_limit")
+    @classmethod
+    def _optional_money(cls, value: Decimal | None) -> Decimal | None:
+        if value is None:
+            return None
+        if not value.is_finite() or value <= 0:
+            raise ValueError("must be finite and > 0")
+        return value
+
+    @field_validator("withdraw_yield")
+    @classmethod
+    def _withdraw(cls, value: Decimal) -> Decimal:
+        if not value.is_finite():
+            raise ValueError("must be finite")
+        return value
 
     @field_validator("advisor_debounce_seconds")
     @classmethod

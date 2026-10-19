@@ -140,7 +140,7 @@ def test_no_vendor_api_host_in_application() -> None:
 
 
 def test_alembic_head_helper_matches_w1() -> None:
-    assert current_alembic_head() == "0022_advisor_langfuse_outbox"
+    assert current_alembic_head() == "0023_advisor_coupon_events"
 
 
 def test_status_report_does_not_settle() -> None:

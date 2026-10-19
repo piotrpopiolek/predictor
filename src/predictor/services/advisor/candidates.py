@@ -8,6 +8,7 @@ from datetime import datetime
 
 from predictor.services.advisor.cycle import CycleCandidate
 from predictor.services.advisor.domain import (
+    MIN_ANALYSIS_ODD,
     CandidateView,
     LineQuote,
     Period,
@@ -32,6 +33,7 @@ class MatchSnapshot:
     extratime_home: int | None
     extratime_away: int | None
     rule: str
+    league_id: int = 0
 
 
 def candidate_signature(
@@ -85,6 +87,7 @@ def playable_candidate(
         or play.state is None
         or quote is None
         or quote.odd is None
+        or quote.odd < MIN_ANALYSIS_ODD
     ):
         return None
     key = (

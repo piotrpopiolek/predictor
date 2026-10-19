@@ -1,8 +1,8 @@
 """Run one model call and append the cycle.
 
 A sandbox cycle whose status is ``ok`` writes its virtual coupons in that
-same transaction. Any other status leaves no coupon. Recommendation
-coupons are not created here.
+same transaction. A recommendation cycle uses the reserved budget share and
+may also write proposed coupons when ``recommend`` is set.
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ from predictor.services.advisor.langfuse import (
 )
 from predictor.services.advisor.llm.protocol import LlmProvider, ProviderError
 from predictor.services.advisor.llm.validate import PricedCandidate, review_model_output
+from predictor.services.advisor.recommend_ops import place_proposed
 from predictor.services.advisor.sandbox import place_sandbox_coupons, reply_slips
 from predictor.services.lock import hold_session_lock
 
@@ -69,6 +70,9 @@ class CycleRequest:
     open_fixture_ids: frozenset[int]
     min_odd: Decimal
     max_legs: int
+    recommend: bool = False
+    recommendation_stake: Decimal | None = None
+    recommendation_fixtures: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,6 +340,26 @@ async def _commit_cycle(
             coupon_ids = await _place_if_sandbox(
                 session, cycle, request, stored, coupon_fixtures
             )
+            if request.recommend and request.recommendation_stake is not None:
+                allowed = [
+                    fixtures
+                    for fixtures in coupon_fixtures
+                    if fixtures
+                    and all(
+                        fixture_id in request.recommendation_fixtures
+                        for fixture_id in fixtures
+                    )
+                ]
+                reco = reply_slips(allowed, request.candidates, stored)
+                await place_proposed(
+                    session,
+                    strategy_id=request.strategy_id,
+                    strategy_version_id=request.strategy_version_id,
+                    slips=reco,
+                    cycle_id=cycle.id,
+                    stake=request.recommendation_stake,
+                    created_at=cycle.finished_at or cycle.started_at,
+                )
         return cycle.id, tuple(skipped), coupon_ids
 
 

@@ -116,6 +116,68 @@ def _pair_row(pair: PairYield) -> str:
     )
 
 
+def render_recommendation_cards(cards: list[dict[str, object]]) -> str:
+    """Cards on the board. The operator types the token."""
+    if not cards:
+        return ""
+    blocks = "".join(_recommendation_card(card) for card in cards)
+    return f'<section class="reco"><h2>Rekomendacje</h2>{blocks}</section>'
+
+
+def _recommendation_card(card: dict[str, object]) -> str:
+    coupon_id = int(card["id"])  # type: ignore[arg-type]
+    legs = card["legs"]
+    leg_html = []
+    assert isinstance(legs, list)
+    for leg in legs:
+        assert isinstance(leg, dict)
+        fixture_id = int(leg["fixture_id"])
+        leg_html.append(
+            "<li>"
+            f"Mecz {fixture_id}, {escape(str(leg['score']))}, "
+            f"Over {escape(str(leg['line']))} @ {escape(str(leg['odd']))} "
+            f"(propozycja {escape(str(leg['proposed']))})"
+            f'<label>kurs <input name="odd_{fixture_id}" '
+            f'value="{escape(str(leg["odd"]))}"></label>'
+            f'<label><input type="checkbox" name="remove_{fixture_id}"> usuń</label>'
+            "</li>"
+        )
+    warning = ""
+    if card.get("below"):
+        warning = (
+            '<p class="warn">Kurs łączny jest poniżej progu strategii. '
+            "Potwierdzenie jest możliwe.</p>"
+        )
+    action = f"/advisor/recommendations/{coupon_id}"
+    return (
+        "<article>"
+        f"<h3>Kupon {coupon_id} · {escape(str(card['status']))}</h3>"
+        f"<p>Stawka {escape(str(card['stake']))}, "
+        f"kurs {escape(str(card['combined']))}. "
+        f"Ważny jeszcze {escape(str(card['remaining']))} s.</p>"
+        f"{warning}<ul>{''.join(leg_html)}</ul>"
+        f'<form method="post" action="{action}/accept">'
+        '<label>token <input name="token" type="password" autocomplete="off"></label>'
+        '<button type="submit">Akceptuj</button></form>'
+        f'<form method="post" action="{action}/modify">'
+        '<label>token <input name="token" type="password" autocomplete="off"></label>'
+        f'<label>stawka <input name="stake" '
+        f'value="{escape(str(card["stake"]))}"></label>'
+        f"{''.join(leg_html)}"
+        '<button type="submit">Koryguj</button></form>'
+        f'<form method="post" action="{action}/place">'
+        '<label>token <input name="token" type="password" autocomplete="off"></label>'
+        '<button type="submit">Potwierdź zagranie</button></form>'
+        f'<form method="post" action="{action}/reject">'
+        '<label>token <input name="token" type="password" autocomplete="off"></label>'
+        '<button type="submit">Odrzuć</button></form>'
+        f'<form method="post" action="{action}/not-placed">'
+        '<label>token <input name="token" type="password" autocomplete="off"></label>'
+        '<button type="submit">Nie zagrano</button></form>'
+        "</article>"
+    )
+
+
 def _money(value: Decimal) -> str:
     shown = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return format(shown, "f").replace(".", ",")

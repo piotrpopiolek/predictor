@@ -783,6 +783,7 @@ def render_live_html(
     open_bets: dict[int, dict[str, Any]] | None = None,
     current_stake: str | None = None,
     operator_token: str | None = None,
+    recommendation_html: str = "",
 ) -> str:
     ordered = sort_matches_by_clock(matches)
     count = len(ordered)
@@ -836,6 +837,7 @@ def render_live_html(
   </div>
 </header>
 <main>
+  {recommendation_html}
   {body}
 </main>
 {_REFRESH_SCRIPT}

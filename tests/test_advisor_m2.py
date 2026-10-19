@@ -248,6 +248,45 @@ async def test_one_lost_leg_closes_the_coupon_while_the_other_match_is_live() ->
 
 
 @pytest.mark.asyncio
+async def test_an_accepted_recommendation_waits_for_placed() -> None:
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    try:
+        async with factory() as session:
+            async with session.begin():
+                ids = await _seed(session, fulltime=(2, 1), status="FT")
+                coupon = await session.get(AdvisorCoupon, ids["coupon"])
+                assert coupon is not None
+                coupon.mode = "recommendation"
+                coupon.status = "accepted"
+                leg = await session.get(AdvisorLeg, ids["leg"])
+                assert leg is not None
+                leg.mode = "recommendation"
+            async with session.begin():
+                changed = await settle_finished(session, NOW)
+            assert changed == 0
+            async with session.begin():
+                coupon = await session.get(AdvisorCoupon, ids["coupon"])
+                leg = await session.get(AdvisorLeg, ids["leg"])
+            assert coupon is not None and coupon.status == "accepted"
+            assert leg is not None and leg.status == "open"
+            async with session.begin():
+                coupon = await session.get(AdvisorCoupon, ids["coupon"])
+                assert coupon is not None
+                coupon.status = "placed"
+            async with session.begin():
+                changed = await settle_finished(session, NOW)
+            assert changed == 1
+            async with session.begin():
+                coupon = await session.get(AdvisorCoupon, ids["coupon"])
+            assert coupon is not None and coupon.status == "won"
+    finally:
+        async with factory() as session, session.begin():
+            await _wipe(session)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_a_removed_leg_drops_out_and_the_rest_can_win() -> None:
     engine = make_async_engine(Settings())
     factory = make_session_factory(engine)

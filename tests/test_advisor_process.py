@@ -30,8 +30,13 @@ from predictor.services.advisor.candidates import (
     MatchSnapshot,
     playable_candidate,
 )
-from predictor.services.advisor.domain import PlayLimits, over_line_matches
+from predictor.services.advisor.domain import (
+    MIN_ANALYSIS_ODD,
+    PlayLimits,
+    over_line_matches,
+)
 from predictor.services.advisor.llm.protocol import LlmCompletion
+from predictor.services.advisor.prompts.cycle import render_cycle_prompt
 from predictor.services.advisor.sql import latest_over_under
 from predictor.services.advisor.tick import (
     BASELINE_NAME,
@@ -185,6 +190,96 @@ def test_playable_candidate_uses_over_n_plus_half() -> None:
         )
         is None
     )
+
+
+def test_playable_candidate_starts_analysis_from_min_analysis_odd() -> None:
+    from predictor.services.advisor.sql import OverUnderRow
+
+    priced = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="1.5",
+        odd=MIN_ANALYSIS_ODD,
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=10),
+    )
+    assert (
+        playable_candidate(
+            _match(),
+            (priced,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+        )
+        is not None
+    )
+    below = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="1.5",
+        odd=MIN_ANALYSIS_ODD - Decimal("0.001"),
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=10),
+    )
+    assert (
+        playable_candidate(
+            _match(),
+            (below,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+        )
+        is None
+    )
+
+
+def test_cycle_prompt_asks_for_multi_leg_coupons_to_min_combined() -> None:
+    from predictor.services.advisor.cycle import CycleCandidate
+
+    candidates = (
+        CycleCandidate(
+            fixture_id=7,
+            period="regulation",
+            goals_home=0,
+            goals_away=1,
+            ordinal=2,
+            n=1,
+            odd=Decimal("1.300"),
+            candidate_rule="favorite_losing",
+        ),
+        CycleCandidate(
+            fixture_id=8,
+            period="regulation",
+            goals_home=1,
+            goals_away=1,
+            ordinal=3,
+            n=2,
+            odd=Decimal("1.400"),
+            candidate_rule="tie_deficit",
+        ),
+    )
+    prompt, body = render_cycle_prompt(
+        candidates,
+        min_combined_odd=Decimal("1.600"),
+        max_legs=3,
+        match_details={
+            7: {
+                "stats": [{"label": "Strzały", "home": "8", "away": "3"}],
+                "events": [],
+            }
+        },
+    )
+    assert body["min_analysis_odd"] == "1.300"
+    assert body["min_combined_odd"] == "1.600"
+    assert body["max_legs"] == 3
+    assert body["candidates"][0]["detail"]["stats"][0]["label"] == "Strzały"
+    assert body["candidates"][1]["detail"] is None
+    assert "Prefer coupons of 2–3 legs" in prompt
+    assert ">= 1.600" in prompt
+    assert "odd >= 1.300" in prompt
+    assert "candidate.detail is the full /live/match/" in prompt
 
 
 @pytest.mark.asyncio

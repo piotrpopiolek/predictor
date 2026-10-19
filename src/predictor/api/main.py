@@ -18,6 +18,7 @@ from fastapi.responses import (
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from predictor.api.advisor_http import load_recommendation_html, mount_advisor_http
 from predictor.logutil import configure_logging, log_startup
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, SettingsError, load_settings
@@ -175,10 +176,15 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=503, detail="postgres_unavailable"
             ) from None
+        try:
+            cards = await load_recommendation_html(engine)
+        except Exception:
+            cards = ""
         html = render_live_html(
             matches,
             generated_at=datetime.now(UTC),
             title="Następny gol",
+            recommendation_html=cards,
             empty=(
                 "Brak meczów, w których faworyt przegrywa lub musi odrabiać w dwumeczu."
             ),
@@ -448,5 +454,6 @@ def create_app() -> FastAPI:
             ) from None
         return report_as_dict(report)
 
+    mount_advisor_http(app, mutation_token)
     instrument_fastapi(app)
     return app

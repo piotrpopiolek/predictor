@@ -78,12 +78,20 @@ def test_advisor_settings_load(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_API_KEY", "secret")
     monkeypatch.setenv("LLM_PRICE_INPUT_PLN_PER_MTOK", "0.50")
     monkeypatch.setenv("LLM_PRICE_OUTPUT_PLN_PER_MTOK", "1.25")
+    monkeypatch.setenv("ADVISOR_RECOMMENDATION_STAKE", "20")
+    monkeypatch.setenv("ADVISOR_RECOMMENDATION_LOSS_LIMIT", "100")
+    monkeypatch.setenv("ADVISOR_OPERATOR_HOURS", "8-22")
+    monkeypatch.setenv("ADVISOR_RECOMMENDATION_LEAGUES", "")
     settings = load_advisor_settings()
     assert isinstance(settings, AdvisorSettings)
     assert settings.llm_provider == "google"
     assert settings.llm_model == "gemini-2.5-flash"
     assert settings.llm_timeout_seconds == 20
     assert settings.llm_api_key.get_secret_value() == "secret"
+    assert settings.recommendation_stake == Decimal("20")
+    assert settings.recommendation_loss_limit == Decimal("100")
+    assert settings.operator_hours == "8-22"
+    assert settings.recommendation_leagues == ""
 
 
 def test_nan_timeout_is_rejected_at_startup(monkeypatch: pytest.MonkeyPatch) -> None:
