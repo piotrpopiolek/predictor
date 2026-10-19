@@ -1508,6 +1508,7 @@ def _live_nav(active_nav: str) -> str:
         ("day", "/live/day", "Dzień"),
         ("next_goal", "/live/next-goal", "Następny gol"),
         ("bets", "/live/bets", "Zakłady"),
+        ("report", "/advisor/report", "Raport"),
     )
     links: list[str] = []
     for key, href, label in items:

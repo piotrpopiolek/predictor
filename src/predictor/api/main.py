@@ -19,8 +19,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from predictor.logutil import configure_logging, log_startup
-from predictor.postgres import make_async_engine
+from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, SettingsError, load_settings
+from predictor.services.advisor.report import load_yield_report, report_as_dict
 from predictor.services.health import (
     inspect_ready,
     operator_status,
@@ -69,6 +70,7 @@ from predictor.ui import (
     render_match_html,
     render_match_missing,
 )
+from predictor.ui.advisor import render_yield_report
 
 
 @asynccontextmanager
@@ -413,6 +415,38 @@ def create_app() -> FastAPI:
         return PlainTextResponse(
             body, media_type="text/plain; version=0.0.4; charset=utf-8"
         )
+
+    _PERIODS = frozenset({"all", "regulation", "extra_time"})
+
+    @app.get("/advisor/report")
+    async def advisor_report(period: str = "all") -> HTMLResponse:
+        if period not in _PERIODS:
+            raise HTTPException(status_code=400, detail="invalid_period")
+        engine = cast(AsyncEngine, app.state.engine)
+        factory = make_session_factory(engine)
+        try:
+            async with factory() as session:
+                report = await load_yield_report(session, period=period)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
+        return HTMLResponse(render_yield_report(report))
+
+    @app.get("/advisor/report.json")
+    async def advisor_report_json(period: str = "all") -> dict[str, Any]:
+        if period not in _PERIODS:
+            raise HTTPException(status_code=400, detail="invalid_period")
+        engine = cast(AsyncEngine, app.state.engine)
+        factory = make_session_factory(engine)
+        try:
+            async with factory() as session:
+                report = await load_yield_report(session, period=period)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
+        return report_as_dict(report)
 
     instrument_fastapi(app)
     return app

@@ -143,6 +143,12 @@ def test_alembic_head_helper_matches_w1() -> None:
     assert current_alembic_head() == "0022_advisor_langfuse_outbox"
 
 
+def test_status_report_does_not_settle() -> None:
+    text = Path("src/predictor/api/main.py").read_text(encoding="utf-8")
+    assert "/advisor/report" in text
+    assert "settle_finished" not in text
+
+
 def test_advisor_process_does_not_call_api_football() -> None:
     root = Path("src/predictor/advisor")
     bodies = [path.read_text(encoding="utf-8") for path in root.rglob("*.py")]

@@ -30,14 +30,41 @@ from predictor.services.advisor.sql import (
     open_fixture_ids,
     rejected_states,
 )
-from predictor.services.live_board.domain import select_next_goal_matches
+from predictor.services.live_board.domain import (
+    FirstLegScore,
+    LiveMatch,
+    select_next_goal_matches,
+)
 from predictor.services.live_board.sql import list_live_matches, load_first_legs
 
 POLL_SECONDS = 15
 QUOTE_MAX_AGE = timedelta(seconds=90)
 BASELINE_NAME = "baseline"
 LLM_NAME = "sandbox-llm"
+_BOARD_RULES = ["favorite_losing", "tie_deficit"]
 _ACTIVE = frozenset({"sandbox", "promoted"})
+
+
+def board_snapshots(
+    matches: Sequence[LiveMatch],
+    first_legs: dict[int, FirstLegScore] | None = None,
+) -> tuple[MatchSnapshot, ...]:
+    """The one candidate list. Baseline and every LLM strategy share it."""
+    return tuple(
+        MatchSnapshot(
+            fixture_id=match.fixture_id,
+            status_short=match.status_short,
+            elapsed=match.elapsed,
+            extra=match.extra,
+            goals_home=match.goals_home,
+            goals_away=match.goals_away,
+            extratime_home=match.et_home,
+            extratime_away=match.et_away,
+            rule=rules[0],
+        )
+        for match, rules in select_next_goal_matches(matches, first_legs)
+        if rules
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,10 +100,20 @@ class CandidateWindow:
             return False
         if not signature or self.fired or self.since is None:
             return False
-        if now - self.since < wait:
-            return False
+        return now - self.since >= wait
+
+    def mark_fired(self) -> None:
+        """The set was sent to the model. A budget skip must not call this."""
         self.fired = True
-        return True
+
+    def next_sleep(self, now: datetime, wait: timedelta, poll: float) -> float:
+        """Sleep until this set is due, and never longer than the poll."""
+        if self.fired or not self.signature or self.since is None:
+            return poll
+        remaining = (self.since + wait - now).total_seconds()
+        if remaining <= 0:
+            return poll
+        return min(poll, remaining)
 
 
 async def run_tick(
@@ -96,27 +133,14 @@ async def run_tick(
     """
     matches = await list_live_matches(engine)
     legs = await load_first_legs(engine, matches)
-    selected = [
-        MatchSnapshot(
-            fixture_id=match.fixture_id,
-            status_short=match.status_short,
-            elapsed=match.elapsed,
-            extra=match.extra,
-            goals_home=match.goals_home,
-            goals_away=match.goals_away,
-            extratime_home=match.et_home,
-            extratime_away=match.et_away,
-            rule=rules[0],
-        )
-        for match, rules in select_next_goal_matches(matches, legs)
-        if rules
-    ]
+    selected = board_snapshots(matches, legs)
     async with factory() as session:
         async with session.begin():
             baseline = await ensure_strategy(session, BASELINE_NAME, "baseline")
             llm = await ensure_strategy(session, LLM_NAME, "llm")
             quotes = await latest_over_under(
-                session, [item.fixture_id for item in selected]
+                session,
+                [item.fixture_id for item in selected],
             )
             baseline_candidates = await _playable(
                 session, baseline, selected, quotes, now
@@ -132,12 +156,11 @@ async def run_tick(
                 clock=lambda: now,
             )
         signature = candidate_signature(llm_candidates)
-        if llm.status not in _ACTIVE or not window.ready(
-            signature, now, timedelta(seconds=settings.advisor_debounce_seconds)
-        ):
+        wait = timedelta(seconds=settings.advisor_debounce_seconds)
+        if llm.status not in _ACTIVE or not window.ready(signature, now, wait):
             return False
         prompt, body = render_cycle_prompt(llm_candidates)
-        await run_cycle(
+        outcome = await run_cycle(
             session,
             provider,
             settings,
@@ -157,7 +180,9 @@ async def run_tick(
             traces=traces,
             redact_secrets=redact_secrets,
         )
-    return True
+        if outcome.called:
+            window.mark_fired()
+        return outcome.called
 
 
 async def restore_window(session: AsyncSession, strategy_id: int) -> CandidateWindow:
@@ -166,9 +191,13 @@ async def restore_window(session: AsyncSession, strategy_id: int) -> CandidateWi
 
 
 async def ensure_strategy(session: AsyncSession, name: str, kind: str) -> StrategyBook:
+    """Use an active strategy of this kind, or create the named sandbox row."""
     row = await session.scalar(
         select(AdvisorStrategy)
-        .where(AdvisorStrategy.kind == kind)
+        .where(
+            AdvisorStrategy.kind == kind,
+            AdvisorStrategy.status.in_(_ACTIVE),
+        )
         .order_by(AdvisorStrategy.id)
         .limit(1)
     )
@@ -192,7 +221,7 @@ async def ensure_strategy(session: AsyncSession, name: str, kind: str) -> Strate
             max_minute_regulation=80,
             max_minute_extra=110,
             wait_minutes=10,
-            candidate_rules=["favorite_losing", "tie_deficit"],
+            candidate_rules=list(_BOARD_RULES),
         )
         session.add(version)
         await session.flush()
