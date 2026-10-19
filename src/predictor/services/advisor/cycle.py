@@ -185,7 +185,8 @@ async def _run_locked(
             model=provider.model,
             model_version=provider.model,
             status="provider_error",
-            raw_output=None,
+            # Keep the code in raw_output so Langfuse shows why the call failed.
+            raw_output=exc.code,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             thoughts_tokens=thoughts_tokens,

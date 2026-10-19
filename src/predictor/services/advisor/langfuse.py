@@ -146,9 +146,11 @@ def build_trace(draft: TraceDraft, secrets: Sequence[str]) -> TraceExport:
                                 "startTimeUnixNano": _nano(start),
                                 "endTimeUnixNano": _nano(end),
                                 "attributes": attributes,
-                                "status": {
-                                    "code": 2 if draft.status == "provider_error" else 1
-                                },
+                                "status": (
+                                    {"code": 2, "message": draft.status}
+                                    if draft.status == "provider_error"
+                                    else {"code": 1}
+                                ),
                             }
                         ],
                     }

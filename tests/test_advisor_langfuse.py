@@ -138,6 +138,7 @@ def test_provider_error_is_an_error_span() -> None:
     span = export.body["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
     assert span["traceId"] == export.trace_id
     assert span["status"]["code"] == 2
+    assert span["status"]["message"] == "provider_error"
     assert len(export.trace_id) == 32
 
 

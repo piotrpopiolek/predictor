@@ -214,6 +214,7 @@ async def test_run_cycle_appends_a_valid_call_and_respects_the_budget() -> None:
             async with session.begin():
                 failed_cycle = await session.get(AdvisorCycle, provider_error.cycle_id)
             assert failed_cycle is not None
+            assert failed_cycle.raw_output == "timeout"
             assert failed_cycle.input_tokens == max(1, len(request.prompt) // 4)
             assert failed_cycle.output_tokens == RESERVED_OUTPUT_TOKENS
             assert failed_cycle.thoughts_tokens == 0
