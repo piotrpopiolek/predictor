@@ -59,8 +59,6 @@ EXPECTED_TABLES = frozenset(
         "advisor_coupon_events",
         "advisor_strategy_events",
         "advisor_telegram_outbox",
-        "advisor_strategy_events",
-        "advisor_telegram_outbox",
     }
 )
 
