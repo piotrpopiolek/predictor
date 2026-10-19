@@ -103,6 +103,32 @@ def test_match_detail_as_dict_covers_match_page_sections() -> None:
     assert payload["goal_price"] is None
 
 
+def test_match_detail_as_llm_dict_drops_low_signal_sections() -> None:
+    detail = _detail()
+    detail = replace(
+        detail,
+        events=(
+            DetailEvent(55, None, "away", "Goal", "Normal Goal", "Saipa", None),
+            DetailEvent(60, None, "home", "subst", None, "Ali", "Omid"),
+            DetailEvent(70, None, "home", "Card", "Yellow Card", "Ali", None),
+        ),
+    )
+    payload = detail.as_llm_dict()
+    assert "table" not in payload
+    assert "markets" not in payload
+    assert "h2h" not in payload
+    assert "form_results" not in payload
+    assert "home_xi" not in payload
+    assert "away_bench" not in payload
+    assert "home_logo" not in payload["match"]
+    assert "venue" not in payload["match"]
+    assert payload["match"]["home"] == "Mes Kerman"
+    assert payload["stats"][0]["label"] == "Posiadanie"
+    assert [item["type"] for item in payload["events"]] == ["Goal", "Card"]
+    assert payload["comparison"][0]["label"] == "Forma"
+    assert payload["advice"] == "Double chance : Saipa or draw"
+
+
 def test_read_goal_price_treats_over_line_as_another_goal() -> None:
     price = read_goal_price(
         none_odd=Decimal("3.40"),

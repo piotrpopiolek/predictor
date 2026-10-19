@@ -155,17 +155,7 @@ class MatchDetail:
         """Full match-page payload (same sections as /live/match/{id})."""
         return {
             "match": self.match.as_dict(),
-            "events": [
-                {
-                    "clock": item.clock,
-                    "side": item.side,
-                    "type": item.event_type,
-                    "detail": item.detail,
-                    "player": item.player,
-                    "assist": item.assist,
-                }
-                for item in self.events
-            ],
+            "events": [_event_dict(item) for item in self.events],
             "stats": [
                 {"label": item.label, "home": item.home, "away": item.away}
                 for item in self.stats
@@ -209,19 +199,103 @@ class MatchDetail:
                 }
                 for item in self.attack_subs
             ],
-            "goal_price": (
-                None
-                if self.goal_price is None
-                else {
-                    "none_odd": self.goal_price.none_odd,
-                    "none_implied": self.goal_price.none_implied,
-                    "line": self.goal_price.line,
-                    "over_odd": self.goal_price.over_odd,
-                    "over_implied": self.goal_price.over_implied,
-                    "move": self.goal_price.move,
-                }
-            ),
+            "goal_price": _goal_price_dict(self.goal_price),
         }
+
+    def as_llm_dict(self) -> dict[str, Any]:
+        """Compact context for next-goal Over. Drops table, markets, H2H,
+        form lists, XI/bench, logos, and non-goal/card events.
+        """
+        return {
+            "match": _match_llm_dict(self.match),
+            "events": [
+                _event_dict(item)
+                for item in self.events
+                if item.event_type in _LLM_EVENT_TYPES
+            ],
+            "stats": [
+                {"label": item.label, "home": item.home, "away": item.away}
+                for item in self.stats
+            ],
+            "home_strength": _strength_dict(self.home_strength),
+            "away_strength": _strength_dict(self.away_strength),
+            "attack_subs": [
+                {
+                    "clock": item.clock,
+                    "team": item.team,
+                    "summary": item.summary,
+                    "effect": item.effect,
+                }
+                for item in self.attack_subs
+            ],
+            "goal_price": _goal_price_dict(self.goal_price),
+            "advice": self.advice,
+            "expected_home": self.expected_home,
+            "expected_away": self.expected_away,
+            "pct_draw": self.pct_draw,
+            "comparison": [
+                {"label": label, "home": home, "away": away}
+                for label, home, away in self.comparison
+            ],
+        }
+
+
+_LLM_EVENT_TYPES = frozenset({"Goal", "Card"})
+
+
+def _event_dict(item: DetailEvent) -> dict[str, Any]:
+    return {
+        "clock": item.clock,
+        "side": item.side,
+        "type": item.event_type,
+        "detail": item.detail,
+        "player": item.player,
+        "assist": item.assist,
+    }
+
+
+def _goal_price_dict(price: GoalPrice | None) -> dict[str, Any] | None:
+    if price is None:
+        return None
+    return {
+        "none_odd": price.none_odd,
+        "none_implied": price.none_implied,
+        "line": price.line,
+        "over_odd": price.over_odd,
+        "over_implied": price.over_implied,
+        "move": price.move,
+    }
+
+
+def _match_llm_dict(match: LiveMatch) -> dict[str, Any]:
+    return {
+        "fixture_id": match.fixture_id,
+        "country": match.country,
+        "league": match.league,
+        "home": match.home,
+        "away": match.away,
+        "goals_home": match.goals_home,
+        "goals_away": match.goals_away,
+        "status_short": match.status_short,
+        "elapsed": match.elapsed,
+        "extra": match.extra,
+        "clock": match.clock,
+        "ht_home": match.ht_home,
+        "ht_away": match.ht_away,
+        "home_reds": match.home_reds,
+        "away_reds": match.away_reds,
+        "home_formation": match.home_formation,
+        "away_formation": match.away_formation,
+        "scorers": [item.as_dict() for item in match.scorers],
+        "stats": None if match.stats is None else match.stats.as_dict(),
+        "prematch": None if match.prematch is None else match.prematch.as_dict(),
+        "next_goal": None if match.next_goal is None else match.next_goal.as_dict(),
+        "form_home": None if match.form_home is None else match.form_home.as_dict(),
+        "form_away": None if match.form_away is None else match.form_away.as_dict(),
+        "prediction_winner_team_id": match.prediction_winner_team_id,
+        "prediction_pct_home": match.prediction_pct_home,
+        "prediction_pct_away": match.prediction_pct_away,
+    }
 
 
 def _player_dict(item: DetailPlayer) -> dict[str, Any]:

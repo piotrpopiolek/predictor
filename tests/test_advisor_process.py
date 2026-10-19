@@ -279,7 +279,7 @@ def test_cycle_prompt_asks_for_multi_leg_coupons_to_min_combined() -> None:
     assert "Prefer coupons of 2–3 legs" in prompt
     assert ">= 1.600" in prompt
     assert "odd >= 1.300" in prompt
-    assert "candidate.detail is the full /live/match/" in prompt
+    assert "candidate.detail is compact match context" in prompt
 
 
 @pytest.mark.asyncio

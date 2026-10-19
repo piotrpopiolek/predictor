@@ -349,7 +349,7 @@ async def _match_details(
         *(load_match_detail(engine, fixture_id) for fixture_id in unique)
     )
     return {
-        fixture_id: detail.as_dict()
+        fixture_id: detail.as_llm_dict()
         for fixture_id, detail in zip(unique, loaded, strict=True)
         if detail is not None
     }

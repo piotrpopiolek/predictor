@@ -1,4 +1,4 @@
-"""Prompt for one sandbox cycle. Version p2. Odds are context, not an output."""
+"""Prompt for one sandbox cycle. Version p3. Odds are context, not an output."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any
 from predictor.services.advisor.cycle import CycleCandidate
 from predictor.services.advisor.domain import MIN_ANALYSIS_ODD
 
-PROMPT_VERSION = "p2"
+PROMPT_VERSION = "p3"
 
 _REASONS = (
     "favorite_pressure",
@@ -66,10 +66,10 @@ def render_cycle_prompt(
         f">= {min_combined_odd}. Prefer coupons of 2–{max_legs} legs so "
         "the combined odd clears that floor; use wait when more priced "
         "candidates are needed. "
-        "Each candidate.detail is the full /live/match/{fixture_id} "
-        "payload: live score/clock, events, FT stats, lineups and "
-        "strength, attack subs, goal price, form, prediction, H2H, "
-        "table, and live markets. Use it for the decision. "
+        "Each candidate.detail is compact match context: score/clock, "
+        "Goal/Card events, FT stats, lineup strength, attack subs, "
+        "goal price, prematch/next-goal odds, team goal form, and "
+        "prediction comparison. Use it for the decision. "
         f"Candidates: {json.dumps(body, ensure_ascii=True)}"
     )
     return prompt, body
