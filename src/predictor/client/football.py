@@ -119,6 +119,16 @@ class FootballClient:
     def close_history_window(self) -> None:
         self._window_deadline = None
 
+    def history_room(self) -> int | None:
+        """Calls still allowed in the open window, or None when it is unset."""
+        if self._window_deadline is None:
+            return None
+        if time.monotonic() >= self._window_deadline:
+            return 0
+        by_ceiling = max(0, self._window_ceiling - self._calls_made)
+        by_minute = max(0, self._window_per_minute - self.calls_in_recent_seconds(60))
+        return min(by_ceiling, by_minute)
+
     def calls_in_recent_seconds(self, seconds: float) -> int:
         cutoff = time.monotonic() - seconds
         while self._call_marks and self._call_marks[0] < cutoff:

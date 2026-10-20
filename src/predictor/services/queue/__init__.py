@@ -37,6 +37,7 @@ from predictor.services.queue.followups import (
     enqueue_fixture_followups,
 )
 from predictor.services.queue.global_catalog import (
+    claim_global_batch,
     claim_global_task,
     claim_live_global_task,
     complete_stored_player_profiles,
@@ -121,6 +122,7 @@ __all__ = [
     "complete_stored_player_profiles",
     "complete_stored_venues",
     "enqueue_coach_catalog",
+    "claim_global_batch",
     "claim_global_task",
     "claim_live_global_task",
     "requeue_stale_global",

@@ -405,9 +405,15 @@ async def drop_untracked_fixture_ids(
     return [fid for fid in ids if fid not in blocked]
 
 
-async def _claim_endpoint(
-    session: AsyncSession, endpoint: str, *, now: datetime | None = None
-) -> EtlTask | None:
+async def _claim_endpoint_rows(
+    session: AsyncSession,
+    endpoint: str,
+    *,
+    limit: int,
+    now: datetime | None = None,
+) -> list[EtlTask]:
+    if limit <= 0:
+        return []
     stamp = now or datetime.now(UTC)
     stmt = (
         select(EtlTask)
@@ -417,12 +423,17 @@ async def _claim_endpoint(
         .where(EtlTask.cursor_kind.is_(None))
         .order_by(EtlTask.id)
         .with_for_update(skip_locked=True)
-        .limit(1)
+        .limit(limit)
     )
-    task = await session.scalar(stmt)
-    if task is None:
-        return None
-    return _mark_claimed(task)
+    rows = list(await session.scalars(stmt))
+    return [_mark_claimed(task) for task in rows]
+
+
+async def _claim_endpoint(
+    session: AsyncSession, endpoint: str, *, now: datetime | None = None
+) -> EtlTask | None:
+    rows = await _claim_endpoint_rows(session, endpoint, limit=1, now=now)
+    return rows[0] if rows else None
 
 
 async def _claim_fixture_endpoint(

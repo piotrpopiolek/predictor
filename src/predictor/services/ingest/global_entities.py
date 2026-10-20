@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
@@ -19,7 +20,7 @@ from predictor.client.errors import (
 )
 from predictor.client.football import FootballClient
 from predictor.constants import (
-    GLOBAL_PER_TICK,
+    HISTORY_FETCH_CONCURRENCY,
     LOOKUP_WITHOUT_HTTP,
     TEAM_STATS_SENTINEL_DATE,
     TOP_PLAYER_ENDPOINTS,
@@ -67,7 +68,7 @@ from predictor.services.ingest.task_completion import (
     retry_or_empty_task,
 )
 from predictor.services.queue import (
-    claim_global_task,
+    claim_global_batch,
     claim_live_global_task,
     complete_task,
     enqueue_coach_catalog,
@@ -98,7 +99,7 @@ class GlobalIngest:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         now_fn: Callable[[], datetime] | None = None,
-        per_tick: int = GLOBAL_PER_TICK,
+        per_tick: int = HISTORY_FETCH_CONCURRENCY,
     ) -> None:
         self._client = client
         self._session_factory = session_factory
@@ -116,11 +117,48 @@ class GlobalIngest:
             return
         await self._requeue_stale()
         await self._skip_lookups()
-        for _ in range(self._per_tick):
+        left = self._fetch_limit()
+        while left > 0:
             if not self._quota_left():
                 return
-            if not await self._one_task():
+            room = min(left, self._fetch_limit(), HISTORY_FETCH_CONCURRENCY)
+            if room <= 0:
                 return
+            task_ids = await self._claim_ids(room)
+            if not task_ids:
+                return
+            await self._run_batch(task_ids)
+            left -= len(task_ids)
+
+    def _fetch_limit(self) -> int:
+        limit = self._per_tick
+        room = getattr(self._client, "history_room", None)
+        if callable(room):
+            available = room()
+            if isinstance(available, int):
+                limit = min(limit, available)
+        return max(0, limit)
+
+    async def _run_batch(self, task_ids: list[int]) -> None:
+        async def run(task_id: int) -> None:
+            try:
+                await self._one_task(task_id=task_id)
+            except asyncio.CancelledError:
+                await release_in_progress_task(self._session_factory, task_id)
+                raise
+
+        results = await asyncio.gather(
+            *(run(task_id) for task_id in task_ids),
+            return_exceptions=True,
+        )
+        auth = next((exc for exc in results if isinstance(exc, AuthBlockedError)), None)
+        if auth is not None:
+            raise auth
+        closed = next(
+            (exc for exc in results if isinstance(exc, SpendWindowClosed)), None
+        )
+        if closed is not None:
+            raise closed
 
     async def _requeue_stale(self) -> None:
         async with self._session_factory() as session, session.begin():
@@ -145,7 +183,8 @@ class GlobalIngest:
         self, *, task_id: int | None = None, retry_empty: bool = False
     ) -> bool:
         if task_id is None:
-            task_id = await self._claim_id()
+            claimed = await self._claim_ids(1)
+            task_id = claimed[0] if claimed else None
         if task_id is None:
             return False
         loaded = await self._load_task(task_id)
@@ -333,10 +372,10 @@ class GlobalIngest:
             return {"count": count}
         return {"count": 0}
 
-    async def _claim_id(self) -> int | None:
+    async def _claim_ids(self, limit: int) -> list[int]:
         async with self._session_factory() as session, session.begin():
-            task = await claim_global_task(session)
-            return None if task is None else int(task.id)
+            tasks = await claim_global_batch(session, limit)
+            return [int(task.id) for task in tasks]
 
     async def _claim_scoped_id(
         self, needles: Sequence[tuple[str, dict[str, Any]]]

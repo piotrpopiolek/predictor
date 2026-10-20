@@ -22,6 +22,7 @@ from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Team, Venue
 from predictor.services.queue.core import (
     _claim_endpoint,
+    _claim_endpoint_rows,
     _require_transaction,
     complete_task,
     ensure_param_task,
@@ -165,12 +166,23 @@ async def enqueue_coach_catalog(session: AsyncSession, coach_id: int) -> None:
 
 
 async def claim_global_task(session: AsyncSession) -> EtlTask | None:
-    _require_transaction(session, "claim global")
+    rows = await claim_global_batch(session, 1)
+    return rows[0] if rows else None
+
+
+async def claim_global_batch(session: AsyncSession, limit: int) -> list[EtlTask]:
+    """Claim up to ``limit`` due rows of the first global endpoint that has any.
+
+    One transaction marks them in_progress. A later batch skips those rows.
+    """
+    _require_transaction(session, "claim global batch")
+    if limit <= 0:
+        return []
     for endpoint in GLOBAL_ENDPOINT_ORDER:
-        task = await _claim_endpoint(session, endpoint)
-        if task is not None:
-            return task
-    return None
+        rows = await _claim_endpoint_rows(session, endpoint, limit=limit)
+        if rows:
+            return rows
+    return []
 
 
 async def claim_live_global_task(
