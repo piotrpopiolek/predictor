@@ -10,11 +10,14 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from predictor.constants import SANDBOX_BANKROLL
 from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorLeg,
@@ -27,6 +30,8 @@ from predictor.services.advisor.sandbox import portfolio_balance
 _PLAYED = frozenset({"won", "lost"})
 _RATE = Decimal("0.0001")
 _ZERO = Decimal("0.00")
+_MONEY = Decimal("0.01")
+_HIT = Decimal("0.01")
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +51,7 @@ class CouponView:
     combined_odd: Decimal | None
     payout_keep: Decimal
     legs: tuple[LegView, ...]
+    placed_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +69,7 @@ class BookLine:
     played: int
     hits: int
     hit_rate: Decimal | None
+    avg_odd: Decimal | None
     stakes: Decimal
     net_pnl: Decimal
     yield_net: Decimal | None
@@ -81,10 +88,21 @@ class PairYield:
 
 
 @dataclass(frozen=True, slots=True)
+class StrategyChart:
+    """Chronological points shaped like /live/bets chart rows."""
+
+    strategy_id: int
+    name: str
+    kind: str
+    points: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class YieldReport:
     period: str
     books: tuple[BookLine, ...]
     pairs: tuple[PairYield, ...]
+    charts: tuple[StrategyChart, ...] = ()
 
 
 def build_report(
@@ -111,7 +129,16 @@ def build_report(
     pairs = tuple(
         _pair(base, other, by_strategy) for base in baselines for other in others
     )
-    return YieldReport(period=period, books=books, pairs=pairs)
+    charts = tuple(
+        StrategyChart(
+            strategy_id=item.strategy_id,
+            name=item.name,
+            kind=item.kind,
+            points=_chart_points(by_strategy.get(item.strategy_id, [])),
+        )
+        for item in visible
+    )
+    return YieldReport(period=period, books=books, pairs=pairs, charts=charts)
 
 
 def report_as_dict(report: YieldReport) -> dict[str, object]:
@@ -125,6 +152,7 @@ def report_as_dict(report: YieldReport) -> dict[str, object]:
                 "played": line.played,
                 "hits": line.hits,
                 "hit_rate": _text(line.hit_rate),
+                "avg_odd": _text(line.avg_odd),
                 "stakes": _text(line.stakes),
                 "net_pnl": _text(line.net_pnl),
                 "yield_net": _text(line.yield_net),
@@ -143,6 +171,15 @@ def report_as_dict(report: YieldReport) -> dict[str, object]:
                 "strategy_yield": _text(pair.strategy_yield),
             }
             for pair in report.pairs
+        ],
+        "charts": [
+            {
+                "strategy_id": chart.strategy_id,
+                "name": chart.name,
+                "kind": chart.kind,
+                "points": list(chart.points),
+            }
+            for chart in report.charts
         ],
     }
 
@@ -191,6 +228,7 @@ async def load_yield_report(session: AsyncSession, *, period: str) -> YieldRepor
             combined_odd=coupon.combined_odd,
             payout_keep=coupon.payout_keep,
             legs=tuple(grouped.get(coupon.id, ())),
+            placed_at=coupon.placed_at or coupon.created_at,
         )
         for coupon, strategy in owners.values()
     )
@@ -239,11 +277,99 @@ def _book(strategy: StrategyView, coupons: Sequence[CouponView]) -> BookLine:
         played=len(priced),
         hits=hits,
         hit_rate=_ratio(Decimal(hits), Decimal(len(priced))),
+        avg_odd=_avg_odd(priced),
         stakes=stakes,
         net_pnl=pnl,
         yield_net=_ratio(pnl, stakes),
         balance=balance,
     )
+
+
+def _avg_odd(coupons: Sequence[CouponView]) -> Decimal | None:
+    odds = [
+        coupon.combined_odd for coupon in coupons if coupon.combined_odd is not None
+    ]
+    if not odds:
+        return None
+    total = sum(odds, _ZERO)
+    return (total / Decimal(len(odds))).quantize(
+        Decimal("0.001"), rounding=ROUND_HALF_UP
+    )
+
+
+def _chart_points(coupons: Sequence[CouponView]) -> tuple[dict[str, Any], ...]:
+    """Running saldo and hit rate, same shape as /live/bets chart input."""
+    ordered = sorted(
+        coupons,
+        key=lambda item: (
+            item.placed_at.isoformat() if item.placed_at is not None else "",
+            item.coupon_id,
+        ),
+    )
+    saldo = SANDBOX_BANKROLL
+    hits = 0
+    decided = 0
+    points: list[dict[str, Any]] = []
+    for coupon in ordered:
+        placed = coupon.placed_at.isoformat() if coupon.placed_at is not None else ""
+        if coupon.status == "open":
+            saldo -= coupon.stake
+            hit = (
+                (Decimal(hits) / Decimal(decided) * Decimal(100)).quantize(
+                    _HIT, rounding=ROUND_HALF_UP
+                )
+                if decided
+                else _ZERO
+            )
+            points.append(
+                {
+                    "id": coupon.coupon_id,
+                    "placed_at": placed,
+                    "status": coupon.status,
+                    "stake": _text(coupon.stake),
+                    "pnl": "0.00",
+                    "saldo": _text(saldo.quantize(_MONEY, rounding=ROUND_HALF_UP)),
+                    "hit_overall": _text(hit),
+                }
+            )
+            continue
+        if coupon.status == "won" and coupon.combined_odd is not None:
+            pnl = settled_pnl(
+                coupon.stake,
+                coupon.combined_odd,
+                Settlement.WON,
+                coupon.payout_keep,
+            )
+            saldo += pnl
+            decided += 1
+            hits += 1
+        elif coupon.status == "lost":
+            pnl = -coupon.stake
+            saldo -= coupon.stake
+            decided += 1
+        elif coupon.status == "void":
+            pnl = _ZERO
+        else:
+            continue
+        hit = (
+            (Decimal(hits) / Decimal(decided) * Decimal(100)).quantize(
+                _HIT, rounding=ROUND_HALF_UP
+            )
+            if decided
+            else _ZERO
+        )
+        points.append(
+            {
+                "id": coupon.coupon_id,
+                "placed_at": placed,
+                "status": coupon.status,
+                "stake": _text(coupon.stake),
+                "pnl": _text(pnl.quantize(_MONEY, rounding=ROUND_HALF_UP)),
+                "saldo": _text(saldo.quantize(_MONEY, rounding=ROUND_HALF_UP)),
+                "hit_overall": _text(hit),
+            }
+        )
+    return tuple(points)
 
 
 def _pair(

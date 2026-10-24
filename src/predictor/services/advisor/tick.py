@@ -20,7 +20,7 @@ from predictor.services.advisor.candidates import (
     playable_candidate,
 )
 from predictor.services.advisor.cycle import CycleCandidate, CycleRequest, run_cycle
-from predictor.services.advisor.domain import PlayLimits
+from predictor.services.advisor.domain import QUOTE_MAX_AGE, PlayLimits
 from predictor.services.advisor.langfuse import TraceSink
 from predictor.services.advisor.llm.protocol import LlmProvider
 from predictor.services.advisor.prompts.cycle import PROMPT_VERSION, render_cycle_prompt
@@ -51,7 +51,6 @@ from predictor.services.match_detail import load_match_detail
 from predictor.services.queue import untracked_league_ids
 
 POLL_SECONDS = 15
-QUOTE_MAX_AGE = timedelta(seconds=90)
 BASELINE_NAME = "baseline"
 LLM_NAME = "sandbox-llm"
 _BOARD_RULES = ["favorite_losing", "tie_deficit"]
@@ -159,11 +158,13 @@ async def run_tick(
                 [item.fixture_id for item in selected],
             )
             baseline_candidates = await _playable(
-                session, baseline, selected, quotes, now
+                session, baseline, selected, quotes, now, for_llm=False
             )
             prepared = []
             for book in books:
-                candidates = await _playable(session, book, selected, quotes, now)
+                candidates = await _playable(
+                    session, book, selected, quotes, now, for_llm=True
+                )
                 opened = await open_fixture_ids(session, book.strategy_id)
                 prepared.append((book, candidates, opened))
             reco_open = await open_recommendation_fixtures(session)
@@ -361,6 +362,8 @@ async def _playable(
     matches: Sequence[MatchSnapshot],
     quotes: dict[int, tuple[OverUnderRow, ...]],
     now: datetime,
+    *,
+    for_llm: bool,
 ) -> tuple[CycleCandidate, ...]:
     limits = PlayLimits(
         max_minute_regulation=book.max_minute_regulation,
@@ -378,6 +381,7 @@ async def _playable(
             now=now,
             open_fixtures=opened,
             rejected=rejected,
+            for_llm=for_llm,
         )
         if candidate is not None:
             chosen.append(candidate)

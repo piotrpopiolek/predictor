@@ -33,7 +33,7 @@ NOW = datetime(2026, 10, 18, 16, 0, tzinfo=UTC)
 LIMITS = PlayLimits(
     max_minute_regulation=80,
     max_minute_extra=110,
-    max_quote_age=timedelta(seconds=90),
+    max_quote_age=timedelta(seconds=300),
 )
 ODD = Decimal("1.80")
 
@@ -177,9 +177,9 @@ def test_missing_suspended_and_stale_quotes() -> None:
     assert assess(_view(market_known=False), LIMITS, NOW).code is Skip.NO_LINE
     suspended = _quote(tradable=False, age=timedelta(seconds=1000))
     assert assess(_view(quote=suspended), LIMITS, NOW).code is Skip.SUSPENDED
-    assert assess(_view(quote=_quote(age=timedelta(seconds=90))), LIMITS, NOW).playable
+    assert assess(_view(quote=_quote(age=timedelta(seconds=300))), LIMITS, NOW).playable
     assert (
-        assess(_view(quote=_quote(age=timedelta(seconds=91))), LIMITS, NOW).code
+        assess(_view(quote=_quote(age=timedelta(seconds=301))), LIMITS, NOW).code
         is Skip.STALE_ODD
     )
     assert assess(_view(quote=_quote(captured=NOW)), LIMITS, NOW).playable

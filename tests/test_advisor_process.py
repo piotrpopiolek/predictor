@@ -10,11 +10,13 @@ import pytest
 from sqlalchemy import delete, select
 
 from predictor.models.advisor import (
+    AdvisorCounterfactual,
     AdvisorCoupon,
     AdvisorCycle,
     AdvisorDecision,
     AdvisorLangfuseOutbox,
     AdvisorLeg,
+    AdvisorSettlementEvent,
     AdvisorStrategy,
     AdvisorStrategyVersion,
 )
@@ -83,7 +85,7 @@ def _limits() -> PlayLimits:
     return PlayLimits(
         max_minute_regulation=80,
         max_minute_extra=110,
-        max_quote_age=timedelta(seconds=90),
+        max_quote_age=timedelta(seconds=300),
     )
 
 
@@ -155,6 +157,7 @@ def test_playable_candidate_uses_over_n_plus_half() -> None:
         now=NOW,
         open_fixtures=frozenset(),
         rejected=frozenset(),
+        for_llm=True,
     )
     assert candidate is not None
     assert candidate.n == 1
@@ -168,6 +171,7 @@ def test_playable_candidate_uses_over_n_plus_half() -> None:
             now=NOW,
             open_fixtures=frozenset(),
             rejected=frozenset({(7, "regulation", 0, 1, 2)}),
+            for_llm=True,
         )
         is None
     )
@@ -177,7 +181,7 @@ def test_playable_candidate_uses_over_n_plus_half() -> None:
         handicap="1.5",
         odd=Decimal("1.70"),
         tradable=True,
-        captured_at=NOW - timedelta(seconds=120),
+        captured_at=NOW - timedelta(seconds=301),
     )
     assert (
         playable_candidate(
@@ -187,6 +191,138 @@ def test_playable_candidate_uses_over_n_plus_half() -> None:
             now=NOW,
             open_fixtures=frozenset(),
             rejected=frozenset(),
+            for_llm=True,
+        )
+        is None
+    )
+
+
+def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
+    from predictor.services.advisor.sql import OverUnderRow
+
+    row = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="1.5",
+        odd=MIN_ANALYSIS_ODD,
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=300),
+    )
+    assert (
+        playable_candidate(
+            _match(),
+            (row,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=True,
+        )
+        is not None
+    )
+    first_half = MatchSnapshot(
+        fixture_id=7,
+        status_short="1H",
+        elapsed=40,
+        extra=None,
+        goals_home=0,
+        goals_away=1,
+        extratime_home=None,
+        extratime_away=None,
+        rule="favorite_losing",
+    )
+    assert (
+        playable_candidate(
+            first_half,
+            (row,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=True,
+        )
+        is None
+    )
+    fresh = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="1.5",
+        odd=MIN_ANALYSIS_ODD,
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=10),
+    )
+    assert (
+        playable_candidate(
+            first_half,
+            (fresh,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=False,
+        )
+        is not None
+    )
+    late = MatchSnapshot(
+        fixture_id=7,
+        status_short="2H",
+        elapsed=80,
+        extra=1,
+        goals_home=0,
+        goals_away=1,
+        extratime_home=None,
+        extratime_away=None,
+        rule="favorite_losing",
+    )
+    assert (
+        playable_candidate(
+            late,
+            (row,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=True,
+        )
+        is None
+    )
+    below = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="1.5",
+        odd=MIN_ANALYSIS_ODD - Decimal("0.001"),
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=10),
+    )
+    assert (
+        playable_candidate(
+            _match(),
+            (below,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=True,
+        )
+        is None
+    )
+    suspended = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="1.5",
+        odd=MIN_ANALYSIS_ODD,
+        tradable=False,
+        captured_at=NOW - timedelta(seconds=10),
+    )
+    assert (
+        playable_candidate(
+            _match(),
+            (suspended,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=True,
         )
         is None
     )
@@ -211,6 +347,7 @@ def test_playable_candidate_starts_analysis_from_min_analysis_odd() -> None:
             now=NOW,
             open_fixtures=frozenset(),
             rejected=frozenset(),
+            for_llm=True,
         )
         is not None
     )
@@ -230,6 +367,7 @@ def test_playable_candidate_starts_analysis_from_min_analysis_odd() -> None:
             now=NOW,
             open_fixtures=frozenset(),
             rejected=frozenset(),
+            for_llm=True,
         )
         is None
     )
@@ -279,6 +417,8 @@ def test_cycle_prompt_asks_for_multi_leg_coupons_to_min_combined() -> None:
     assert "Prefer coupons of 2–3 legs" in prompt
     assert ">= 1.600" in prompt
     assert "odd >= 1.300" in prompt
+    assert "already 2H" in prompt
+    assert "300 seconds" in prompt
     assert "candidate.detail is compact match context" in prompt
 
 
@@ -501,6 +641,7 @@ async def test_budget_block_leaves_the_set_for_the_next_tick() -> None:
 
 async def _seed_live(session, base: int) -> None:
     league, home, away, fixture = base, base + 1, base + 2, base + 3
+    await _drop_live(session, base)
     session.add(League(id=league, name=f"advisor-live-{base}"))
     session.add(Team(id=home, name="Home"))
     session.add(Team(id=away, name="Away"))
@@ -519,13 +660,21 @@ async def _seed_live(session, base: int) -> None:
         )
     )
     session.add(Prediction(fixture_id=fixture, winner_team_id=home))
-    session.add(
-        EtlTask(
-            endpoint="/fixtures",
-            params={"live": "all", "fixture_ids": [fixture]},
-            status="pending",
-        )
+    live_task = await session.scalar(
+        select(EtlTask)
+        .where(EtlTask.endpoint == "/fixtures")
+        .where(EtlTask.cursor_kind.is_(None))
+        .where(EtlTask.fixture_id.is_(None))
+        .where(EtlTask.day_utc.is_(None))
+        .where(EtlTask.params.contains({"live": "all"}))
+        .order_by(EtlTask.id)
+        .limit(1)
     )
+    params = {"live": "all", "fixture_ids": [fixture]}
+    if live_task is None:
+        session.add(EtlTask(endpoint="/fixtures", params=params, status="pending"))
+    else:
+        live_task.params = params
     session.add(OddsLiveBet(id=base + 8, name="Over/Under Line"))
     await session.flush()
     session.add(
@@ -572,6 +721,22 @@ async def _drop_strategies(
     )
     cycles = select(AdvisorCycle.id).where(
         AdvisorCycle.strategy_version_id.in_(versions)
+    )
+    coupons = select(AdvisorCoupon.id).where(
+        AdvisorCoupon.strategy_version_id.in_(versions)
+    )
+    legs = select(AdvisorLeg.id).where(AdvisorLeg.strategy_id.in_(ids))
+    decisions = select(AdvisorDecision.id).where(AdvisorDecision.strategy_id.in_(ids))
+    await session.execute(
+        delete(AdvisorSettlementEvent).where(
+            AdvisorSettlementEvent.coupon_id.in_(coupons)
+            | AdvisorSettlementEvent.leg_id.in_(legs)
+        )
+    )
+    await session.execute(
+        delete(AdvisorCounterfactual).where(
+            AdvisorCounterfactual.decision_id.in_(decisions)
+        )
     )
     await session.execute(delete(AdvisorLeg).where(AdvisorLeg.strategy_id.in_(ids)))
     await session.execute(

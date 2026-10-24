@@ -150,7 +150,8 @@ def test_status_report_does_not_settle() -> None:
 
 
 def test_advisor_browse_is_read_only() -> None:
-    browse = Path("src/predictor/services/advisor/browse.py").read_text(encoding="utf-8")
+    browse_path = Path("src/predictor/services/advisor/browse.py")
+    browse = browse_path.read_text(encoding="utf-8")
     http = Path("src/predictor/api/advisor_http.py").read_text(encoding="utf-8")
     assert "/advisor/browse" in http
     for banned in (

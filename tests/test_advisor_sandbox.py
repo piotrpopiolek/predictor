@@ -143,25 +143,25 @@ def test_reply_drops_a_coupon_when_a_leg_was_not_stored() -> None:
 def test_portfolio_balance_counts_open_stakes_and_settled_results() -> None:
     stake = Decimal("10.00")
     keep = Decimal("0.880")
-    assert portfolio_balance(()) == Decimal("1000.00")
+    assert portfolio_balance(()) == Decimal("20.00")
     assert portfolio_balance(((stake, Decimal("1.700"), keep, "open"),)) == Decimal(
-        "990.00"
+        "10.00"
     )
     assert portfolio_balance(
         (
             (stake, Decimal("1.700"), keep, "open"),
             (stake, Decimal("1.700"), keep, "open"),
         )
-    ) == Decimal("980.00")
+    ) == Decimal("0.00")
     assert portfolio_balance(((stake, Decimal("2.000"), keep, "won"),)) == Decimal(
-        "1007.60"
+        "27.60"
     )
     assert portfolio_balance(((stake, Decimal("2.000"), keep, "lost"),)) == Decimal(
-        "990.00"
+        "10.00"
     )
-    assert portfolio_balance(((stake, None, keep, "void"),)) == Decimal("1000.00")
+    assert portfolio_balance(((stake, None, keep, "void"),)) == Decimal("20.00")
     assert portfolio_balance(((stake, Decimal("1.700"), keep, "proposed"),)) == Decimal(
-        "1000.00"
+        "20.00"
     )
     with pytest.raises(ValueError, match="no odd"):
         portfolio_balance(((stake, None, keep, "won"),))

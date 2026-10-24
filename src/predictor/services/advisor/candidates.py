@@ -8,6 +8,7 @@ from datetime import datetime
 
 from predictor.services.advisor.cycle import CycleCandidate
 from predictor.services.advisor.domain import (
+    LLM_STATUS,
     MIN_ANALYSIS_ODD,
     CandidateView,
     LineQuote,
@@ -61,7 +62,16 @@ def playable_candidate(
     now: datetime,
     open_fixtures: frozenset[int],
     rejected: frozenset[StateKey],
+    for_llm: bool = False,
 ) -> CycleCandidate | None:
+    """Build a priced Over N+0.5 leg, or None when the match is not playable.
+
+    ``for_llm`` adds the prompt gate: status 2H, minute within the strategy
+    regulation limit, open Over N+0.5 (N = current goals), odd at least
+    ``MIN_ANALYSIS_ODD``, snapshot within ``limits.max_quote_age``.
+    """
+    if for_llm and match.status_short != LLM_STATUS:
+        return None
     period = period_for(match.status_short)
     quote = _quote(rows, match) if period is Period.REGULATION else None
     known = period is Period.REGULATION

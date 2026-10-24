@@ -5,7 +5,13 @@ from __future__ import annotations
 from decimal import ROUND_HALF_UP, Decimal
 from html import escape
 
-from predictor.services.advisor.report import BookLine, PairYield, YieldReport
+from predictor.services.advisor.report import (
+    BookLine,
+    PairYield,
+    StrategyChart,
+    YieldReport,
+)
+from predictor.ui.live_board import render_bets_hit_chart, render_bets_saldo_chart
 
 _PERIODS = (
     ("all", "Wszystko"),
@@ -13,16 +19,84 @@ _PERIODS = (
     ("extra_time", "Dogrywka"),
 )
 
+_CHART_CSS = """
+  :root {
+    --card: #161b22;
+    --line: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+  }
+  .charts {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+    margin: 8px 0 28px;
+  }
+  @media (min-width: 960px) {
+    .charts { grid-template-columns: 1fr 1fr; }
+  }
+  .chart-card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px 8px;
+  }
+  .chart-card h2 {
+    margin: 0 0 8px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .chart-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    margin: 0 0 8px;
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+  .chart-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .chart-legend i {
+    width: 12px;
+    height: 3px;
+    border-radius: 1px;
+    display: inline-block;
+  }
+  .chart-empty {
+    color: var(--muted);
+    font-size: 0.85rem;
+    padding: 24px 8px;
+    text-align: center;
+  }
+  .chart-card svg {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .chart-block h3 {
+    margin: 24px 0 8px;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+"""
+
 
 def render_yield_report(report: YieldReport) -> str:
     rows = "".join(_book_row(line) for line in report.books)
     pairs = "".join(_pair_row(pair) for pair in report.pairs)
+    charts = "".join(_strategy_charts(chart) for chart in report.charts)
     if not report.books:
-        rows = '<tr><td colspan="8">Brak strategii piaskownicy.</td></tr>'
+        rows = '<tr><td colspan="9">Brak strategii piaskownicy.</td></tr>'
     if not report.pairs:
         pairs = (
             '<tr><td colspan="7">Brak reguły bazowej albo drugiej strategii.</td></tr>'
         )
+    if not charts:
+        charts = "<p>Za mało kuponów na wykresy.</p>"
     return f"""<!DOCTYPE html>
 <html lang="pl">
 <head>
@@ -31,13 +105,14 @@ def render_yield_report(report: YieldReport) -> str:
   <style>
     body {{ margin: 0; font-family: "Segoe UI", system-ui, sans-serif;
       background: #0d1117; color: #e6edf3; }}
-    main {{ max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }}
+    main {{ max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }}
     a {{ color: #58a6ff; }}
     nav {{ display: flex; gap: 16px; margin: 16px 0 24px; }}
     table {{ width: 100%; border-collapse: collapse; margin: 8px 0 28px; }}
     th, td {{ text-align: left; padding: 8px 10px; border-bottom: 1px solid #30363d; }}
     th {{ color: #8b949e; font-weight: 600; }}
     p {{ color: #8b949e; }}
+    {_CHART_CSS}
   </style>
 </head>
 <body>
@@ -48,18 +123,24 @@ def render_yield_report(report: YieldReport) -> str:
     · <a href="/advisor/browse">Tabele</a></p>
   <h1>Raport piaskownicy</h1>
   <p>Yield netto to zysk po współczynniku 0,88 podzielony przez stawki kuponów
-  wygranych i przegranych. Kupon nieważny oddaje stawkę i nie wchodzi do yieldu.</p>
+  wygranych i przegranych. Kupon nieważny oddaje stawkę i nie wchodzi do yieldu.
+  Średni kurs to średnia arytmetyczna kursu łącznego kuponów wygranych i
+  przegranych. Saldo odejmuje też stawki otwartych kuponów.</p>
   <nav>{_period_nav(report.period)}</nav>
   <h2>Portfele</h2>
   <table>
     <thead>
       <tr>
         <th>Strategia</th><th>Kupony</th><th>Trafienia</th><th>Trafność</th>
-        <th>Stawka</th><th>Zysk netto</th><th>Yield netto</th><th>Saldo</th>
+        <th>Śr. kurs</th><th>Stawka</th><th>Zysk netto</th>
+        <th>Yield netto</th><th>Saldo</th>
       </tr>
     </thead>
     <tbody>{rows}</tbody>
   </table>
+  <h2>Wykresy</h2>
+  <p>Saldo i skuteczność narastająco, w tej samej formie co na stronie zakładów.</p>
+  {charts}
   <h2>Te same mecze</h2>
   <p>Porównanie obejmuje mecze, na których obie strony mają rozliczony kupon
   z jednym zdarzeniem. Kupon łączony zostaje w portfelu i nie wchodzi tutaj.</p>
@@ -77,6 +158,18 @@ def render_yield_report(report: YieldReport) -> str:
 </body>
 </html>
 """
+
+
+def _strategy_charts(chart: StrategyChart) -> str:
+    bets = list(chart.points)
+    return (
+        f'<section class="chart-block">'
+        f"<h3>{escape(chart.name)}</h3>"
+        f'<div class="charts">'
+        f"{render_bets_saldo_chart(bets)}"
+        f"{render_bets_hit_chart(bets)}"
+        f"</div></section>"
+    )
 
 
 def _period_nav(active: str) -> str:
@@ -97,6 +190,7 @@ def _book_row(line: BookLine) -> str:
         f"<td>{line.played}</td>"
         f"<td>{line.hits}</td>"
         f"<td>{_pct(line.hit_rate)}</td>"
+        f"<td>{_odd(line.avg_odd)}</td>"
         f"<td>{_money(line.stakes)}</td>"
         f"<td>{_money(line.net_pnl)}</td>"
         f"<td>{_pct(line.yield_net)}</td>"
@@ -187,6 +281,13 @@ def _recommendation_card(card: dict[str, object]) -> str:
 
 def _money(value: Decimal) -> str:
     shown = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return format(shown, "f").replace(".", ",")
+
+
+def _odd(value: Decimal | None) -> str:
+    if value is None:
+        return "—"
+    shown = value.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
     return format(shown, "f").replace(".", ",")
 
 

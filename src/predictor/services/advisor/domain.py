@@ -25,6 +25,11 @@ _ONE = Decimal(1)
 # Single-leg floor to enter LLM analysis. Coupon profitability stays on
 # strategy min_combined_odd (typically 1.600) across 1–3 legs.
 MIN_ANALYSIS_ODD = Decimal("1.300")
+# Freshness of the Over N+0.5 snapshot for every strategy (baseline and LLM).
+QUOTE_MAX_AGE = timedelta(seconds=300)
+# LLM prompt only: second half, Over N+0.5 open, odd >= MIN_ANALYSIS_ODD,
+# snapshot within QUOTE_MAX_AGE. Baseline keeps the wider FR-106 statuses.
+LLM_STATUS = "2H"
 
 REGULATION_OVER_UNDER = "over/under line"
 # Name in /odds/live/bets is not identified yet (prd2 §4.3). None means
