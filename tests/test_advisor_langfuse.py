@@ -58,7 +58,9 @@ class _Provider:
     def __init__(self, text: str) -> None:
         self.text = text
 
-    async def decide(self, prompt: str, *, timeout: float) -> LlmCompletion:
+    async def decide(
+        self, prompt: str, *, timeout: float, response_schema: object
+    ) -> LlmCompletion:
         return LlmCompletion(
             text=self.text,
             provider=self.provider_name,

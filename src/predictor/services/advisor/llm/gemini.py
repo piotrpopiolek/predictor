@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from typing import Any
 
 from predictor.services.advisor.llm.protocol import (
@@ -29,10 +30,16 @@ class GeminiProvider:
         self._api_key = api_key
         self._client = client
 
-    async def decide(self, prompt: str, *, timeout: float) -> LlmCompletion:
+    async def decide(
+        self,
+        prompt: str,
+        *,
+        timeout: float,
+        response_schema: Mapping[str, Any],
+    ) -> LlmCompletion:
         try:
             response = await asyncio.wait_for(
-                self._generate(prompt, timeout),
+                self._generate(prompt, timeout, response_schema),
                 timeout,
             )
         except asyncio.CancelledError:
@@ -56,7 +63,12 @@ class GeminiProvider:
             thoughts_tokens=_tokens(usage, "thoughts_token_count"),
         )
 
-    async def _generate(self, prompt: str, timeout: float) -> Any:
+    async def _generate(
+        self,
+        prompt: str,
+        timeout: float,
+        response_schema: Mapping[str, Any],
+    ) -> Any:
         from google.genai import types
 
         client = self._client if self._client is not None else self._new_client()
@@ -65,6 +77,7 @@ class GeminiProvider:
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
+                response_json_schema=dict(response_schema),
                 temperature=0,
                 http_options=types.HttpOptions(
                     timeout=int(timeout * 1000),

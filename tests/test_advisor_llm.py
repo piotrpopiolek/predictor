@@ -10,12 +10,18 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from predictor.schemas.advisor import AdvisorSettings, load_advisor_settings
+from predictor.schemas.advisor import (
+    AdvisorSettings,
+    LlmDecision,
+    load_advisor_settings,
+)
 from predictor.schemas.settings import Settings, SettingsError
 from predictor.services.advisor.llm import review_model_output
 from predictor.services.advisor.llm.gemini import GeminiProvider
 from predictor.services.advisor.llm.protocol import ProviderError
+from predictor.services.advisor.llm.schema import response_json_schema
 from predictor.services.advisor.llm.validate import PricedCandidate, Verdict
+from predictor.services.advisor.summary import StrategyProposal
 
 MIN = Decimal("1.6")
 ODD = Decimal("1.70")
@@ -141,6 +147,22 @@ def test_schema_failures_are_invalid_output_and_place_nothing() -> None:
         ),
         "schema",
     )
+    labeled = json.loads(_raw([_row(1, "reject")], []))
+    labeled["candidates"][0]["confidence"] = "high"
+    _assert_no_bet(
+        review_model_output(
+            json.dumps(labeled), playable, set(), min_odd=MIN, max_legs=3
+        ),
+        "schema",
+    )
+    scored = json.loads(_raw([_row(1, "reject")], []))
+    scored["candidates"][0]["confidence"] = 3
+    _assert_no_bet(
+        review_model_output(
+            json.dumps(scored), playable, set(), min_odd=MIN, max_legs=3
+        ),
+        "schema",
+    )
 
 
 def test_every_candidate_needs_exactly_one_decision() -> None:
@@ -259,6 +281,44 @@ def _provider(behavior: object) -> tuple[GeminiProvider, _Models]:
     return provider, models
 
 
+_SCHEMA = {"type": "object", "additionalProperties": False}
+
+
+def test_decision_schema_forces_the_numeric_contract() -> None:
+    schema = response_json_schema(LlmDecision)
+    candidate = schema["properties"]["candidates"]["items"]
+    confidence = candidate["properties"]["confidence"]
+    probability = candidate["properties"]["estimated_probability"]
+    assert schema["additionalProperties"] is False
+    assert candidate["additionalProperties"] is False
+    assert confidence["type"] == "number"
+    assert confidence["minimum"] == 0
+    assert confidence["maximum"] == 1
+    assert "anyOf" not in confidence
+    assert probability["type"] == "number"
+    assert probability["maximum"] == 1
+    assert set(candidate["properties"]["decision"]["enum"]) == {
+        "bet",
+        "reject",
+        "wait",
+    }
+    reasons = candidate["properties"]["reasons"]["items"]["enum"]
+    assert "favorite_pressure" in reasons
+    assert "odd_too_low" in reasons
+    assert "0 to 1" in confidence["description"]
+
+
+def test_summary_schema_rejects_extra_fields_and_string_decimals() -> None:
+    schema = response_json_schema(StrategyProposal)
+    odd = schema["properties"]["min_combined_odd"]
+    assert "name" not in schema["properties"]
+    assert schema["additionalProperties"] is False
+    assert odd["type"] == "number"
+    assert "anyOf" not in odd
+    assert schema["properties"]["max_legs"]["maximum"] == 3
+    assert schema["properties"]["max_legs"]["minimum"] == 1
+
+
 def _ok() -> SimpleNamespace:
     usage = SimpleNamespace(
         prompt_token_count=11,
@@ -275,7 +335,9 @@ def _ok() -> SimpleNamespace:
 @pytest.mark.asyncio
 async def test_gemini_calls_once_and_keeps_the_key_out_of_the_prompt() -> None:
     provider, models = _provider(_ok())
-    completion = await provider.decide("score is 0-1", timeout=1)
+    completion = await provider.decide(
+        "score is 0-1", timeout=1, response_schema=_SCHEMA
+    )
     assert models.calls == 1
     assert models.prompts == ["score is 0-1"]
     assert "secret-key" not in models.prompts[0]
@@ -286,8 +348,11 @@ async def test_gemini_calls_once_and_keeps_the_key_out_of_the_prompt() -> None:
     assert completion.output_tokens == 7
     assert completion.thoughts_tokens == 5
     assert completion.billed_output_tokens == 12
-    retry = models.configs[0].http_options.retry_options  # type: ignore[attr-defined]
+    config = models.configs[0]
+    retry = config.http_options.retry_options  # type: ignore[attr-defined]
     assert retry.attempts == 5
+    assert config.response_mime_type == "application/json"  # type: ignore[attr-defined]
+    assert config.response_json_schema == _SCHEMA  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -295,7 +360,7 @@ async def test_missing_model_version_falls_back_to_the_requested_model() -> None
     usage = SimpleNamespace(prompt_token_count=1, candidates_token_count=1)
     reply = SimpleNamespace(text="{}", usage_metadata=usage, model_version="  ")
     provider, _models = _provider(reply)
-    completion = await provider.decide("prompt", timeout=1)
+    completion = await provider.decide("prompt", timeout=1, response_schema=_SCHEMA)
     assert completion.model == "gemini-2.5-flash"
     assert completion.model_version == "gemini-2.5-flash"
     assert completion.thoughts_tokens == 0
@@ -318,37 +383,37 @@ async def test_gemini_timeout_network_and_status_do_not_retry() -> None:
         client=_Client(slow_models),
     )
     with pytest.raises(ProviderError) as timeout:
-        await provider.decide("prompt", timeout=0.01)
+        await provider.decide("prompt", timeout=0.01, response_schema=_SCHEMA)
     assert timeout.value.code == "timeout"
     assert slow_models.calls == 1
 
     network, network_models = _provider(httpx.ConnectError("down"))
     with pytest.raises(ProviderError) as down:
-        await network.decide("prompt", timeout=1)
+        await network.decide("prompt", timeout=1, response_schema=_SCHEMA)
     assert down.value.code == "network"
     assert network_models.calls == 1
 
     expired, expired_models = _provider(_Status(408))
     with pytest.raises(ProviderError) as http_timeout:
-        await expired.decide("prompt", timeout=1)
+        await expired.decide("prompt", timeout=1, response_schema=_SCHEMA)
     assert http_timeout.value.code == "timeout"
     assert expired_models.calls == 1
 
     limited, limited_models = _provider(_Status(429))
     with pytest.raises(ProviderError) as rate:
-        await limited.decide("prompt", timeout=1)
+        await limited.decide("prompt", timeout=1, response_schema=_SCHEMA)
     assert rate.value.code == "rate_limit"
     assert limited_models.calls == 1
 
     server, server_models = _provider(_Status(503))
     with pytest.raises(ProviderError) as failed:
-        await server.decide("prompt", timeout=1)
+        await server.decide("prompt", timeout=1, response_schema=_SCHEMA)
     assert failed.value.code == "server"
     assert server_models.calls == 1
 
     rejected, rejected_models = _provider(_Status(400))
     with pytest.raises(_Status):
-        await rejected.decide("prompt", timeout=1)
+        await rejected.decide("prompt", timeout=1, response_schema=_SCHEMA)
     assert rejected_models.calls == 1
 
 

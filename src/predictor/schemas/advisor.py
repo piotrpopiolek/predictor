@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from decimal import Decimal
 from enum import StrEnum
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -57,21 +58,32 @@ class ReasonCode(StrEnum):
 
 
 class CandidateDecision(BaseModel):
+    """One decision for one input candidate. No odds and no extra fields."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    fixture_id: int
-    decision: str
-    estimated_probability: Decimal = Field(ge=0, le=1)
-    confidence: Decimal = Field(ge=0, le=1)
-    reasons: list[ReasonCode] = Field(min_length=1)
-    rationale: str
-
-    @field_validator("decision")
-    @classmethod
-    def _decision(cls, value: str) -> str:
-        if value not in {"bet", "reject", "wait"}:
-            raise ValueError("must be bet, reject, or wait")
-        return value
+    fixture_id: int = Field(description="fixture_id copied from the input candidate.")
+    decision: Literal["bet", "reject", "wait"] = Field(
+        description="Exactly bet, reject, or wait."
+    )
+    estimated_probability: Decimal = Field(
+        ge=0,
+        le=1,
+        description="Number from 0 to 1 inclusive. Not a word.",
+    )
+    confidence: Decimal = Field(
+        ge=0,
+        le=1,
+        description="Number from 0 to 1 inclusive. Not a label and not above 1.",
+    )
+    reasons: list[ReasonCode] = Field(
+        min_length=1,
+        description="One or more reason codes from the enum. No free text.",
+    )
+    rationale: str = Field(
+        min_length=1,
+        description="Non-empty explanation. Do not add an odd field.",
+    )
 
     @field_validator("rationale")
     @classmethod
@@ -83,9 +95,14 @@ class CandidateDecision(BaseModel):
 
 
 class CouponProposal(BaseModel):
+    """One coupon. Legs are fixture ids only; the database supplies the odds."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    fixture_ids: list[int] = Field(min_length=1)
+    fixture_ids: list[int] = Field(
+        min_length=1,
+        description="Fixture ids of legs whose decision is bet.",
+    )
 
 
 class LlmDecision(BaseModel):
@@ -93,8 +110,12 @@ class LlmDecision(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    candidates: list[CandidateDecision]
-    coupons: list[CouponProposal]
+    candidates: list[CandidateDecision] = Field(
+        description="One object per input candidate, and no other fixture."
+    )
+    coupons: list[CouponProposal] = Field(
+        description="Every bet is in exactly one coupon. Empty when nothing is bet."
+    )
 
 
 class AdvisorSettings(BaseSettings):

@@ -38,7 +38,12 @@ from predictor.services.advisor.recommend_ops import (
     place_coupon,
     promote_strategy,
 )
-from predictor.services.advisor.summary import SummaryJob, parse_proposal, store_summary
+from predictor.services.advisor.summary import (
+    SummaryJob,
+    parse_proposal,
+    render_summary_prompt,
+    store_summary,
+)
 from predictor.services.advisor.telegram import recommendation_text
 from predictor.ui.advisor import render_recommendation_cards
 
@@ -153,6 +158,26 @@ def test_telegram_text_has_no_token() -> None:
 def test_summary_proposal_rejects_extra_fields() -> None:
     proposal = parse_proposal(_PROPOSAL)
     assert proposal.max_legs == 2
+
+
+def test_summary_prompt_points_at_the_schema() -> None:
+    version = AdvisorStrategyVersion(
+        strategy_id=1,
+        version_no=1,
+        prompt_version="p4",
+        min_combined_odd=Decimal("1.600"),
+        max_legs=3,
+        max_minute_regulation=80,
+        max_minute_extra=110,
+        wait_minutes=10,
+        candidate_rules=["favorite_losing"],
+        notes="",
+    )
+    prompt = render_summary_prompt("sandbox-llm", version)
+    assert "schematem odpowiedzi" in prompt
+    assert "Nie dodawaj pól" in prompt
+    assert "Pola:" not in prompt
+    assert "1.600" in prompt
 
 
 @pytest.mark.asyncio

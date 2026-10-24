@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
@@ -17,20 +19,42 @@ from predictor.models.advisor import (
     AdvisorStrategyVersion,
 )
 from predictor.services.advisor.llm.protocol import LlmCompletion
+from predictor.services.advisor.llm.schema import response_json_schema
 
 _ACTIVE = frozenset({"sandbox", "promoted"})
 _MAX = 4
 
 
 class StrategyProposal(BaseModel):
+    """New sandbox strategy parameters. No name and no extra fields."""
+
     model_config = ConfigDict(extra="forbid")
 
-    min_combined_odd: Decimal = Field(gt=1)
-    max_legs: int = Field(ge=1, le=3)
-    max_minute_regulation: int = Field(ge=1, le=120)
-    max_minute_extra: int = Field(ge=91, le=130)
-    wait_minutes: int = Field(ge=1, le=30)
-    notes: str = Field(min_length=1)
+    min_combined_odd: Decimal = Field(
+        gt=1,
+        description="Combined-odd floor, a number greater than 1.",
+    )
+    max_legs: int = Field(
+        ge=1,
+        le=3,
+        description="Legs per coupon, an integer from 1 to 3.",
+    )
+    max_minute_regulation: int = Field(
+        ge=1,
+        le=120,
+        description="Last regulation minute, an integer from 1 to 120.",
+    )
+    max_minute_extra: int = Field(
+        ge=91,
+        le=130,
+        description="Last extra-time minute, an integer from 91 to 130.",
+    )
+    wait_minutes: int = Field(
+        ge=1,
+        le=30,
+        description="Wait window in minutes, an integer from 1 to 30.",
+    )
+    notes: str = Field(min_length=1, description="Non-empty reason for the change.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +62,9 @@ class SummaryJob:
     strategy_id: int
     version_id: int
     prompt: str
+    response_schema: Mapping[str, Any] = field(
+        default_factory=lambda: response_json_schema(StrategyProposal)
+    )
 
 
 def parse_proposal(raw: str) -> StrategyProposal:
@@ -83,7 +110,11 @@ async def due_summaries(session: AsyncSession, now: datetime) -> tuple[SummaryJo
         if version is None:
             continue
         jobs.append(
-            SummaryJob(strategy.id, version.id, _prompt(strategy.name, version))
+            SummaryJob(
+                strategy.id,
+                version.id,
+                render_summary_prompt(strategy.name, version),
+            )
         )
     return tuple(jobs)
 
@@ -168,11 +199,13 @@ async def store_summary(
     return True
 
 
-def _prompt(name: str, version: AdvisorStrategyVersion) -> str:
+def render_summary_prompt(name: str, version: AdvisorStrategyVersion) -> str:
+    """Context only. Field types and bounds live in the response schema."""
     return (
-        "Zaproponuj nową wersję strategii next goal jako JSON. "
-        f"Strategia {name}, próg {version.min_combined_odd}, "
-        f"nogi {version.max_legs}, minuta {version.max_minute_regulation}. "
-        "Pola: min_combined_odd, max_legs, max_minute_regulation, "
-        "max_minute_extra, wait_minutes, notes."
+        "Zaproponuj nową wersję strategii next goal. "
+        "Odpowiedz wyłącznie JSON zgodnym ze schematem odpowiedzi. "
+        "Nie dodawaj pól spoza schematu. "
+        f"Aktualna strategia {name}: próg kursu łącznego {version.min_combined_odd}, "
+        f"maksimum nóg {version.max_legs}, "
+        f"ostatnia minuta czasu regulaminowego {version.max_minute_regulation}."
     )

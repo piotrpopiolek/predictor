@@ -56,7 +56,9 @@ class _Provider:
         self.open_during_call = False
         self.session = None
 
-    async def decide(self, prompt: str, *, timeout: float) -> LlmCompletion:
+    async def decide(
+        self, prompt: str, *, timeout: float, response_schema: object
+    ) -> LlmCompletion:
         session = self.session
         if session is not None and session.in_transaction():
             self.open_during_call = True
@@ -363,7 +365,9 @@ async def test_second_cycle_waits_until_the_first_cost_is_committed() -> None:
     )
 
     class _Slow(_Provider):
-        async def decide(self, prompt: str, *, timeout: float) -> LlmCompletion:
+        async def decide(
+            self, prompt: str, *, timeout: float, response_schema: object
+        ) -> LlmCompletion:
             self.calls += 1
             entered.set()
             await release.wait()

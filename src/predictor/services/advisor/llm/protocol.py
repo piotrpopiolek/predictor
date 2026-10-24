@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -36,8 +37,14 @@ class LlmProvider(Protocol):
     provider_name: str
     model: str
 
-    async def decide(self, prompt: str, *, timeout: float) -> LlmCompletion:
-        """One completion. No retries."""
+    async def decide(
+        self,
+        prompt: str,
+        *,
+        timeout: float,
+        response_schema: Mapping[str, Any],
+    ) -> LlmCompletion:
+        """One completion. ``response_schema`` is the JSON Schema contract."""
 
 
 def provider_failure_code(exc: Exception) -> str | None:

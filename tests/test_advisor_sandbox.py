@@ -55,7 +55,9 @@ class _Provider:
         self.text = text
         self.calls = 0
 
-    async def decide(self, prompt: str, *, timeout: float) -> LlmCompletion:
+    async def decide(
+        self, prompt: str, *, timeout: float, response_schema: object
+    ) -> LlmCompletion:
         self.calls += 1
         return LlmCompletion(
             text=self.text,

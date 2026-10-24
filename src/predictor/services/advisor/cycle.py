@@ -24,7 +24,7 @@ from predictor.models.advisor import (
     AdvisorDecision,
     AdvisorLangfuseOutbox,
 )
-from predictor.schemas.advisor import AdvisorSettings, CandidateDecision
+from predictor.schemas.advisor import AdvisorSettings, CandidateDecision, LlmDecision
 from predictor.services.advisor.budget import (
     budget_allows,
     call_cost,
@@ -40,10 +40,13 @@ from predictor.services.advisor.langfuse import (
     deliver_trace,
 )
 from predictor.services.advisor.llm.protocol import LlmProvider, ProviderError
+from predictor.services.advisor.llm.schema import response_json_schema
 from predictor.services.advisor.llm.validate import PricedCandidate, review_model_output
 from predictor.services.advisor.recommend_ops import place_proposed
 from predictor.services.advisor.sandbox import place_sandbox_coupons, reply_slips
 from predictor.services.lock import hold_session_lock
+
+_DECISION_SCHEMA = response_json_schema(LlmDecision)
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,7 +176,9 @@ async def _run_locked(
     try:
         _require_idle(session)
         completion = await provider.decide(
-            request.prompt, timeout=float(settings.llm_timeout_seconds)
+            request.prompt,
+            timeout=float(settings.llm_timeout_seconds),
+            response_schema=_DECISION_SCHEMA,
         )
     except ProviderError as exc:
         # The SDK error has no usage. Bill the pre-call estimate so the day

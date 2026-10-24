@@ -59,7 +59,9 @@ class _Provider:
         self.text = text
         self.calls = 0
 
-    async def decide(self, prompt: str, *, timeout: float) -> LlmCompletion:
+    async def decide(
+        self, prompt: str, *, timeout: float, response_schema: object
+    ) -> LlmCompletion:
         self.calls += 1
         return LlmCompletion(
             text=self.text,
@@ -415,6 +417,8 @@ def test_cycle_prompt_asks_for_multi_leg_coupons_to_min_combined() -> None:
     assert body["candidates"][0]["detail"]["stats"][0]["label"] == "Strzały"
     assert body["candidates"][1]["detail"] is None
     assert "Prefer coupons of 2–3 legs" in prompt
+    assert "Use wait, not bet" in prompt
+    assert "matching the response schema" in prompt
     assert ">= 1.600" in prompt
     assert "odd >= 1.300" in prompt
     assert "already 2H" in prompt

@@ -220,7 +220,9 @@ async def _summarize(
             return
         try:
             completion = await provider.decide(
-                job.prompt, timeout=settings.llm_timeout_seconds
+                job.prompt,
+                timeout=settings.llm_timeout_seconds,
+                response_schema=job.response_schema,
             )
         except ProviderError:
             continue

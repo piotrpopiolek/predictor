@@ -1,4 +1,4 @@
-"""Prompt for one sandbox cycle. Version p3. Odds are context, not an output."""
+"""Prompt for one sandbox cycle. Version p4. Odds are context, not an output."""
 
 from __future__ import annotations
 
@@ -10,17 +10,7 @@ from typing import Any
 from predictor.services.advisor.cycle import CycleCandidate
 from predictor.services.advisor.domain import MIN_ANALYSIS_ODD
 
-PROMPT_VERSION = "p3"
-
-_REASONS = (
-    "favorite_pressure",
-    "high_shot_volume",
-    "low_tempo",
-    "red_card",
-    "odd_too_low",
-    "late_minute",
-    "weak_favorite",
-)
+PROMPT_VERSION = "p4"
 
 
 def render_cycle_prompt(
@@ -53,21 +43,19 @@ def render_cycle_prompt(
     }
     prompt = (
         "You decide a next-goal Over bet for every candidate below. "
-        "Reply with JSON only, no markdown. "
-        "Schema: candidates[{fixture_id, decision, estimated_probability, "
-        "confidence, reasons, rationale}] and coupons[{fixture_ids}]. "
-        "decision is bet, reject, or wait. "
-        f"reasons use only {_REASONS}. "
+        "Reply with JSON only, no markdown, matching the response schema. "
+        "Field types, ranges, and reason codes are in that schema. "
         "Do not add fields and do not send an odd. "
+        "Decide each listed fixture_id exactly once. "
         "A bet must appear in exactly one coupon of 1 to "
         f"{max_legs} fixture ids. "
         "Each listed candidate is already 2H, minute at most the strategy "
         f"regulation cutoff, with an open Over N+0.5 line (N = current goals) "
         f"and odd >= {MIN_ANALYSIS_ODD} from a snapshot at most 300 seconds old. "
-        f"A coupon is accepted only when the product of its odds is "
+        f"A coupon is accepted only when the product of its database odds is "
         f">= {min_combined_odd}. Prefer coupons of 2–{max_legs} legs so "
-        "the combined odd clears that floor; use wait when more priced "
-        "candidates are needed. "
+        "the combined odd clears that floor. "
+        "Use wait, not bet, when the coupon cannot clear that floor. "
         "Each candidate.detail is compact match context: score/clock, "
         "Goal/Card events, FT stats, lineup strength, attack subs, "
         "goal price, prematch/next-goal odds, team goal form, and "
