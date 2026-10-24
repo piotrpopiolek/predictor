@@ -162,9 +162,10 @@ def test_portfolio_balance_counts_open_stakes_and_settled_results() -> None:
         SANDBOX_BANKROLL - stake
     )
     assert portfolio_balance(((stake, None, keep, "void"),)) == SANDBOX_BANKROLL
-    assert portfolio_balance(
-        ((stake, Decimal("1.700"), keep, "proposed"),)
-    ) == SANDBOX_BANKROLL
+    assert (
+        portfolio_balance(((stake, Decimal("1.700"), keep, "proposed"),))
+        == SANDBOX_BANKROLL
+    )
     with pytest.raises(ValueError, match="no odd"):
         portfolio_balance(((stake, None, keep, "won"),))
 

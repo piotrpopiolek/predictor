@@ -297,9 +297,7 @@ def create_app() -> FastAPI:
         note = notes.get(detail.match.fixture_id)
         llm_html = "" if note is None else render_llm_note(note)
         return HTMLResponse(
-            render_match_html(
-                detail, generated_at=datetime.now(UTC), llm_html=llm_html
-            )
+            render_match_html(detail, generated_at=datetime.now(UTC), llm_html=llm_html)
         )
 
     @app.get("/live/bets")

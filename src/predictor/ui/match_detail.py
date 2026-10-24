@@ -62,9 +62,7 @@ def render_match_html(
 ) -> str:
     match = detail.match
     title = f"{match.home} – {match.away}"
-    return _page(
-        title=title, body=_body(detail, generated_at, llm_html), refresh=True
-    )
+    return _page(title=title, body=_body(detail, generated_at, llm_html), refresh=True)
 
 
 def _page(*, title: str, body: str, refresh: bool = False) -> str:

@@ -146,9 +146,7 @@ def _quote_is_stale(quote: LineQuote, limits: PlayLimits, now: datetime) -> bool
     return age.total_seconds() < 0 or age > limits.max_quote_age
 
 
-def _over_quote(
-    rows: Sequence[OverUnderRow], match: MatchSnapshot
-) -> LineQuote | None:
+def _over_quote(rows: Sequence[OverUnderRow], match: MatchSnapshot) -> LineQuote | None:
     goals = (match.goals_home or 0) + (match.goals_away or 0)
     for row in rows:
         if not over_line_matches(row.label, row.handicap, goals):
