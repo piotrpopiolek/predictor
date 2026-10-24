@@ -297,7 +297,11 @@ async def _below_threshold_open(session: AsyncSession, strategy_id: int) -> bool
             .limit(1)
         )
     ).first()
-    if row is None or row.validation_status != "invalid_output":
+    if row is None:
+        return False
+    if row.validation_status == "below_threshold":
+        return True
+    if row.validation_status != "invalid_output":
         return False
     payload = row.input_json if isinstance(row.input_json, dict) else {}
     playable: list[PricedCandidate] = []

@@ -433,7 +433,7 @@ async def test_llm_coupon_is_written_with_the_decision() -> None:
                 request,
                 clock=lambda: NOW,
             )
-            assert refused.status == "invalid_output"
+            assert refused.status == "below_threshold"
             assert refused.detail == "below_threshold"
             assert refused.coupon_ids == ()
             accepted = await run_cycle(

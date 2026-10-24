@@ -58,7 +58,8 @@ def _playable(*fixture_ids: int) -> list[PricedCandidate]:
 
 
 def _assert_no_bet(verdict: Verdict, detail: str) -> None:
-    assert verdict.status == "invalid_output"
+    broken = {"not_json", "schema"}
+    assert verdict.status == ("invalid_output" if detail in broken else detail)
     assert verdict.coupons == ()
     assert verdict.detail == detail
 

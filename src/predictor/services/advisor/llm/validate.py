@@ -45,7 +45,8 @@ def review_model_output(
         return _invalid(exc.code)
     detail = _semantics(parsed, playable, open_fixture_ids, min_odd, max_legs)
     if detail is not None:
-        return Verdict("invalid_output", detail, parsed, ())
+        # The JSON matches the schema. The status is the rule that failed.
+        return Verdict(detail, detail, parsed, ())
     odds = {item.fixture_id: item.odd for item in playable}
     accepted = tuple(
         AcceptedCoupon(

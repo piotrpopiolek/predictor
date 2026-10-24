@@ -6,6 +6,7 @@ tasks outside this set are not claimed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from predictor.client.errors import AuthBlockedError, SpendWindowClosed
 from predictor.constants import (
     FINISHED_FIXTURE_STATUSES,
     LIVE_CONTEXT_DETAIL_CALLS,
@@ -22,6 +24,7 @@ from predictor.constants import (
     LIVE_CONTEXT_MAX_CALLS_PER_TICK,
     LIVE_CONTEXT_ONESHOT_CALLS,
     LIVE_CONTEXT_TIME_FRACTION,
+    LIVE_DETAIL_CONCURRENCY,
     LIVE_DETAIL_REFRESH_SECONDS,
     TOP_PLAYER_ENDPOINTS,
 )
@@ -392,6 +395,16 @@ class LiveContextIngest:
             cursor=0 if final else self._detail_cursor,
         )
         fetched = 0
+        pending: list[tuple[int, str | None, int]] = []
+
+        async def flush() -> None:
+            nonlocal fetched
+            if not pending:
+                return
+            batch = pending.copy()
+            pending.clear()
+            fetched += await self._refresh_detail_batch(batch, spend, final=final)
+
         for fixture_id in ordered:
             if not spend.left() or fetched >= limit:
                 break
@@ -417,14 +430,15 @@ class LiveContextIngest:
                 refresh_seconds=due_after,
             ):
                 continue
-            if await self._refresh_detail(
-                fixture_id,
-                final=final,
-                match_status=match_status,
-                refresh_seconds=due_after,
-            ):
-                spend.take()
-                fetched += 1
+            pending.append((fixture_id, match_status, due_after))
+            batch_cap = min(
+                LIVE_DETAIL_CONCURRENCY,
+                limit - fetched,
+                spend.slots(),
+            )
+            if len(pending) >= batch_cap:
+                await flush()
+        await flush()
         if not final:
             self._detail_cursor = (self._detail_cursor + max(1, fetched)) % len(
                 live_ids
@@ -520,6 +534,45 @@ class LiveContextIngest:
             finished = final or match_status in FINISHED_FIXTURE_STATUSES
             await self._stamp_detail(fixture_id, finished=finished)
         return ok
+
+    async def _refresh_detail_batch(
+        self,
+        batch: list[tuple[int, str | None, int]],
+        spend: _Spend,
+        *,
+        final: bool,
+    ) -> int:
+        async def one(
+            fixture_id: int, match_status: str | None, refresh_seconds: int
+        ) -> bool:
+            return await self._refresh_detail(
+                fixture_id,
+                final=final,
+                match_status=match_status,
+                refresh_seconds=refresh_seconds,
+            )
+
+        results = await asyncio.gather(
+            *(
+                one(fixture_id, status, seconds)
+                for fixture_id, status, seconds in batch
+            ),
+            return_exceptions=True,
+        )
+        auth = next((exc for exc in results if isinstance(exc, AuthBlockedError)), None)
+        if auth is not None:
+            raise auth
+        done = 0
+        for result in results:
+            if result is True:
+                spend.take()
+                done += 1
+        closed = next(
+            (exc for exc in results if isinstance(exc, SpendWindowClosed)), None
+        )
+        if closed is not None:
+            raise closed
+        return done
 
     async def _stamp_detail(self, fixture_id: int, *, finished: bool) -> None:
         async with self._session_factory() as session, session.begin():
@@ -634,6 +687,9 @@ class _Spend:
             fraction=self._fraction,
             quota_left=bool(self._quota()),
         )
+
+    def slots(self) -> int:
+        return max(0, self._max_calls - self.calls)
 
     def take(self) -> None:
         self.calls += 1

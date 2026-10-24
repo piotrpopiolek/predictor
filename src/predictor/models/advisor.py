@@ -112,7 +112,12 @@ class AdvisorCycle(Base):
     __tablename__ = "advisor_cycles"
     __table_args__ = (
         CheckConstraint(
-            "validation_status IN ('ok', 'invalid_output', 'provider_error')",
+            "validation_status IN ("
+            "'ok', 'invalid_output', 'provider_error', "
+            "'duplicate_candidate', 'candidate_set', 'duplicate_leg', "
+            "'too_many_legs', 'unknown_fixture', 'open_coupon', "
+            "'invalid_odd', 'below_threshold', 'bet_not_in_coupon', 'not_a_bet'"
+            ")",
             name="advisor_cycles_validation_check",
         ),
         CheckConstraint(_MODE, name="advisor_cycles_mode_check"),
@@ -140,7 +145,7 @@ class AdvisorCycle(Base):
     prompt_text: Mapped[str] = mapped_column(Text, nullable=False)
     input_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     raw_output: Mapped[str | None] = mapped_column(Text, nullable=True)
-    validation_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    validation_status: Mapped[str] = mapped_column(String(32), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     thoughts_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
