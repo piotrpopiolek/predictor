@@ -149,6 +149,24 @@ def test_status_report_does_not_settle() -> None:
     assert "settle_finished" not in text
 
 
+def test_advisor_browse_is_read_only() -> None:
+    browse = Path("src/predictor/services/advisor/browse.py").read_text(encoding="utf-8")
+    http = Path("src/predictor/api/advisor_http.py").read_text(encoding="utf-8")
+    assert "/advisor/browse" in http
+    for banned in (
+        "session.add",
+        "session.delete",
+        "session.execute(delete",
+        "session.execute(update",
+        "session.execute(insert",
+        "settle_finished",
+        ".commit(",
+    ):
+        assert banned not in browse
+    assert "@app.post" in http
+    assert http.index('@app.get("/advisor/browse"') < http.index("@app.post")
+
+
 def test_advisor_process_does_not_call_api_football() -> None:
     root = Path("src/predictor/advisor")
     bodies = [path.read_text(encoding="utf-8") for path in root.rglob("*.py")]

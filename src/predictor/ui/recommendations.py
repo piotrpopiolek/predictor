@@ -133,7 +133,10 @@ def _page(title: str, body: str) -> str:
   </style>
 </head>
 <body><main>
-  <p><a href="/advisor/report">Raport</a></p>
+  <p><a href="/advisor/report">Raport</a>
+    · <a href="/advisor/recommendations">Rekomendacje</a>
+    · <a href="/advisor/strategies">Strategie</a>
+    · <a href="/advisor/browse">Tabele</a></p>
   <h1>{escape(title)}</h1>
   {body}
 </main></body></html>

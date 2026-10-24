@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import cast
+from typing import Any, cast
 
-from fastapi import FastAPI, Form, Header, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Form, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
@@ -19,6 +19,12 @@ from predictor.models.advisor import (
     AdvisorStrategyVersion,
 )
 from predictor.postgres import make_session_factory
+from predictor.services.advisor.browse import (
+    BrowseError,
+    get_row,
+    list_rows,
+    table_counts,
+)
 from predictor.services.advisor.recommend_ops import (
     ActionError,
     accept_coupon,
@@ -32,11 +38,23 @@ from predictor.services.advisor.recommend_ops import (
     set_strategy_status,
 )
 from predictor.services.metrics import mutation_token_ok
+from predictor.ui.advisor_browse import (
+    render_browse_index,
+    render_browse_list,
+    render_browse_row,
+)
 from predictor.ui.recommendations import (
     render_recommendation_card,
     render_recommendations,
     render_strategies,
 )
+
+_BROWSE_CODES = {
+    "unknown_table": 404,
+    "missing": 404,
+    "bad_filter": 400,
+    "bad_limit": 400,
+}
 
 _CODES = {
     "missing": 404,
@@ -96,6 +114,59 @@ def mount_advisor_http(app: FastAPI, token: str) -> None:
     def _auth(authorization: str | None, form_token: str | None) -> None:
         if not mutation_token_ok(authorization, form_token, token):
             raise HTTPException(status_code=401, detail="unauthorized")
+
+    @app.get("/advisor/browse")
+    async def browse_index() -> HTMLResponse:
+        engine = cast(AsyncEngine, app.state.engine)
+        factory = make_session_factory(engine)
+        try:
+            async with factory() as session:
+                counts = await table_counts(session)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
+        return HTMLResponse(render_browse_index(counts))
+
+    @app.get("/advisor/browse.json")
+    async def browse_index_json() -> list[dict[str, Any]]:
+        engine = cast(AsyncEngine, app.state.engine)
+        factory = make_session_factory(engine)
+        try:
+            async with factory() as session:
+                return await table_counts(session)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
+
+    @app.get("/advisor/browse.json/{table}")
+    async def browse_table_json(table: str, request: Request) -> JSONResponse:
+        return JSONResponse(await _browse_list(app, table, request))
+
+    @app.get("/advisor/browse.json/{table}/{row_id}")
+    async def browse_row_json(table: str, row_id: int) -> JSONResponse:
+        return JSONResponse(await _browse_row(app, table, row_id))
+
+    @app.get("/advisor/browse/{table}")
+    async def browse_table(table: str, request: Request) -> HTMLResponse:
+        payload = await _browse_list(app, table, request)
+        return HTMLResponse(
+            render_browse_list(
+                table=payload["table"],
+                rows=payload["rows"],
+                filters=payload["filters"],
+                limit=payload["limit"],
+                next_before_id=payload["next_before_id"],
+            )
+        )
+
+    @app.get("/advisor/browse/{table}/{row_id}")
+    async def browse_row(table: str, row_id: int) -> HTMLResponse:
+        payload = await _browse_row(app, table, row_id)
+        return HTMLResponse(
+            render_browse_row(table=payload["table"], row=payload["row"])
+        )
 
     @app.get("/advisor/recommendations")
     async def recommendations() -> HTMLResponse:
@@ -302,6 +373,53 @@ def mount_advisor_http(app: FastAPI, token: str) -> None:
         _auth(authorization, token_field)
         await _act(app, lambda session: manual_settle(session, leg_id, outcome))
         return RedirectResponse("/advisor/recommendations", status_code=303)
+
+
+async def _browse_list(app: FastAPI, table: str, request: Request) -> dict[str, Any]:
+    reserved = frozenset({"limit", "before_id"})
+    filters = {
+        key: value
+        for key, value in request.query_params.multi_items()
+        if key not in reserved
+    }
+    limit_raw = request.query_params.get("limit")
+    before_raw = request.query_params.get("before_id")
+    try:
+        limit = int(limit_raw) if limit_raw is not None else None
+        before_id = int(before_raw) if before_raw is not None else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bad_limit") from None
+    engine = cast(AsyncEngine, app.state.engine)
+    factory = make_session_factory(engine)
+    try:
+        async with factory() as session:
+            return await list_rows(
+                session,
+                table,
+                filters=filters,
+                before_id=before_id,
+                limit=limit,
+            )
+    except BrowseError as exc:
+        raise HTTPException(
+            status_code=_BROWSE_CODES.get(exc.code, 400), detail=exc.code
+        ) from None
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+
+
+async def _browse_row(app: FastAPI, table: str, row_id: int) -> dict[str, Any]:
+    engine = cast(AsyncEngine, app.state.engine)
+    factory = make_session_factory(engine)
+    try:
+        async with factory() as session:
+            return await get_row(session, table, row_id)
+    except BrowseError as exc:
+        raise HTTPException(
+            status_code=_BROWSE_CODES.get(exc.code, 400), detail=exc.code
+        ) from None
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
 
 
 def _now() -> datetime:

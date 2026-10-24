@@ -42,7 +42,10 @@ def render_yield_report(report: YieldReport) -> str:
 </head>
 <body>
 <main>
-  <p><a href="/live/next-goal">Następny gol</a></p>
+  <p><a href="/live/next-goal">Następny gol</a>
+    · <a href="/advisor/recommendations">Rekomendacje</a>
+    · <a href="/advisor/strategies">Strategie</a>
+    · <a href="/advisor/browse">Tabele</a></p>
   <h1>Raport piaskownicy</h1>
   <p>Yield netto to zysk po współczynniku 0,88 podzielony przez stawki kuponów
   wygranych i przegranych. Kupon nieważny oddaje stawkę i nie wchodzi do yieldu.</p>
