@@ -1,4 +1,4 @@
-"""Live match details leave in fours."""
+"""Live match details leave in twos."""
 
 from __future__ import annotations
 
@@ -69,9 +69,9 @@ async def _peak(limit: int) -> int:
 
 
 @pytest.mark.asyncio
-async def test_match_details_go_out_four_at_a_time() -> None:
-    assert LIVE_DETAIL_CONCURRENCY == 4
-    assert await _peak(8) == 4
+async def test_match_details_go_out_two_at_a_time() -> None:
+    assert LIVE_DETAIL_CONCURRENCY == 2
+    assert await _peak(8) == 2
 
 
 @pytest.mark.asyncio

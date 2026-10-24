@@ -269,7 +269,7 @@ async def test_baseline_bets_every_playable_candidate_without_a_model() -> None:
                 candidates=(low, high, low),
                 clock=lambda: NOW,
             )
-            assert placed.paused is True
+            assert placed.paused is False
             assert len(placed.coupon_ids) == 2
             async with session.begin():
                 coupons = (
@@ -311,7 +311,7 @@ async def test_baseline_bets_every_playable_candidate_without_a_model() -> None:
                 clock=lambda: NOW,
             )
             assert again.coupon_ids == ()
-            assert again.paused is True
+            assert again.paused is False
             async with session.begin():
                 shared = await _seed(
                     session,
@@ -658,7 +658,7 @@ async def test_an_open_match_does_not_block_a_new_one() -> None:
                 candidates=(_leg(880_454, "1.40"), _leg(880_455, "1.20")),
                 clock=lambda: NOW,
             )
-            assert placed.paused is True
+            assert placed.paused is False
             assert len(placed.coupon_ids) == 1
             async with session.begin():
                 fresh = (
@@ -779,7 +779,7 @@ async def test_paused_strategy_returns_when_the_book_covers_the_stake() -> None:
                     mode="sandbox",
                     strategy_version_id=version.id,
                     status="open",
-                    stake=Decimal("40.00"),
+                    stake=SANDBOX_BANKROLL - stake_after_wins(0) + Decimal("1.00"),
                     combined_odd=Decimal("1.500"),
                     proposed_combined_odd=Decimal("1.500"),
                     payout_keep=PAYOUT_KEEP,

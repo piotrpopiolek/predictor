@@ -8,7 +8,7 @@ ADVISOR_LOCK_KEY = 739202
 ADVISOR_CYCLE_LOCK_KEY = 739203
 PAYOUT_KEEP = Decimal("0.880")
 # Virtual portfolio (FR-120). The balance is the sum of coupons, not a stored column.
-SANDBOX_BANKROLL = Decimal("50.00")
+SANDBOX_BANKROLL = Decimal("100.00")
 # Same stake rule as the operator ledger: 21.00, then +0.10 per settled win.
 START_STAKE = Decimal("21.00")
 STAKE_STEP = Decimal("0.10")
@@ -105,9 +105,8 @@ PREMATCH_PER_TICK = 4
 URGENT_PREMATCH_PER_TICK = 4
 URGENT_PREMATCH_HORIZON_HOURS = 6
 GLOBAL_PER_TICK = 3
-HISTORY_FETCH_CONCURRENCY = 6
-# Live match details (/fixtures?id=) fetched together inside one context tick.
-LIVE_DETAIL_CONCURRENCY = 4
+HISTORY_FETCH_CONCURRENCY = 8
+LIVE_DETAIL_CONCURRENCY = 2
 ODDS_MAPPING_RETRY_BACKOFF_SECONDS = 15 * 60
 ODDS_MAPPING_REFRESH_SECONDS = 2 * 60 * 60
 

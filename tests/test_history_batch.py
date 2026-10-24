@@ -1,4 +1,4 @@
-"""History fetch batch: six independent tasks overlap, one stays alone."""
+"""History fetch batch: eight independent tasks overlap, one stays alone."""
 
 from __future__ import annotations
 
@@ -34,10 +34,10 @@ async def _peak(ingest: GlobalIngest, task_ids: list[int]) -> int:
 
 
 @pytest.mark.asyncio
-async def test_six_transfers_overlap_in_flight() -> None:
-    assert HISTORY_FETCH_CONCURRENCY == 6
-    ingest = GlobalIngest(object(), object(), per_tick=6)  # type: ignore[arg-type]
-    assert await _peak(ingest, [1, 2, 3, 4, 5, 6]) == 6
+async def test_eight_transfers_overlap_in_flight() -> None:
+    assert HISTORY_FETCH_CONCURRENCY == 8
+    ingest = GlobalIngest(object(), object(), per_tick=8)  # type: ignore[arg-type]
+    assert await _peak(ingest, [1, 2, 3, 4, 5, 6, 7, 8]) == 8
 
 
 @pytest.mark.asyncio
