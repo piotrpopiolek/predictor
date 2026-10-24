@@ -442,11 +442,12 @@ _LIVE_CSS = """
   }
   .scorer-col.away { text-align: right; }
   .who { color: var(--text); }
-  .facts, .stats, .next-goal {
+  .facts, .stats, .next-goal, .llm-note {
     margin: 8px 0 0;
     color: var(--muted);
     font-size: 0.78rem;
   }
+  .llm-note.ready { color: var(--text); }
   .form {
     display: grid;
     grid-template-columns: 1fr auto 1fr;
@@ -595,6 +596,7 @@ def _match_card(
     current_stake: str | None = None,
     show_kickoff: bool = False,
     operator_token: str | None = None,
+    llm_html: str = "",
 ) -> str:
     home = escape(match.home)
     away = escape(match.away)
@@ -661,6 +663,7 @@ def _match_card(
   {_stats_line(match)}
   {_form_line(match)}
   {_next_goal_line(match)}
+  {llm_html}
   </a>
   {bet_block}
 </article>
@@ -784,11 +787,13 @@ def render_live_html(
     current_stake: str | None = None,
     operator_token: str | None = None,
     recommendation_html: str = "",
+    llm_notes: dict[int, str] | None = None,
 ) -> str:
     ordered = sort_matches_by_clock(matches)
     count = len(ordered)
     allow_bet = active_nav == "next_goal"
     bets = open_bets or {}
+    notes = llm_notes or {}
     sections: list[str] = []
     for (country, league), rows in groupby(
         ordered, key=lambda item: (item.country, item.league)
@@ -802,6 +807,7 @@ def render_live_html(
                 open_bet=bets.get(item.fixture_id),
                 current_stake=current_stake,
                 operator_token=operator_token,
+                llm_html=notes.get(item.fixture_id, ""),
             )
             for item in group
         )

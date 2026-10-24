@@ -272,6 +272,12 @@ _DETAIL_CSS = """
   }
   .empty { text-align: center; color: var(--muted); padding: 48px 16px; }
   .sub { font-size: 0.78rem; text-align: right; }
+  .llm-note {
+    margin: 12px 0 0;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .llm-note.ready { color: var(--text); }
   @media (max-width: 720px) {
     .grid, .xi, .headline, .tables, .form-cols, .split-grid {
       grid-template-columns: 1fr;

@@ -54,10 +54,17 @@ def render_match_missing() -> str:
     )
 
 
-def render_match_html(detail: MatchDetail, *, generated_at: datetime) -> str:
+def render_match_html(
+    detail: MatchDetail,
+    *,
+    generated_at: datetime,
+    llm_html: str = "",
+) -> str:
     match = detail.match
     title = f"{match.home} – {match.away}"
-    return _page(title=title, body=_body(detail, generated_at), refresh=True)
+    return _page(
+        title=title, body=_body(detail, generated_at, llm_html), refresh=True
+    )
 
 
 def _page(*, title: str, body: str, refresh: bool = False) -> str:
@@ -94,7 +101,7 @@ setTimeout(function () {{ location.reload(); }}, {REFRESH_SECONDS * 1000});
 """
 
 
-def _body(detail: MatchDetail, generated_at: datetime) -> str:
+def _body(detail: MatchDetail, generated_at: datetime, llm_html: str = "") -> str:
     match = detail.match
     chips = _chips(match)
     periods = _periods(match)
@@ -113,6 +120,7 @@ def _body(detail: MatchDetail, generated_at: datetime) -> str:
   </div>
   {chips}
   {periods}
+  {llm_html}
 </section>
 {_table_card(detail)}
 {_events_card(detail)}

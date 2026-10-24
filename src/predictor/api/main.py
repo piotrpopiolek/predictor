@@ -22,6 +22,7 @@ from predictor.api.advisor_http import load_recommendation_html, mount_advisor_h
 from predictor.logutil import configure_logging, log_startup
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, SettingsError, load_settings
+from predictor.services.advisor.llm_note import load_llm_notes
 from predictor.services.advisor.report import load_yield_report, report_as_dict
 from predictor.services.health import (
     inspect_ready,
@@ -72,6 +73,7 @@ from predictor.ui import (
     render_match_missing,
 )
 from predictor.ui.advisor import render_yield_report
+from predictor.ui.llm_note import render_llm_note
 
 
 @asynccontextmanager
@@ -172,6 +174,11 @@ def create_app() -> FastAPI:
         try:
             open_bets = await list_open_from_engine(engine)
             stake = await current_stake_label(engine)
+            notes = await load_llm_notes(
+                engine,
+                matches,
+                candidate_ids={item.fixture_id for item in matches},
+            )
         except Exception:
             raise HTTPException(
                 status_code=503, detail="postgres_unavailable"
@@ -192,6 +199,9 @@ def create_app() -> FastAPI:
             open_bets={fid: bet_as_dict(bet) for fid, bet in open_bets.items()},
             current_stake=stake,
             operator_token=mutation_token,
+            llm_notes={
+                fixture_id: render_llm_note(note) for fixture_id, note in notes.items()
+            },
         )
         return HTMLResponse(html)
 
@@ -199,9 +209,15 @@ def create_app() -> FastAPI:
     async def live_next_goal_json() -> dict[str, Any]:
         engine = cast(AsyncEngine, app.state.engine)
         selected = await _next_goal_board()
+        matches = [match for match, _reasons in selected]
         try:
             open_bets = await list_open_from_engine(engine)
             stake = await current_stake_label(engine)
+            notes = await load_llm_notes(
+                engine,
+                matches,
+                candidate_ids={item.fixture_id for item in matches},
+            )
         except Exception:
             raise HTTPException(
                 status_code=503, detail="postgres_unavailable"
@@ -219,6 +235,7 @@ def create_app() -> FastAPI:
                         if match.fixture_id not in open_bets
                         else bet_as_dict(open_bets[match.fixture_id])
                     ),
+                    "llm": notes[match.fixture_id].as_dict(),
                 }
                 for match, reasons in selected
             ],
@@ -271,7 +288,19 @@ def create_app() -> FastAPI:
             ) from None
         if detail is None:
             return HTMLResponse(render_match_missing(), status_code=404)
-        return HTMLResponse(render_match_html(detail, generated_at=datetime.now(UTC)))
+        try:
+            notes = await load_llm_notes(engine, [detail.match])
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="postgres_unavailable"
+            ) from None
+        note = notes.get(detail.match.fixture_id)
+        llm_html = "" if note is None else render_llm_note(note)
+        return HTMLResponse(
+            render_match_html(
+                detail, generated_at=datetime.now(UTC), llm_html=llm_html
+            )
+        )
 
     @app.get("/live/bets")
     async def live_bets() -> HTMLResponse:
