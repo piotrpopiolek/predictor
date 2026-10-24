@@ -227,7 +227,7 @@ async def _notes(
     strategy_id, minute_limit, paused = await _llm_strategy(session)
     fixture_ids = [match.fixture_id for match in matches]
     quotes = await latest_over_under(session, fixture_ids)
-    opened = frozenset()
+    opened: frozenset[int] = frozenset()
     rejected: frozenset[tuple[int, str, int, int, int]] = frozenset()
     decisions: dict[int, AdvisorDecision] = {}
     if strategy_id is not None:
@@ -272,8 +272,10 @@ async def _llm_strategy(session: AsyncSession) -> tuple[int | None, int, bool]:
     return int(paused[0]), int(paused[1]), True
 
 
-async def _llm_row(session: AsyncSession, *, statuses: frozenset[str]):
-    return (
+async def _llm_row(
+    session: AsyncSession, *, statuses: frozenset[str]
+) -> tuple[int, int, str] | None:
+    row = (
         await session.execute(
             select(
                 AdvisorStrategy.id,
@@ -290,6 +292,9 @@ async def _llm_row(session: AsyncSession, *, statuses: frozenset[str]):
             .limit(1)
         )
     ).first()
+    if row is None:
+        return None
+    return int(row[0]), int(row[1]), str(row[2])
 
 
 async def _latest_decisions(
