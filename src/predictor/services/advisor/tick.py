@@ -12,7 +12,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from predictor.models.advisor import AdvisorStrategy, AdvisorStrategyVersion
+from predictor.models.advisor import (
+    AdvisorCycle,
+    AdvisorStrategy,
+    AdvisorStrategyVersion,
+)
 from predictor.schemas.advisor import AdvisorSettings
 from predictor.services.advisor.candidates import (
     MatchSnapshot,
@@ -23,6 +27,7 @@ from predictor.services.advisor.cycle import CycleCandidate, CycleRequest, run_c
 from predictor.services.advisor.domain import QUOTE_MAX_AGE, PlayLimits
 from predictor.services.advisor.langfuse import TraceSink
 from predictor.services.advisor.llm.protocol import LlmProvider
+from predictor.services.advisor.llm.validate import PricedCandidate, review_model_output
 from predictor.services.advisor.prompts.cycle import PROMPT_VERSION, render_cycle_prompt
 from predictor.services.advisor.recommend import (
     RecommendationSetup,
@@ -33,7 +38,7 @@ from predictor.services.advisor.recommend_ops import (
     open_recommendation_fixtures,
     recommendation_usage,
 )
-from predictor.services.advisor.sandbox import place_baseline
+from predictor.services.advisor.sandbox import place_baseline, release_funded_strategies
 from predictor.services.advisor.sql import (
     OverUnderRow,
     last_signature,
@@ -111,13 +116,25 @@ class CandidateWindow:
             self.since = now
             self.fired = False
             return False
-        if not signature or self.fired or self.since is None:
+        if not signature or self.fired:
+            return False
+        if self.since is None:
+            self.since = now
             return False
         return now - self.since >= wait
 
     def mark_fired(self) -> None:
         """The set was sent to the model. A budget skip must not call this."""
         self.fired = True
+
+    def hold_for_retry(self, now: datetime) -> None:
+        """Ask this same set again after another debounce.
+
+        A coupon under the combined-odd floor is not a decision. The
+        candidates stay in the pool until one can be placed.
+        """
+        self.since = now
+        self.fired = False
 
     def next_sleep(self, now: datetime, wait: timedelta, poll: float) -> float:
         """Sleep until this set is due, and never longer than the poll."""
@@ -151,6 +168,7 @@ async def run_tick(
     selected = board_snapshots(matches, legs)
     async with factory() as session:
         async with session.begin():
+            await release_funded_strategies(session)
             baseline = await ensure_strategy(session, BASELINE_NAME, "baseline")
             books = await _active_llm(session)
             quotes = await latest_over_under(
@@ -244,15 +262,64 @@ async def run_tick(
                 traces=traces,
                 redact_secrets=redact_secrets,
             )
-            if outcome.called:
+            if outcome.detail == "below_threshold":
+                own.hold_for_retry(now)
+            elif outcome.called:
                 own.mark_fired()
+            if outcome.called:
                 called = True
         return called
 
 
 async def restore_window(session: AsyncSession, strategy_id: int) -> CandidateWindow:
+    """Reopen a set whose last call was under the combined-odd floor."""
     signature = await last_signature(session, strategy_id)
-    return CandidateWindow(signature=signature, fired=True)
+    retry = await _below_threshold_open(session, strategy_id)
+    return CandidateWindow(signature=signature, fired=not retry)
+
+
+async def _below_threshold_open(session: AsyncSession, strategy_id: int) -> bool:
+    row = (
+        await session.execute(
+            select(
+                AdvisorCycle.validation_status,
+                AdvisorCycle.raw_output,
+                AdvisorCycle.input_json,
+                AdvisorStrategyVersion.min_combined_odd,
+                AdvisorStrategyVersion.max_legs,
+            )
+            .join(
+                AdvisorStrategyVersion,
+                AdvisorStrategyVersion.id == AdvisorCycle.strategy_version_id,
+            )
+            .where(AdvisorStrategyVersion.strategy_id == strategy_id)
+            .order_by(AdvisorCycle.id.desc())
+            .limit(1)
+        )
+    ).first()
+    if row is None or row.validation_status != "invalid_output":
+        return False
+    payload = row.input_json if isinstance(row.input_json, dict) else {}
+    playable: list[PricedCandidate] = []
+    for item in payload.get("candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            playable.append(
+                PricedCandidate(int(item["fixture_id"]), Decimal(str(item["odd"])))
+            )
+        except KeyError, TypeError, ValueError:
+            return False
+    if not playable:
+        return False
+    verdict = review_model_output(
+        row.raw_output or "",
+        playable,
+        set(),
+        min_odd=row.min_combined_odd,
+        max_legs=int(row.max_legs),
+    )
+    return verdict.detail == "below_threshold"
 
 
 async def _active_llm(session: AsyncSession) -> list[StrategyBook]:

@@ -31,6 +31,7 @@ from predictor.services.advisor.sandbox import (
     baseline_slips,
     place_baseline,
     portfolio_balance,
+    release_funded_strategies,
     reply_slips,
 )
 
@@ -742,6 +743,75 @@ def _request(world: _World, candidates: tuple[CycleCandidate, ...]) -> CycleRequ
         min_odd=Decimal("1.6"),
         max_legs=3,
     )
+
+
+@pytest.mark.asyncio
+async def test_paused_strategy_returns_when_the_book_covers_the_stake() -> None:
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    try:
+        async with factory() as session, session.begin():
+            funded = AdvisorStrategy(
+                name="advisor-release-funded", kind="llm", status="paused"
+            )
+            short = AdvisorStrategy(
+                name="advisor-release-short", kind="baseline", status="paused"
+            )
+            session.add(funded)
+            session.add(short)
+            await session.flush()
+            version = AdvisorStrategyVersion(
+                strategy_id=short.id,
+                version_no=1,
+                prompt_version="p4",
+                min_combined_odd=Decimal("1.600"),
+                max_legs=3,
+                max_minute_regulation=80,
+                max_minute_extra=110,
+                wait_minutes=10,
+                candidate_rules=["favorite_losing"],
+                notes="",
+            )
+            session.add(version)
+            await session.flush()
+            session.add(
+                AdvisorCoupon(
+                    mode="sandbox",
+                    strategy_version_id=version.id,
+                    status="open",
+                    stake=Decimal("40.00"),
+                    combined_odd=Decimal("1.500"),
+                    proposed_combined_odd=Decimal("1.500"),
+                    payout_keep=PAYOUT_KEEP,
+                    placed_at=NOW,
+                )
+            )
+            await release_funded_strategies(session)
+            assert funded.status == "sandbox"
+            assert short.status == "paused"
+            funded_id, short_id = funded.id, short.id
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(AdvisorCoupon).where(
+                    AdvisorCoupon.strategy_version_id.in_(
+                        select(AdvisorStrategyVersion.id).where(
+                            AdvisorStrategyVersion.strategy_id == short_id
+                        )
+                    )
+                )
+            )
+            await session.execute(
+                delete(AdvisorStrategyVersion).where(
+                    AdvisorStrategyVersion.strategy_id == short_id
+                )
+            )
+            await session.execute(
+                delete(AdvisorStrategy).where(
+                    AdvisorStrategy.id.in_((funded_id, short_id))
+                )
+            )
+    finally:
+        await engine.dispose()
 
 
 async def _seed(

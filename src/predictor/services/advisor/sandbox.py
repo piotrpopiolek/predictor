@@ -139,6 +139,22 @@ def _clock() -> datetime:
     return datetime.now(UTC)
 
 
+async def release_funded_strategies(session: AsyncSession) -> None:
+    """Return a paused strategy to the sandbox once the book covers the stake."""
+    if not session.in_transaction():
+        raise RuntimeError("release_funded_strategies must run inside a transaction")
+    rows = (
+        await session.scalars(
+            select(AdvisorStrategy).where(AdvisorStrategy.status == "paused")
+        )
+    ).all()
+    for strategy in rows:
+        wins = await _won_count(session, strategy.id)
+        balance = portfolio_balance(await _coupon_rows(session, strategy.id))
+        if balance >= stake_after_wins(wins):
+            strategy.status = "sandbox"
+
+
 async def place_baseline(
     session: AsyncSession,
     *,

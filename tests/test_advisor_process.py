@@ -134,6 +134,15 @@ def test_window_waits_for_a_stable_set_and_fires_once() -> None:
         window.ready(signature, NOW + timedelta(seconds=40), timedelta(seconds=20))
         is False
     )
+    window.hold_for_retry(NOW + timedelta(seconds=40))
+    assert (
+        window.ready(signature, NOW + timedelta(seconds=50), timedelta(seconds=20))
+        is False
+    )
+    assert (
+        window.ready(signature, NOW + timedelta(seconds=60), timedelta(seconds=20))
+        is True
+    )
     assert window.next_sleep(NOW, timedelta(seconds=20), 15) == 15
     fresh = CandidateWindow()
     fresh.ready(signature, NOW, timedelta(seconds=20))
@@ -581,6 +590,24 @@ async def test_empty_board_does_not_call_the_model() -> None:
         await engine.dispose()
 
 
+def _bet_reply(fixture_id: int) -> str:
+    return json.dumps(
+        {
+            "candidates": [
+                {
+                    "fixture_id": fixture_id,
+                    "decision": "bet",
+                    "estimated_probability": "0.70",
+                    "confidence": "0.60",
+                    "reasons": ["favorite_pressure"],
+                    "rationale": "the favourite is chasing",
+                }
+            ],
+            "coupons": [{"fixture_ids": [fixture_id]}],
+        }
+    )
+
+
 def _wait_reply(fixture_id: int) -> str:
     return json.dumps(
         {
@@ -653,6 +680,57 @@ async def test_a_stable_set_calls_the_model_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_below_threshold_sends_the_same_set_again() -> None:
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    provider = _Provider(_bet_reply(880_734))
+    window = CandidateWindow()
+    try:
+        async with factory() as session, session.begin():
+            await _seed_live(session, 880_731, odd="1.350")
+        assert (
+            await run_tick(engine, factory, provider, _settings(), window, NOW) is False
+        )
+        first = await run_tick(
+            engine,
+            factory,
+            provider,
+            _settings(),
+            window,
+            NOW + timedelta(seconds=20),
+        )
+        assert first is True
+        assert provider.calls == 1
+        assert window.fired is False
+        assert (
+            await run_tick(
+                engine,
+                factory,
+                provider,
+                _settings(),
+                window,
+                NOW + timedelta(seconds=30),
+            )
+            is False
+        )
+        assert provider.calls == 1
+        second = await run_tick(
+            engine,
+            factory,
+            provider,
+            _settings(),
+            window,
+            NOW + timedelta(seconds=40),
+        )
+        assert second is True
+        assert provider.calls == 2
+    finally:
+        async with factory() as session, session.begin():
+            await _drop_live(session, 880_731)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_budget_block_leaves_the_set_for_the_next_tick() -> None:
     engine = make_async_engine(Settings())
     factory = make_session_factory(engine)
@@ -692,7 +770,7 @@ async def test_budget_block_leaves_the_set_for_the_next_tick() -> None:
         await engine.dispose()
 
 
-async def _seed_live(session, base: int) -> None:
+async def _seed_live(session, base: int, *, odd: str = "1.700") -> None:
     league, home, away, fixture = base, base + 1, base + 2, base + 3
     await _drop_live(session, base)
     session.add(League(id=league, name=f"advisor-live-{base}"))
@@ -736,7 +814,7 @@ async def _seed_live(session, base: int) -> None:
             bet_id=base + 8,
             value_label="Over",
             handicap="1.5",
-            odd=Decimal("1.700"),
+            odd=Decimal(odd),
             captured_at=NOW - timedelta(seconds=10),
         )
     )
