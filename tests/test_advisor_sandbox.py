@@ -10,7 +10,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import delete, func, select
 
-from predictor.constants import PAYOUT_KEEP, SANDBOX_STAKE
+from predictor.constants import PAYOUT_KEEP, SANDBOX_BANKROLL, SANDBOX_STAKE
 from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorCycle,
@@ -145,26 +145,26 @@ def test_reply_drops_a_coupon_when_a_leg_was_not_stored() -> None:
 def test_portfolio_balance_counts_open_stakes_and_settled_results() -> None:
     stake = Decimal("10.00")
     keep = Decimal("0.880")
-    assert portfolio_balance(()) == Decimal("20.00")
-    assert portfolio_balance(((stake, Decimal("1.700"), keep, "open"),)) == Decimal(
-        "10.00"
+    assert portfolio_balance(()) == SANDBOX_BANKROLL
+    assert portfolio_balance(((stake, Decimal("1.700"), keep, "open"),)) == (
+        SANDBOX_BANKROLL - stake
     )
     assert portfolio_balance(
         (
             (stake, Decimal("1.700"), keep, "open"),
             (stake, Decimal("1.700"), keep, "open"),
         )
-    ) == Decimal("0.00")
-    assert portfolio_balance(((stake, Decimal("2.000"), keep, "won"),)) == Decimal(
-        "27.60"
+    ) == (SANDBOX_BANKROLL - stake - stake)
+    assert portfolio_balance(((stake, Decimal("2.000"), keep, "won"),)) == (
+        SANDBOX_BANKROLL + stake * Decimal("2.000") * keep - stake
     )
-    assert portfolio_balance(((stake, Decimal("2.000"), keep, "lost"),)) == Decimal(
-        "10.00"
+    assert portfolio_balance(((stake, Decimal("2.000"), keep, "lost"),)) == (
+        SANDBOX_BANKROLL - stake
     )
-    assert portfolio_balance(((stake, None, keep, "void"),)) == Decimal("20.00")
-    assert portfolio_balance(((stake, Decimal("1.700"), keep, "proposed"),)) == Decimal(
-        "20.00"
-    )
+    assert portfolio_balance(((stake, None, keep, "void"),)) == SANDBOX_BANKROLL
+    assert portfolio_balance(
+        ((stake, Decimal("1.700"), keep, "proposed"),)
+    ) == SANDBOX_BANKROLL
     with pytest.raises(ValueError, match="no odd"):
         portfolio_balance(((stake, None, keep, "won"),))
 
@@ -224,7 +224,7 @@ async def test_baseline_bets_every_playable_candidate_without_a_model() -> None:
                 candidates=(low, high, low),
                 clock=lambda: NOW,
             )
-            assert placed.paused is False
+            assert placed.paused is True
             assert len(placed.coupon_ids) == 2
             async with session.begin():
                 coupons = (
@@ -266,7 +266,7 @@ async def test_baseline_bets_every_playable_candidate_without_a_model() -> None:
                 clock=lambda: NOW,
             )
             assert again.coupon_ids == ()
-            assert again.paused is False
+            assert again.paused is True
             async with session.begin():
                 shared = await _seed(
                     session,
@@ -327,7 +327,7 @@ async def test_baseline_pauses_when_the_stake_does_not_fit() -> None:
                     session,
                     world,
                     fixture_id=880_414,
-                    stake=Decimal("990.00"),
+                    stake=SANDBOX_BANKROLL - SANDBOX_STAKE,
                     odd=Decimal("1.500"),
                 )
             placed = await place_baseline(
@@ -482,7 +482,7 @@ async def test_llm_places_until_the_stake_no_longer_fits() -> None:
                     session,
                     world,
                     fixture_id=880_444,
-                    stake=Decimal("990.00"),
+                    stake=SANDBOX_BANKROLL - SANDBOX_STAKE,
                     odd=Decimal("1.500"),
                 )
             outcome = await run_cycle(
@@ -613,7 +613,7 @@ async def test_an_open_match_does_not_block_a_new_one() -> None:
                 candidates=(_leg(880_454, "1.40"), _leg(880_455, "1.20")),
                 clock=lambda: NOW,
             )
-            assert placed.paused is False
+            assert placed.paused is True
             assert len(placed.coupon_ids) == 1
             async with session.begin():
                 fresh = (

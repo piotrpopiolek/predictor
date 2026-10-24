@@ -294,7 +294,11 @@ async def _active_llm(session: AsyncSession) -> list[StrategyBook]:
 
 
 async def ensure_strategy(session: AsyncSession, name: str, kind: str) -> StrategyBook:
-    """Use an active strategy of this kind, or create the named sandbox row."""
+    """Use an active strategy of this kind, the named row, or create it.
+
+    A paused or retired row keeps its name. Inserting another row with that
+    name violates ``advisor_strategies_name_key`` and kills the tick.
+    """
     row = await session.scalar(
         select(AdvisorStrategy)
         .where(
@@ -304,6 +308,13 @@ async def ensure_strategy(session: AsyncSession, name: str, kind: str) -> Strate
         .order_by(AdvisorStrategy.id)
         .limit(1)
     )
+    if row is None:
+        row = await session.scalar(
+            select(AdvisorStrategy).where(
+                AdvisorStrategy.name == name,
+                AdvisorStrategy.kind == kind,
+            )
+        )
     if row is None:
         row = AdvisorStrategy(name=name, kind=kind, status="sandbox")
         session.add(row)

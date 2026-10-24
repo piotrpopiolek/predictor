@@ -511,6 +511,55 @@ async def test_retired_strategy_does_not_block_the_named_sandbox() -> None:
 
 
 @pytest.mark.asyncio
+async def test_paused_named_strategy_is_reused() -> None:
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    name = "advisor-paused-baseline"
+    try:
+        async with factory() as session, session.begin():
+            paused = AdvisorStrategy(name=name, kind="baseline", status="paused")
+            session.add(paused)
+            await session.flush()
+            paused_id = paused.id
+            session.add(
+                AdvisorStrategyVersion(
+                    strategy_id=paused_id,
+                    version_no=1,
+                    prompt_version="p4",
+                    min_combined_odd=Decimal("1.600"),
+                    max_legs=3,
+                    max_minute_regulation=80,
+                    max_minute_extra=110,
+                    wait_minutes=10,
+                    candidate_rules=["favorite_losing"],
+                    notes="",
+                )
+            )
+        async with factory() as session, session.begin():
+            active = await session.scalar(
+                select(AdvisorStrategy.id).where(
+                    AdvisorStrategy.kind == "baseline",
+                    AdvisorStrategy.status.in_(("sandbox", "promoted")),
+                )
+            )
+            book = await ensure_strategy(session, name, "baseline")
+            named = (
+                await session.scalars(
+                    select(AdvisorStrategy).where(AdvisorStrategy.name == name)
+                )
+            ).all()
+        assert len(named) == 1
+        assert named[0].status == "paused"
+        if active is None:
+            assert book.strategy_id == paused_id
+            assert book.status == "paused"
+    finally:
+        async with factory() as session, session.begin():
+            await _drop_strategies(session, (name,))
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_empty_board_does_not_call_the_model() -> None:
     engine = make_async_engine(Settings())
     factory = make_session_factory(engine)

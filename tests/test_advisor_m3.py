@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import delete, select
 
-from predictor.constants import PAYOUT_KEEP
+from predictor.constants import PAYOUT_KEEP, SANDBOX_BANKROLL
 from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorCycle,
@@ -116,7 +116,7 @@ def test_promotion_and_withdraw_use_the_sandbox_book() -> None:
     )
     assert withdraw_due(Decimal("-0.01"), Decimal("0")) is True
     assert withdraw_due(None, Decimal("0")) is False
-    assert max_drawdown([Decimal("-250")]) == Decimal("0.2500")
+    assert max_drawdown([-(SANDBOX_BANKROLL / 4)]) == Decimal("0.2500")
 
 
 def test_telegram_text_has_no_token() -> None:
@@ -237,6 +237,14 @@ async def test_summary_names_include_the_utc_day() -> None:
             f"summary-{job.strategy_id}-2026-10-19",
             f"summary-{job.strategy_id}-2026-10-20",
         }
+        statuses = set(
+            await session.scalars(
+                select(AdvisorStrategy.status).where(
+                    AdvisorStrategy.name.like("summary-%")
+                )
+            )
+        )
+        assert statuses == {"proposed"}
     finally:
         async with factory() as session, session.begin():
             await _wipe_summaries(session)

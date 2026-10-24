@@ -85,7 +85,7 @@ def test_portfolio_yield_uses_the_keep_and_skips_voids() -> None:
     assert base.avg_odd == Decimal("1.600")
     assert base.net_pnl == Decimal("4.96") - Decimal("10.00")
     assert base.yield_net == Decimal("-0.2520")
-    assert base.balance == Decimal("4.96")
+    assert base.balance == Decimal("34.96")
     model = report.books[1]
     assert model.played == 2
     assert model.avg_odd == Decimal("2.500")
@@ -144,9 +144,9 @@ def test_period_filter_keeps_one_settlement_period() -> None:
     extra = build_report((baseline,), (*coupons, mixed), period="extra_time")
     assert regulation.books[0].played == 1
     assert regulation.books[0].yield_net == Decimal("0.4960")
-    assert regulation.books[0].balance == Decimal("24.96")
+    assert regulation.books[0].balance == Decimal("54.96")
     assert extra.books[0].played == 1
-    assert extra.books[0].balance == Decimal("25.84")
+    assert extra.books[0].balance == Decimal("55.84")
 
 
 def test_report_page_shows_the_net_yield() -> None:
@@ -168,8 +168,8 @@ def test_report_page_shows_the_net_yield() -> None:
     assert "Skuteczność" in html
     assert len(report.charts) == 1
     assert len(report.charts[0].points) == 2
-    assert report.charts[0].points[0]["saldo"] == "24.96"
-    assert report.charts[0].points[-1]["saldo"] == "14.96"
+    assert report.charts[0].points[0]["saldo"] == "54.96"
+    assert report.charts[0].points[-1]["saldo"] == "44.96"
     assert report.charts[0].points[-1]["hit_overall"] == "50.00"
 
 

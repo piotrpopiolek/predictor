@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from predictor.models.advisor import (
@@ -22,7 +22,6 @@ from predictor.services.advisor.llm.protocol import LlmCompletion
 from predictor.services.advisor.llm.schema import response_json_schema
 
 _ACTIVE = frozenset({"sandbox", "promoted"})
-_MAX = 4
 
 
 class StrategyProposal(BaseModel):
@@ -158,13 +157,9 @@ async def store_summary(
     version = await session.get(AdvisorStrategyVersion, job.version_id)
     if version is None:
         return False
-    active = await session.scalar(
-        select(func.count())
-        .select_from(AdvisorStrategy)
-        .where(AdvisorStrategy.kind == "llm")
-        .where(AdvisorStrategy.status.in_(_ACTIVE))
-    )
-    new_status = "sandbox" if int(active or 0) < _MAX else "proposed"
+    # A proposal stays proposed. Launching it would make another active
+    # sandbox, and the next summary would summarize that copy too.
+    new_status = "proposed"
     day = now.astimezone(UTC).date().isoformat()
     created = AdvisorStrategy(
         name=f"summary-{job.strategy_id}-{day}",
