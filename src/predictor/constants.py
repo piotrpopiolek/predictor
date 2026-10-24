@@ -1,6 +1,6 @@
 """Process-wide constants. The writer lock key is shared by worker and status."""
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 WRITER_LOCK_KEY = 739201
 ADVISOR_LOCK_KEY = 739202
@@ -9,12 +9,22 @@ ADVISOR_CYCLE_LOCK_KEY = 739203
 PAYOUT_KEEP = Decimal("0.880")
 # Virtual portfolio (FR-120). The balance is the sum of coupons, not a stored column.
 SANDBOX_BANKROLL = Decimal("50.00")
-SANDBOX_STAKE = Decimal("10.00")
+# Same stake rule as the operator ledger: 21.00, then +0.10 per settled win.
+START_STAKE = Decimal("21.00")
+STAKE_STEP = Decimal("0.10")
 LOCK_KEEPALIVES_IDLE_SECONDS = 20
 LOCK_KEEPALIVES_INTERVAL_SECONDS = 5
 LOCK_KEEPALIVES_COUNT = 3
 LOCK_APPLICATION_NAME = "predictor-worker-lock"
 ADVISOR_LOCK_APPLICATION_NAME = "predictor-advisor-lock"
+
+
+def stake_after_wins(wins: int) -> Decimal:
+    """Stake for the next bet. Losses and voids do not change it."""
+    return (START_STAKE + STAKE_STEP * wins).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+
 
 HTTP_CONNECT_TIMEOUT_SECONDS = 10.0
 HTTP_READ_TIMEOUT_SECONDS = 30.0

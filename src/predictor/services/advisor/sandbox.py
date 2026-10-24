@@ -1,8 +1,8 @@
 """Sandbox portfolios.
 
 The baseline bets every playable candidate as one Over N+0.5 leg. An LLM
-strategy bets only coupons from a validated reply. Both use the fixed
-stake and the same virtual bankroll. This module does not call a model.
+strategy bets only coupons from a validated reply. Both use the shared
+stake rule and the same virtual bankroll. This module does not call a model.
 """
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from predictor.constants import PAYOUT_KEEP, SANDBOX_BANKROLL, SANDBOX_STAKE
+from predictor.constants import PAYOUT_KEEP, SANDBOX_BANKROLL, stake_after_wins
 from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorLeg,
@@ -201,9 +201,10 @@ async def place_sandbox_coupons(
     if not slips:
         return SandboxPlacement((), False)
     balance = portfolio_balance(await _coupon_rows(session, strategy.id))
+    stake = stake_after_wins(await _won_count(session, strategy.id))
     placed: list[int] = []
     for slip in slips:
-        if balance < SANDBOX_STAKE:
+        if balance < stake:
             break
         coupon_id = await _insert_slip(
             session,
@@ -212,12 +213,13 @@ async def place_sandbox_coupons(
             strategy_version_id=version.id,
             cycle_id=cycle_id,
             placed_at=placed_at,
+            stake=stake,
         )
         if coupon_id is None:
             continue
         placed.append(coupon_id)
-        balance -= SANDBOX_STAKE
-    if balance < SANDBOX_STAKE:
+        balance -= stake
+    if balance < stake:
         strategy.status = "paused"
     return SandboxPlacement(tuple(placed), strategy.status == "paused")
 
@@ -231,6 +233,22 @@ def _snapshot(leg: CouponLeg) -> LegSnapshot:
         odd=leg.odd,
         n=leg.n,
     )
+
+
+async def _won_count(session: AsyncSession, strategy_id: int) -> int:
+    """Settled wins of this strategy. Open and lost coupons do not raise the stake."""
+    result = await session.scalar(
+        select(func.count())
+        .select_from(AdvisorCoupon)
+        .join(
+            AdvisorStrategyVersion,
+            AdvisorCoupon.strategy_version_id == AdvisorStrategyVersion.id,
+        )
+        .where(AdvisorStrategyVersion.strategy_id == strategy_id)
+        .where(AdvisorCoupon.mode == "sandbox")
+        .where(AdvisorCoupon.status == "won")
+    )
+    return int(result or 0)
 
 
 async def _coupon_rows(
@@ -265,6 +283,7 @@ async def _insert_slip(
     strategy_version_id: int,
     cycle_id: int | None,
     placed_at: datetime,
+    stake: Decimal,
 ) -> int | None:
     """None when this match is already on an open coupon of the strategy."""
     odd = combined_odd(tuple(leg.odd for leg in slip.legs))
@@ -275,7 +294,7 @@ async def _insert_slip(
                 strategy_version_id=strategy_version_id,
                 cycle_id=cycle_id,
                 status="open",
-                stake=SANDBOX_STAKE,
+                stake=stake,
                 combined_odd=odd,
                 proposed_combined_odd=odd,
                 payout_keep=PAYOUT_KEEP,

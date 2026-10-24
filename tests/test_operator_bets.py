@@ -9,16 +9,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from predictor.constants import STAKE_STEP, START_STAKE, stake_after_wins
 from predictor.services.live_board import LiveMatch
 from predictor.services.operator_bets import (
-    STAKE_STEP,
-    START_STAKE,
     BetError,
     build_history,
     current_stake,
     goal_counts_for_next_goal,
     has_counting_goal_since_snapshot,
-    money,
     parse_odd,
     place_bet,
     resolve_auto_outcome,
@@ -57,9 +55,9 @@ def _bet(
 def test_stake_starts_at_21_and_grows_only_on_wins() -> None:
     assert Decimal("21.00") == START_STAKE
     assert Decimal("0.10") == STAKE_STEP
-    assert money(START_STAKE + STAKE_STEP * 0) == Decimal("21.00")
-    assert money(START_STAKE + STAKE_STEP * 1) == Decimal("21.10")
-    assert money(START_STAKE + STAKE_STEP * 3) == Decimal("21.30")
+    assert stake_after_wins(0) == Decimal("21.00")
+    assert stake_after_wins(1) == Decimal("21.10")
+    assert stake_after_wins(3) == Decimal("21.30")
 
 
 def test_pnl_uses_088_payout_keep() -> None:

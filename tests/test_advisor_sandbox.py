@@ -10,7 +10,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import delete, func, select
 
-from predictor.constants import PAYOUT_KEEP, SANDBOX_BANKROLL, SANDBOX_STAKE
+from predictor.constants import PAYOUT_KEEP, SANDBOX_BANKROLL, stake_after_wins
 from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorCycle,
@@ -170,6 +170,49 @@ def test_portfolio_balance_counts_open_stakes_and_settled_results() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_win_raises_the_next_sandbox_stake_by_ten_groszy() -> None:
+    world = _World(0, 0, 880_481, 880_482, 880_483, (880_484, 880_485))
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    try:
+        async with factory() as session:
+            async with session.begin():
+                world = await _seed(
+                    session, world, name="advisor-sandbox-step", kind="baseline"
+                )
+                await _open_coupon(
+                    session,
+                    world,
+                    fixture_id=880_484,
+                    stake=stake_after_wins(0),
+                    odd=Decimal("1.700"),
+                )
+                coupon = await session.scalar(
+                    select(AdvisorCoupon).where(
+                        AdvisorCoupon.strategy_version_id == world.version_id
+                    )
+                )
+                assert coupon is not None
+                coupon.status = "won"
+            placed = await place_baseline(
+                session,
+                strategy_id=world.strategy_id,
+                strategy_version_id=world.version_id,
+                candidates=(_leg(880_485, "1.80"),),
+                clock=lambda: NOW,
+            )
+            assert len(placed.coupon_ids) == 1
+            async with session.begin():
+                nxt = await session.get(AdvisorCoupon, placed.coupon_ids[0])
+            assert nxt is not None
+            assert nxt.stake == stake_after_wins(1)
+    finally:
+        async with factory() as session, session.begin():
+            await _wipe(session, (world,))
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_baseline_bets_every_playable_candidate_without_a_model() -> None:
     low = _leg(880_404, "1.20")
     high = _leg(880_405, "1.70")
@@ -253,7 +296,7 @@ async def test_baseline_bets_every_playable_candidate_without_a_model() -> None:
             for coupon in coupons:
                 assert coupon.mode == "sandbox"
                 assert coupon.status == "open"
-                assert coupon.stake == SANDBOX_STAKE
+                assert coupon.stake == stake_after_wins(0)
                 assert coupon.payout_keep == PAYOUT_KEEP
                 assert coupon.placed_at == NOW
                 assert coupon.cycle_id is None
@@ -327,7 +370,7 @@ async def test_baseline_pauses_when_the_stake_does_not_fit() -> None:
                     session,
                     world,
                     fixture_id=880_414,
-                    stake=SANDBOX_BANKROLL - SANDBOX_STAKE,
+                    stake=SANDBOX_BANKROLL - stake_after_wins(0),
                     odd=Decimal("1.500"),
                 )
             placed = await place_baseline(
@@ -425,7 +468,7 @@ async def test_llm_coupon_is_written_with_the_decision() -> None:
             assert coupon.cycle_id == accepted.cycle_id
             assert coupon.mode == "sandbox"
             assert coupon.status == "open"
-            assert coupon.stake == SANDBOX_STAKE
+            assert coupon.stake == stake_after_wins(0)
             assert coupon.combined_odd == Decimal("2.380")
             assert coupon.proposed_combined_odd == Decimal("2.380")
             assert coupon.payout_keep == PAYOUT_KEEP
@@ -482,7 +525,7 @@ async def test_llm_places_until_the_stake_no_longer_fits() -> None:
                     session,
                     world,
                     fixture_id=880_444,
-                    stake=SANDBOX_BANKROLL - SANDBOX_STAKE,
+                    stake=SANDBOX_BANKROLL - stake_after_wins(0),
                     odd=Decimal("1.500"),
                 )
             outcome = await run_cycle(
@@ -603,7 +646,7 @@ async def test_an_open_match_does_not_block_a_new_one() -> None:
                     session,
                     baseline,
                     fixture_id=880_454,
-                    stake=SANDBOX_STAKE,
+                    stake=stake_after_wins(0),
                     odd=Decimal("1.500"),
                 )
             placed = await place_baseline(
@@ -635,7 +678,7 @@ async def test_an_open_match_does_not_block_a_new_one() -> None:
                     session,
                     llm,
                     fixture_id=880_464,
-                    stake=SANDBOX_STAKE,
+                    stake=stake_after_wins(0),
                     odd=Decimal("1.700"),
                 )
             combined = await run_cycle(

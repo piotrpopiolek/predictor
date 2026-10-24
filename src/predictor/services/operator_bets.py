@@ -15,15 +15,13 @@ from typing import Any, Literal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from predictor.constants import PAYOUT_KEEP
+from predictor.constants import PAYOUT_KEEP, stake_after_wins
 from predictor.models.children import FixtureEvent
 from predictor.models.fixtures import Fixture
 from predictor.models.operator_bets import OperatorBet
 from predictor.services.live_board import LiveMatch
 from predictor.services.odds_parse import parse_odd_value
 
-START_STAKE = Decimal("21.00")
-STAKE_STEP = Decimal("0.10")
 ODD_MIN = Decimal("1.200")
 ODD_MAX = Decimal("6.000")
 
@@ -83,7 +81,7 @@ async def count_wins(session: AsyncSession) -> int:
 
 async def current_stake(session: AsyncSession) -> Decimal:
     wins = await count_wins(session)
-    return money(START_STAKE + STAKE_STEP * wins)
+    return stake_after_wins(wins)
 
 
 def goal_counts_for_next_goal(minute: int | None, minute_extra: int | None) -> bool:
@@ -454,7 +452,7 @@ def build_history(bets: list[OperatorBet]) -> tuple[list[BetHistoryRow], BetMetr
         open_count=open_count,
         hit_rate=_hit_rate(wins, losses),
         saldo=saldo,
-        current_stake=money(START_STAKE + STAKE_STEP * wins),
+        current_stake=stake_after_wins(wins),
         avg_odd=None if n == 0 else odd_value(odd_sum / n),
         staked=staked,
     )
