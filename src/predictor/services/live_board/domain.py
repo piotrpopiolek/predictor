@@ -749,6 +749,21 @@ def match_favorite_side(match: LiveMatch) -> str | None:
     return None
 
 
+def favorite_outnumbered_after_red(match: LiveMatch) -> bool:
+    """Favorite got a red and has fewer players on the pitch than the opponent.
+
+    On-field XI is ``11 - reds`` per side. Equal reds keep the match eligible.
+    """
+    side = match_favorite_side(match)
+    if side is None:
+        return False
+    fav_reds = match.home_reds if side == "home" else match.away_reds
+    opp_reds = match.away_reds if side == "home" else match.home_reds
+    if fav_reds <= 0:
+        return False
+    return (11 - fav_reds) < (11 - opp_reds)
+
+
 def is_favorite_losing(match: LiveMatch) -> bool:
     if match.status_short in _PEN_STATUSES:
         return False
@@ -819,6 +834,8 @@ def is_tie_deficit(match: LiveMatch, first_leg: FirstLegScore | None) -> bool:
 def next_goal_reasons(
     match: LiveMatch, first_leg: FirstLegScore | None = None
 ) -> tuple[str, ...]:
+    if favorite_outnumbered_after_red(match):
+        return ()
     reasons: list[str] = []
     if is_favorite_losing(match):
         reasons.append("favorite_losing")

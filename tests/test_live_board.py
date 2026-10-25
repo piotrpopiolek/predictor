@@ -18,6 +18,7 @@ from predictor.services.live_board import (
     clock_label,
     clock_sort_key,
     event_kind,
+    favorite_outnumbered_after_red,
     favorite_side,
     format_odd,
     goal_clock_minute,
@@ -569,6 +570,20 @@ def test_select_next_goal_matches_or_logic() -> None:
     assert by_id[1] == ("favorite_losing",)
     assert 2 not in by_id
     assert by_id[3] == ("tie_deficit",)
+
+
+def test_favorite_red_and_fewer_players_drops_next_goal() -> None:
+    outnumbered = _fav_home(fixture_id=11, home_reds=1, away_reds=0)
+    equal_reds = _fav_home(fixture_id=12, home_reds=1, away_reds=1)
+    opponent_red = _fav_home(fixture_id=13, home_reds=0, away_reds=1)
+    assert favorite_outnumbered_after_red(outnumbered) is True
+    assert favorite_outnumbered_after_red(equal_reds) is False
+    assert favorite_outnumbered_after_red(opponent_red) is False
+    selected = select_next_goal_matches([outnumbered, equal_reds, opponent_red])
+    by_id = {match.fixture_id: reasons for match, reasons in selected}
+    assert 11 not in by_id
+    assert by_id[12] == ("favorite_losing",)
+    assert by_id[13] == ("favorite_losing",)
 
 
 def test_render_next_goal_nav_and_empty() -> None:

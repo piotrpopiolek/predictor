@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from predictor.client.errors import AuthBlockedError, SpendWindowClosed
 from predictor.constants import (
+    ENRICHABLE_FIXTURE_STATUSES,
     FINISHED_FIXTURE_STATUSES,
     LIVE_CONTEXT_DETAIL_CALLS,
     LIVE_CONTEXT_FINAL_CALLS,
@@ -80,21 +81,22 @@ def detail_refresh_due(
     """Events and match stats move during the game.
 
     A live match is fetched on sight, then every ``refresh_seconds``.
-    A finished match gets one closing fetch. Lineups, odds and season
-    tables stay on the one-shot path.
+    A finished match gets one closing fetch. A match that left the live
+    board before FT keeps the live cadence until the status is final.
     """
     if task_status == "in_progress":
         return False
     if task_status in {None, "pending", "retryable_error"}:
         return True
     stored = params or {}
-    closing = final or match_status in FINISHED_FIXTURE_STATUSES
-    if closing:
+    if match_status in FINISHED_FIXTURE_STATUSES:
         return not stored.get("final_detail_at")
     raw = stored.get("last_live_detail_at") or stored.get("ft_refresh_at")
     last = _parse_stamp(raw)
     if last is None:
         return True
+    # ``final`` means the fixture left live=all; keep the live cadence until FT.
+    _ = final
     return (now - last).total_seconds() >= refresh_seconds
 
 
@@ -531,8 +533,11 @@ class LiveContextIngest:
             return False
         ok = await self._enrichment._enrich_task(task_id, control=False)
         if ok:
-            finished = final or match_status in FINISHED_FIXTURE_STATUSES
-            await self._stamp_detail(fixture_id, finished=finished)
+            status = await self._fixture_status(fixture_id)
+            await self._stamp_detail(
+                fixture_id,
+                finished=status in ENRICHABLE_FIXTURE_STATUSES,
+            )
         return ok
 
     async def _refresh_detail_batch(
@@ -594,6 +599,13 @@ class LiveContextIngest:
             task.params = params
             task.updated_at = self._now()
 
+    async def _fixture_status(self, fixture_id: int) -> str | None:
+        async with self._session_factory() as session:
+            status = await session.scalar(
+                select(Fixture.status_short).where(Fixture.id == fixture_id)
+            )
+        return None if status is None else str(status)
+
     async def _load_scope(self, fixture_ids: list[int]) -> _Scope:
         scope = _Scope(fixture_ids=list(fixture_ids))
         if not fixture_ids:
@@ -649,7 +661,28 @@ class LiveContextIngest:
 
     async def _prune_finishing(self, finishing_ids: list[int]) -> list[int]:
         async with self._session_factory() as session, session.begin():
-            still = await unfinished_context_fixture_ids(session, finishing_ids)
+            open_context = set(
+                await unfinished_context_fixture_ids(session, finishing_ids)
+            )
+            rows = (
+                await session.execute(
+                    select(Fixture.id, Fixture.status_short).where(
+                        Fixture.id.in_(finishing_ids or [0])
+                    )
+                )
+            ).all()
+            by_id = {
+                int(fixture_id): None if status is None else str(status)
+                for fixture_id, status in rows
+            }
+            still: list[int] = []
+            for fixture_id in finishing_ids:
+                status = by_id.get(fixture_id)
+                if (
+                    fixture_id in open_context
+                    or status not in ENRICHABLE_FIXTURE_STATUSES
+                ):
+                    still.append(fixture_id)
             task = await get_or_create_live_fixtures_task(session)
             params = dict(task.params or {})
             params["finishing_ids"] = still

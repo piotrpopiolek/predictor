@@ -145,6 +145,27 @@ def test_detail_refresh_waits_five_minutes_then_closes_once() -> None:
         )
         is False
     )
+    # Left live=all while still 2H: keep polling even if a premature stamp exists.
+    assert (
+        detail_refresh_due(
+            task_status="complete",
+            params=closed,
+            match_status="2H",
+            now=now,
+            final=True,
+        )
+        is False
+    )
+    assert (
+        detail_refresh_due(
+            task_status="complete",
+            params=closed,
+            match_status="2H",
+            now=now + timedelta(minutes=5),
+            final=True,
+        )
+        is True
+    )
 
 
 def test_context_budget_stops_on_calls_time_and_quota() -> None:
