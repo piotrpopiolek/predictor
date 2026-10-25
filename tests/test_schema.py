@@ -97,11 +97,11 @@ def test_migrated_schema_has_domain_and_etl_tables() -> None:
     assert "alembic_version" in names
 
 
-def test_alembic_head_is_langfuse_outbox() -> None:
+def test_alembic_head_is_cycle_validation_status() -> None:
     with app_connect() as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     assert version is not None
-    assert version[0] == "0023_advisor_coupon_events"
+    assert version[0] == "0024_cycle_validation_status"
 
 
 def test_fixture_odds_live_pk_is_append_only() -> None:
