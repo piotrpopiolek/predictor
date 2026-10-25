@@ -602,3 +602,21 @@ def test_render_next_goal_nav_and_empty() -> None:
     assert "Wszystkie" in html
     assert "http-equiv" not in html
     assert "formOpen" in html
+
+
+def test_render_marks_llm_sandbox_coupon_in_the_corner() -> None:
+    on_coupon = _match(fixture_id=42)
+    plain = _match(fixture_id=43, home="Other")
+    html = render_live_html(
+        [on_coupon, plain],
+        generated_at=datetime(2026, 9, 13, 20, 0, tzinfo=UTC),
+        active_nav="next_goal",
+        llm_coupons={42},
+    )
+    assert 'data-fixture-id="42"' in html
+    assert 'class="llm-coupon"' in html
+    assert "Kupon LLM" in html
+    marked = html.split('data-fixture-id="42"', 1)[1].split("</article>", 1)[0]
+    plain_card = html.split('data-fixture-id="43"', 1)[1].split("</article>", 1)[0]
+    assert 'class="llm-coupon"' in marked
+    assert 'class="llm-coupon"' not in plain_card

@@ -22,7 +22,10 @@ from predictor.api.advisor_http import load_recommendation_html, mount_advisor_h
 from predictor.logutil import configure_logging, log_startup
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, SettingsError, load_settings
-from predictor.services.advisor.llm_note import load_llm_notes
+from predictor.services.advisor.llm_note import (
+    load_llm_coupon_fixtures,
+    load_llm_notes,
+)
 from predictor.services.advisor.report import load_yield_report, report_as_dict
 from predictor.services.health import (
     inspect_ready,
@@ -179,6 +182,9 @@ def create_app() -> FastAPI:
                 matches,
                 candidate_ids={item.fixture_id for item in matches},
             )
+            llm_coupons = await load_llm_coupon_fixtures(
+                engine, [item.fixture_id for item in matches]
+            )
         except Exception:
             raise HTTPException(
                 status_code=503, detail="postgres_unavailable"
@@ -202,6 +208,7 @@ def create_app() -> FastAPI:
             llm_notes={
                 fixture_id: render_llm_note(note) for fixture_id, note in notes.items()
             },
+            llm_coupons=llm_coupons,
         )
         return HTMLResponse(html)
 
@@ -217,6 +224,9 @@ def create_app() -> FastAPI:
                 engine,
                 matches,
                 candidate_ids={item.fixture_id for item in matches},
+            )
+            llm_coupons = await load_llm_coupon_fixtures(
+                engine, [item.fixture_id for item in matches]
             )
         except Exception:
             raise HTTPException(
@@ -236,6 +246,7 @@ def create_app() -> FastAPI:
                         else bet_as_dict(open_bets[match.fixture_id])
                     ),
                     "llm": notes[match.fixture_id].as_dict(),
+                    "llm_coupon": match.fixture_id in llm_coupons,
                 }
                 for match, reasons in selected
             ],

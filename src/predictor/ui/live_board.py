@@ -342,10 +342,27 @@ _LIVE_CSS = """
   }
   .league-logo.fallback { display: none; }
   .match {
+    position: relative;
     padding: 14px 16px 12px;
     border-bottom: 1px solid var(--line);
   }
   .match:last-child { border-bottom: 0; }
+  .llm-coupon {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    z-index: 1;
+    font-size: 0.68rem;
+    font-weight: 650;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--live);
+    border: 1px solid rgba(63, 185, 80, 0.45);
+    background: rgba(63, 185, 80, 0.12);
+    padding: 2px 7px;
+    border-radius: 4px;
+    pointer-events: none;
+  }
   .match-link {
     display: block;
     color: inherit;
@@ -597,6 +614,7 @@ def _match_card(
     show_kickoff: bool = False,
     operator_token: str | None = None,
     llm_html: str = "",
+    llm_coupon: bool = False,
 ) -> str:
     home = escape(match.home)
     away = escape(match.away)
@@ -629,8 +647,15 @@ def _match_card(
             current_stake=current_stake,
             operator_token=operator_token,
         )
+    coupon_mark = (
+        '<span class="llm-coupon" title="LLM zagrał — kupon piaskownicy">'
+        "Kupon LLM</span>"
+        if llm_coupon
+        else ""
+    )
     return f"""
 <article class="match" data-fixture-id="{match.fixture_id}">
+  {coupon_mark}
   <a class="match-link" href="/live/match/{match.fixture_id}">
   <div class="headline">
     <div class="team home">
@@ -788,12 +813,14 @@ def render_live_html(
     operator_token: str | None = None,
     recommendation_html: str = "",
     llm_notes: dict[int, str] | None = None,
+    llm_coupons: frozenset[int] | set[int] | None = None,
 ) -> str:
     ordered = sort_matches_by_clock(matches)
     count = len(ordered)
     allow_bet = active_nav == "next_goal"
     bets = open_bets or {}
     notes = llm_notes or {}
+    coupons = llm_coupons or frozenset()
     sections: list[str] = []
     for (country, league), rows in groupby(
         ordered, key=lambda item: (item.country, item.league)
@@ -808,6 +835,7 @@ def render_live_html(
                 current_stake=current_stake,
                 operator_token=operator_token,
                 llm_html=notes.get(item.fixture_id, ""),
+                llm_coupon=item.fixture_id in coupons,
             )
             for item in group
         )
