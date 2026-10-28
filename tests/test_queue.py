@@ -421,9 +421,7 @@ async def test_past_ns_enrichment_lists_stale_day_and_closes_after_repair() -> N
             days = await stale_fixture_days(session, NOW, limit=10)
             assert blocked is True
             assert kickoff.date() in days
-            closed = await close_stale_prematch_enrichment(
-                session, kickoff.date(), NOW
-            )
+            closed = await close_stale_prematch_enrichment(session, kickoff.date(), NOW)
             assert closed == 1
             task = await session.scalar(
                 select(EtlTask)
