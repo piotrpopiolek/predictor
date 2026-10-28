@@ -668,7 +668,8 @@ class Scheduler:
             fetched = snapshot.fetched_at
             if fetched is None:
                 return True
-            return (now - _as_utc(fetched)).total_seconds() >= self._status_refresh_seconds
+            age = (now - _as_utc(fetched)).total_seconds()
+            return age >= self._status_refresh_seconds
         fetched = snapshot.fetched_at
         if fetched is None:
             return True

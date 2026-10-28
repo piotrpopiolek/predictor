@@ -23,8 +23,8 @@ from predictor.logutil import configure_logging, log_startup
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, SettingsError, load_settings
 from predictor.services.advisor.llm_note import (
-    load_sandbox_coupon_labels,
     load_llm_notes,
+    load_sandbox_coupon_labels,
 )
 from predictor.services.advisor.report import load_yield_report, report_as_dict
 from predictor.services.health import (
