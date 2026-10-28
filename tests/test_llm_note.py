@@ -93,6 +93,40 @@ def test_a_fresh_second_half_line_has_no_llm_gaps() -> None:
     assert _gaps(_match(), (_row(),)) == ()
 
 
+def test_extra_time_uses_et_goals_and_et_market() -> None:
+    from predictor.services.advisor.domain import EXTRA_TIME_OVER_UNDER
+
+    et = _match(
+        status_short="ET",
+        elapsed=105,
+        goals_home=1,
+        goals_away=0,
+        extratime_home=1,
+        extratime_away=0,
+    )
+    wrong_market = _row(handicap="1.5")
+    assert LlmGap.NO_LINE in _gaps(et, (wrong_market,))
+    priced = OverUnderRow(
+        fixture_id=1,
+        label="Over",
+        handicap="1.5",
+        odd=Decimal("1.500"),
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=20),
+        market=EXTRA_TIME_OVER_UNDER,
+    )
+    assert _gaps(et, (priced,)) == ()
+    late = _match(
+        status_short="ET",
+        elapsed=111,
+        goals_home=1,
+        goals_away=0,
+        extratime_home=1,
+        extratime_away=0,
+    )
+    assert LlmGap.MINUTE in _gaps(late, (priced,))
+
+
 def test_missing_gates_are_listed_together() -> None:
     gaps = llm_prompt_gaps(
         _match(status_short="1H", elapsed=30),
@@ -122,7 +156,7 @@ def test_note_renders_gaps_or_the_decision() -> None:
         )
     )
     assert "Do LLM brakuje" in blocked
-    assert "status inny niż 2H" in blocked
+    assert "status inny niż 2H/ET/BT" in blocked
     assert "brak Over 1.5" in blocked
     ready = render_llm_note(
         LlmNote(

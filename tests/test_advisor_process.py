@@ -209,6 +209,7 @@ def test_playable_candidate_uses_over_n_plus_half() -> None:
 
 
 def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
+    from predictor.services.advisor.domain import EXTRA_TIME_OVER_UNDER
     from predictor.services.advisor.sql import OverUnderRow
 
     row = OverUnderRow(
@@ -231,6 +232,38 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
         )
         is not None
     )
+    et = MatchSnapshot(
+        fixture_id=7,
+        status_short="ET",
+        elapsed=105,
+        extra=None,
+        goals_home=1,
+        goals_away=0,
+        extratime_home=1,
+        extratime_away=0,
+        rule="favorite_losing",
+    )
+    et_row = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="1.5",
+        odd=MIN_ANALYSIS_ODD,
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=10),
+        market=EXTRA_TIME_OVER_UNDER,
+    )
+    et_candidate = playable_candidate(
+        et,
+        (et_row,),
+        limits=_limits(),
+        now=NOW,
+        open_fixtures=frozenset(),
+        rejected=frozenset(),
+        for_llm=True,
+    )
+    assert et_candidate is not None
+    assert et_candidate.period == "extra_time"
+    assert et_candidate.n == 1
     first_half = MatchSnapshot(
         fixture_id=7,
         status_short="1H",
@@ -430,7 +463,7 @@ def test_cycle_prompt_asks_for_multi_leg_coupons_to_min_combined() -> None:
     assert "matching the response schema" in prompt
     assert ">= 1.600" in prompt
     assert "odd >= 1.300" in prompt
-    assert "already 2H" in prompt
+    assert "already 2H or extra time" in prompt
     assert "300 seconds" in prompt
     assert "candidate.detail is compact match context" in prompt
 

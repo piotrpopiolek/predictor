@@ -8,7 +8,7 @@ from datetime import datetime
 
 from predictor.services.advisor.cycle import CycleCandidate
 from predictor.services.advisor.domain import (
-    LLM_STATUS,
+    LLM_STATUSES,
     MIN_ANALYSIS_ODD,
     CandidateView,
     LineQuote,
@@ -16,6 +16,7 @@ from predictor.services.advisor.domain import (
     PlayLimits,
     assess,
     over_line_matches,
+    over_under_market,
     period_for,
 )
 from predictor.services.advisor.sql import OverUnderRow
@@ -66,15 +67,23 @@ def playable_candidate(
 ) -> CycleCandidate | None:
     """Build a priced Over N+0.5 leg, or None when the match is not playable.
 
-    ``for_llm`` adds the prompt gate: status 2H, minute within the strategy
-    regulation limit, open Over N+0.5 (N = current goals), odd at least
+    ``for_llm`` adds the prompt gate: status 2H/ET/BT, minute within the
+    strategy period limit, open Over N+0.5 for that period, odd at least
     ``MIN_ANALYSIS_ODD``, snapshot within ``limits.max_quote_age``.
     """
-    if for_llm and match.status_short != LLM_STATUS:
+    if for_llm and match.status_short not in LLM_STATUSES:
         return None
     period = period_for(match.status_short)
-    quote = _quote(rows, match) if period is Period.REGULATION else None
-    known = period is Period.REGULATION
+    if period is None:
+        return None
+    quote = quote_for_period(
+        rows,
+        period=period,
+        goals_home=match.goals_home,
+        goals_away=match.goals_away,
+        extratime_home=match.extratime_home,
+        extratime_away=match.extratime_away,
+    )
     view = CandidateView(
         fixture_id=match.fixture_id,
         status_short=match.status_short,
@@ -85,7 +94,7 @@ def playable_candidate(
         extratime_home=match.extratime_home,
         extratime_away=match.extratime_away,
         quote=quote,
-        market_known=known,
+        market_known=over_under_market(period) is not None,
         in_open_coupon=match.fixture_id in open_fixtures,
         state_rejected=False,
     )
@@ -121,10 +130,29 @@ def playable_candidate(
     )
 
 
-def _quote(rows: Sequence[OverUnderRow], match: MatchSnapshot) -> LineQuote | None:
-    goals = (match.goals_home or 0) + (match.goals_away or 0)
+def quote_for_period(
+    rows: Sequence[OverUnderRow],
+    *,
+    period: Period,
+    goals_home: int | None,
+    goals_away: int | None,
+    extratime_home: int | None,
+    extratime_away: int | None,
+) -> LineQuote | None:
+    """Over N+0.5 for the settlement period's own market."""
+    market = over_under_market(period)
+    if market is None:
+        return None
+    if period is Period.EXTRA_TIME:
+        n = (extratime_home or 0) + (extratime_away or 0)
+    else:
+        if goals_home is None or goals_away is None:
+            return None
+        n = goals_home + goals_away
     for row in rows:
-        if not over_line_matches(row.label, row.handicap, goals):
+        if row.market != market:
+            continue
+        if not over_line_matches(row.label, row.handicap, n):
             continue
         return LineQuote(
             odd=row.odd, tradable=row.tradable, captured_at=row.captured_at

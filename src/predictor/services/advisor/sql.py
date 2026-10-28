@@ -19,7 +19,10 @@ from predictor.models.advisor import (
 )
 from predictor.models.catalog import OddsLiveBet
 from predictor.models.odds import FixtureOddsLive
-from predictor.services.advisor.domain import REGULATION_OVER_UNDER
+from predictor.services.advisor.domain import (
+    EXTRA_TIME_OVER_UNDER,
+    REGULATION_OVER_UNDER,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,37 +33,51 @@ class OverUnderRow:
     odd: Decimal
     tradable: bool
     captured_at: datetime
+    market: str = REGULATION_OVER_UNDER
+
+
+_OVER_UNDER_MARKETS = frozenset(
+    name
+    for name in (REGULATION_OVER_UNDER, EXTRA_TIME_OVER_UNDER)
+    if name is not None
+)
 
 
 async def latest_over_under(
     session: AsyncSession, fixture_ids: Sequence[int]
 ) -> dict[int, tuple[OverUnderRow, ...]]:
-    """Rows from the newest Over/Under Line snapshot of each fixture."""
+    """Newest regulation and extra-time Over/Under snapshots per fixture."""
     if not fixture_ids:
         return {}
-    bet_ids = list(
-        await session.scalars(
-            select(OddsLiveBet.id).where(
-                func.lower(OddsLiveBet.name) == REGULATION_OVER_UNDER
+    bets = (
+        await session.execute(
+            select(OddsLiveBet.id, OddsLiveBet.name).where(
+                func.lower(OddsLiveBet.name).in_(_OVER_UNDER_MARKETS)
             )
         )
-    )
-    if not bet_ids:
+    ).all()
+    if not bets:
         return {}
+    market_by_bet = {
+        int(bet_id): str(name).casefold() for bet_id, name in bets
+    }
+    bet_ids = list(market_by_bet)
     latest = (
         select(
             FixtureOddsLive.fixture_id,
+            FixtureOddsLive.bet_id,
             func.max(FixtureOddsLive.captured_at).label("captured_at"),
         )
         .where(FixtureOddsLive.fixture_id.in_(fixture_ids))
         .where(FixtureOddsLive.bet_id.in_(bet_ids))
-        .group_by(FixtureOddsLive.fixture_id)
+        .group_by(FixtureOddsLive.fixture_id, FixtureOddsLive.bet_id)
         .subquery()
     )
     rows = (
         await session.execute(
             select(
                 FixtureOddsLive.fixture_id,
+                FixtureOddsLive.bet_id,
                 FixtureOddsLive.value_label,
                 FixtureOddsLive.handicap,
                 FixtureOddsLive.odd,
@@ -73,6 +90,7 @@ async def latest_over_under(
             .join(
                 latest,
                 (FixtureOddsLive.fixture_id == latest.c.fixture_id)
+                & (FixtureOddsLive.bet_id == latest.c.bet_id)
                 & (FixtureOddsLive.captured_at == latest.c.captured_at),
             )
             .where(FixtureOddsLive.bet_id.in_(bet_ids))
@@ -81,6 +99,9 @@ async def latest_over_under(
     grouped: dict[int, list[OverUnderRow]] = {}
     for row in rows:
         fixture_id = int(row.fixture_id)
+        market = market_by_bet.get(int(row.bet_id))
+        if market is None:
+            continue
         grouped.setdefault(fixture_id, []).append(
             OverUnderRow(
                 fixture_id=fixture_id,
@@ -92,6 +113,7 @@ async def latest_over_under(
                     for flag in (row.suspended, row.stopped, row.blocked, row.finished)
                 ),
                 captured_at=row.captured_at,
+                market=market,
             )
         )
     return {fixture_id: tuple(items) for fixture_id, items in grouped.items()}

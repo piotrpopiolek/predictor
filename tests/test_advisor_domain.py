@@ -91,9 +91,9 @@ def test_period_for_splits_regulation_extra_time_and_the_rest() -> None:
     assert period_for("SUSP") is None
 
 
-def test_extra_time_market_is_unknown_and_not_the_regulation_line() -> None:
+def test_extra_time_market_is_named_and_not_the_regulation_line() -> None:
     assert over_under_market(Period.REGULATION) == "over/under line"
-    assert over_under_market(Period.EXTRA_TIME) is None
+    assert over_under_market(Period.EXTRA_TIME) == "over/under extra time"
 
 
 def test_match_minute_uses_the_api_clock_in_extra_time() -> None:

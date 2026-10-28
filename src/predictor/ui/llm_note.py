@@ -8,7 +8,7 @@ from predictor.services.advisor.llm_note import LlmGap, LlmNote
 
 _GAPS = {
     LlmGap.NOT_CANDIDATE: "faworyt nie przegrywa i nie odrabia dwumeczu",
-    LlmGap.NOT_SECOND_HALF: "status inny niż 2H",
+    LlmGap.NOT_SECOND_HALF: "status inny niż 2H/ET/BT",
     LlmGap.MINUTE: "minuta powyżej limitu",
     LlmGap.NO_LINE: "brak Over N+0.5",
     LlmGap.SUSPENDED: "Over N+0.5 zawieszony",

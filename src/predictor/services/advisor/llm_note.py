@@ -15,16 +15,16 @@ from predictor.models.advisor import (
     AdvisorStrategy,
     AdvisorStrategyVersion,
 )
-from predictor.services.advisor.candidates import MatchSnapshot
+from predictor.services.advisor.candidates import MatchSnapshot, quote_for_period
 from predictor.services.advisor.domain import (
-    LLM_STATUS,
+    LLM_STATUSES,
     MIN_ANALYSIS_ODD,
     QUOTE_MAX_AGE,
     LineQuote,
+    Period,
     PlayLimits,
     match_minute,
     over_half_line,
-    over_line_matches,
     period_for,
 )
 from predictor.services.advisor.sql import (
@@ -107,13 +107,19 @@ def llm_prompt_gaps(
         gaps.append(LlmGap.NOT_CANDIDATE)
     if match.status_short == "P":
         gaps.append(LlmGap.PENALTIES)
-    if match.status_short != LLM_STATUS:
-        gaps.append(LlmGap.NOT_SECOND_HALF)
+    period = period_for(match.status_short)
+    if match.status_short not in LLM_STATUSES:
+        if match.status_short != "P":
+            gaps.append(LlmGap.NOT_SECOND_HALF)
     else:
         minute = match_minute(match.status_short, match.elapsed, match.extra)
-        if minute is None or minute > limits.max_minute_regulation:
+        limit = (
+            limits.max_minute_extra
+            if period is Period.EXTRA_TIME
+            else limits.max_minute_regulation
+        )
+        if minute is None or minute > limit:
             gaps.append(LlmGap.MINUTE)
-    period = period_for(match.status_short)
     if (
         period is None
         and LlmGap.PENALTIES not in gaps
@@ -121,8 +127,15 @@ def llm_prompt_gaps(
     ):
         gaps.append(LlmGap.NOT_IN_PLAY)
     quote = None
-    if match.goals_home is not None and match.goals_away is not None:
-        quote = _over_quote(rows, match)
+    if period is not None:
+        quote = quote_for_period(
+            rows,
+            period=period,
+            goals_home=match.goals_home,
+            goals_away=match.goals_away,
+            extratime_home=match.extratime_home,
+            extratime_away=match.extratime_away,
+        )
     if quote is None or quote.odd is None or quote.odd <= 1:
         gaps.append(LlmGap.NO_LINE)
     else:
@@ -147,17 +160,6 @@ def _quote_is_stale(quote: LineQuote, limits: PlayLimits, now: datetime) -> bool
     return age.total_seconds() < 0 or age > limits.max_quote_age
 
 
-def _over_quote(rows: Sequence[OverUnderRow], match: MatchSnapshot) -> LineQuote | None:
-    goals = (match.goals_home or 0) + (match.goals_away or 0)
-    for row in rows:
-        if not over_line_matches(row.label, row.handicap, goals):
-            continue
-        return LineQuote(
-            odd=row.odd, tradable=row.tradable, captured_at=row.captured_at
-        )
-    return None
-
-
 def _state_rejected(
     match: MatchSnapshot,
     rejected: frozenset[tuple[int, str, int, int, int]],
@@ -167,12 +169,20 @@ def _state_rejected(
     period = period_for(match.status_short)
     if period is None:
         return False
-    n = match.goals_home + match.goals_away
+    if period is Period.EXTRA_TIME:
+        n = (match.extratime_home or 0) + (match.extratime_away or 0)
+    else:
+        n = match.goals_home + match.goals_away
     key = (match.fixture_id, period.value, match.goals_home, match.goals_away, n + 1)
     return key in rejected
 
 
 def _line_label(match: LiveMatch) -> str | None:
+    period = period_for(match.status_short)
+    if period is Period.EXTRA_TIME:
+        return str(
+            over_half_line((match.et_home or 0) + (match.et_away or 0))
+        )
     if match.goals_home is None or match.goals_away is None:
         return None
     return str(over_half_line(match.goals_home + match.goals_away))
@@ -263,9 +273,15 @@ async def _notes(
             open_fixtures=opened,
             rejected=rejected,
         )
+        period = period_for(match.status_short)
+        shown_limit = (
+            limits.max_minute_extra
+            if period is Period.EXTRA_TIME
+            else minute_limit
+        )
         notes[match.fixture_id] = LlmNote(
             gaps=gaps,
-            minute_limit=minute_limit,
+            minute_limit=shown_limit,
             line=_line_label(match),
             decision=_decision_note(decisions.get(match.fixture_id), match),
             strategy_paused=paused,
