@@ -149,6 +149,25 @@ def test_status_report_does_not_settle() -> None:
     assert "settle_finished" not in text
 
 
+def test_played_coupons_endpoint_is_read_only() -> None:
+    http = Path("src/predictor/api/advisor_http.py").read_text(encoding="utf-8")
+    played_path = Path("src/predictor/services/advisor/played.py")
+    played = played_path.read_text(encoding="utf-8")
+    assert '/advisor/coupons"' in http
+    assert "/advisor/coupons.json" in http
+    assert http.index('@app.get("/advisor/coupons"') < http.index("@app.post")
+    for banned in (
+        "session.add",
+        "session.delete",
+        "session.execute(delete",
+        "session.execute(update",
+        "session.execute(insert",
+        "settle_finished",
+        ".commit(",
+    ):
+        assert banned not in played
+
+
 def test_advisor_browse_is_read_only() -> None:
     browse_path = Path("src/predictor/services/advisor/browse.py")
     browse = browse_path.read_text(encoding="utf-8")

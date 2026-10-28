@@ -25,6 +25,12 @@ from predictor.services.advisor.browse import (
     list_rows,
     table_counts,
 )
+from predictor.services.advisor.played import (
+    load_played_coupons,
+    parse_played_kind,
+    parse_played_limit,
+    played_coupons_as_dict,
+)
 from predictor.services.advisor.recommend_ops import (
     ActionError,
     accept_coupon,
@@ -38,6 +44,7 @@ from predictor.services.advisor.recommend_ops import (
     set_strategy_status,
 )
 from predictor.services.metrics import mutation_token_ok
+from predictor.ui.advisor import render_played_coupons
 from predictor.ui.advisor_browse import (
     render_browse_index,
     render_browse_list,
@@ -114,6 +121,16 @@ def mount_advisor_http(app: FastAPI, token: str) -> None:
     def _auth(authorization: str | None, form_token: str | None) -> None:
         if not mutation_token_ok(authorization, form_token, token):
             raise HTTPException(status_code=401, detail="unauthorized")
+
+    @app.get("/advisor/coupons")
+    async def played_coupons(kind: str = "all", limit: int = 50) -> HTMLResponse:
+        coupons = await _played(app, kind=kind, limit=limit)
+        return HTMLResponse(render_played_coupons(coupons, kind=kind, limit=limit))
+
+    @app.get("/advisor/coupons.json")
+    async def played_coupons_json(kind: str = "all", limit: int = 50) -> dict[str, Any]:
+        coupons = await _played(app, kind=kind, limit=limit)
+        return played_coupons_as_dict(coupons)
 
     @app.get("/advisor/browse")
     async def browse_index() -> HTMLResponse:
@@ -445,6 +462,23 @@ def _odds(raw: str) -> dict[int, Decimal]:
 
 def _ids(raw: str) -> set[int]:
     return {int(part) for part in raw.split(",") if part.strip()}
+
+
+async def _played(app: FastAPI, *, kind: str, limit: int) -> tuple[Any, ...]:
+    try:
+        parsed_kind = parse_played_kind(kind)
+        parsed_limit = parse_played_limit(limit)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid_parameter") from None
+    engine = cast(AsyncEngine, app.state.engine)
+    factory = make_session_factory(engine)
+    try:
+        async with factory() as session:
+            return await load_played_coupons(
+                session, kind=parsed_kind, limit=parsed_limit
+            )
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
 
 
 async def _act(app: FastAPI, call: Callable[[AsyncSession], Awaitable[object]]) -> None:

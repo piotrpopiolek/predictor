@@ -1,17 +1,28 @@
-"""HTML for the sandbox yield report. Read-only."""
+"""HTML for the sandbox yield report and played coupons. Read-only."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import ROUND_HALF_UP, Decimal
 from html import escape
 
+from predictor.services.advisor.domain import LiveProgress
+from predictor.services.advisor.played import PlayedCouponView, PlayedLegView
 from predictor.services.advisor.report import (
     BookLine,
     PairYield,
     StrategyChart,
     YieldReport,
 )
-from predictor.ui.live_board import render_bets_hit_chart, render_bets_saldo_chart
+from predictor.services.live_board import REFRESH_SECONDS
+from predictor.ui.live_board import (
+    _LIVE_CSS,
+    _REFRESH_SCRIPT,
+    _img,
+    _live_nav,
+    render_bets_hit_chart,
+    render_bets_saldo_chart,
+)
 
 _PERIODS = (
     ("all", "Wszystko"),
@@ -19,6 +30,79 @@ _PERIODS = (
     ("extra_time", "Dogrywka"),
 )
 
+_KIND_FILTERS = (
+    ("all", "Wszystkie"),
+    ("baseline", "Baseline"),
+    ("llm", "LLM"),
+)
+
+_PROGRESS_LABEL = {
+    LiveProgress.HIT: "Spełniony",
+    LiveProgress.OPEN: "Jeszcze nie",
+    LiveProgress.LOST: "Przegrany",
+    LiveProgress.VOID: "Nieważny",
+    LiveProgress.UNKNOWN: "Nieznany",
+}
+
+# Tiny extras on top of live-board CSS — same tokens, same card chrome.
+_COUPONS_CSS = """
+  .coupon-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 16px;
+  }
+  .coupon-filters a {
+    color: var(--muted);
+    text-decoration: none;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    font-size: 0.85rem;
+  }
+  .coupon-filters a:hover { color: var(--text); }
+  .coupon-filters a.active {
+    color: var(--text);
+    border-color: var(--line);
+    background: var(--card);
+  }
+  .league h2 {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+  }
+  .league h2 .coupon-sub {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 500;
+    color: var(--muted);
+  }
+  .league h2 .sandbox-coupon {
+    position: static;
+    margin-left: auto;
+  }
+  .sandbox-coupon.hit {
+    color: var(--live);
+    border-color: rgba(63, 185, 80, 0.45);
+    background: rgba(63, 185, 80, 0.12);
+  }
+  .sandbox-coupon.open {
+    color: var(--text);
+    border-color: var(--line);
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .sandbox-coupon.lost,
+  .sandbox-coupon.void,
+  .sandbox-coupon.unknown {
+    color: var(--red);
+    border-color: rgba(248, 81, 73, 0.45);
+    background: rgba(248, 81, 73, 0.1);
+  }
+  .entry-score {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+"""
 _CHART_CSS = """
   :root {
     --card: #161b22;
@@ -118,6 +202,7 @@ def render_yield_report(report: YieldReport) -> str:
 <body>
 <main>
   <p><a href="/live/next-goal">Następny gol</a>
+    · <a href="/advisor/coupons">Kupony</a>
     · <a href="/advisor/recommendations">Rekomendacje</a>
     · <a href="/advisor/strategies">Strategie</a>
     · <a href="/advisor/browse">Tabele</a></p>
@@ -157,6 +242,140 @@ def render_yield_report(report: YieldReport) -> str:
 </main>
 </body>
 </html>
+"""
+
+
+def render_played_coupons(
+    coupons: Sequence[PlayedCouponView],
+    *,
+    kind: str,
+    limit: int = 50,
+) -> str:
+    """Live list shaped like /live/next-goal: league sections + match cards."""
+    body = "".join(_coupon_section(item) for item in coupons)
+    if not body:
+        body = '<p class="empty">Brak zagranych kuponów.</p>'
+    count = len(coupons)
+    noun = "kupon" if count == 1 else "kupony" if count < 5 else "kuponów"
+    return f"""<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zagrane kupony</title>
+<style>
+{_LIVE_CSS}
+{_COUPONS_CSS}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot" aria-hidden="true"></span> Zagrane kupony</h1>
+  <div class="header-meta">
+    {_live_nav("coupons")}
+    <p class="sub">{count} {noun} · odświeżanie co {REFRESH_SECONDS} s ·
+      podgląd Over N+0.5, bez rozliczenia</p>
+  </div>
+</header>
+<main>
+  <nav class="coupon-filters" aria-label="Filtr">{_kind_nav(kind, limit)}</nav>
+  {body}
+</main>
+{_REFRESH_SCRIPT}
+</body>
+</html>
+"""
+
+
+def _kind_nav(active: str, limit: int) -> str:
+    links: list[str] = []
+    for key, label in _KIND_FILTERS:
+        query: list[str] = []
+        if key != "all":
+            query.append(f"kind={key}")
+        if limit != 50:
+            query.append(f"limit={int(limit)}")
+        href = "/advisor/coupons"
+        if query:
+            href = f"{href}?{'&'.join(query)}"
+        cls = ' class="active"' if key == active else ""
+        links.append(f'<a href="{href}"{cls}>{escape(label)}</a>')
+    return "".join(links)
+
+
+def _coupon_section(coupon: PlayedCouponView) -> str:
+    when = "—" if coupon.placed_at is None else coupon.placed_at.strftime("%H:%M UTC")
+    odd = _odd(coupon.combined_odd)
+    mode = "piaskownica" if coupon.mode == "sandbox" else "rekomendacja"
+    title = _section_title(coupon)
+    progress = _PROGRESS_LABEL[coupon.progress]
+    legs = "".join(_leg_match(leg) for leg in coupon.legs)
+    return f"""
+<section class="league">
+  <h2>
+    <span>{escape(title)}</span>
+    <span class="coupon-sub">
+      · {mode} · {escape(coupon.status)} · stawka {_money(coupon.stake)}
+      · kurs {odd} · {escape(when)}
+    </span>
+    <span class="sandbox-coupon {coupon.progress.value}">{escape(progress)}</span>
+  </h2>
+  {legs}
+</section>
+"""
+
+
+def _section_title(coupon: PlayedCouponView) -> str:
+    if len(coupon.legs) == 1:
+        leg = coupon.legs[0]
+        place = " · ".join(part for part in (leg.country, leg.league) if part)
+        if place:
+            return place.upper()
+    return coupon.strategy.upper()
+
+
+def _leg_match(leg: PlayedLegView) -> str:
+    home = escape(leg.home)
+    away = escape(leg.away)
+    score = "–" if leg.score_now is None else f"{leg.score_now[0]}–{leg.score_now[1]}"
+    score_bet = f"{leg.score_at_bet[0]}–{leg.score_at_bet[1]}"
+    status = escape(leg.status_short or "—")
+    clock = "—" if leg.elapsed is None else f"{leg.elapsed}'"
+    period = "regulamin" if leg.period == "regulation" else "dogrywka"
+    place = " · ".join(part for part in (leg.country, leg.league) if part) or "—"
+    return f"""
+<article class="match" data-fixture-id="{leg.fixture_id}">
+  <a class="match-link" href="/live/match/{leg.fixture_id}">
+  <div class="headline">
+    <div class="team home">
+      {_img(leg.home_logo, leg.home)}
+      <div class="team-text">
+        <span class="name">{home}</span>
+        <span class="team-odd entry-score">wejście {escape(score_bet)}</span>
+      </div>
+    </div>
+    <div class="scoreblock">
+      <div class="score">{escape(score)}</div>
+      <div class="meta">
+        <span class="clock">{escape(clock)}</span>
+        <span class="status">{status}</span>
+      </div>
+    </div>
+    <div class="team away">
+      {_img(leg.away_logo, leg.away)}
+      <div class="team-text">
+        <span class="name">{away}</span>
+      </div>
+    </div>
+  </div>
+  <p class="facts">{escape(place)} · {escape(period)}</p>
+  <p class="next-goal">
+    <span class="ng-label">Over {leg.n}+0.5</span>
+    <span class="ng-odd">{_odd(leg.odd)}</span>
+    <span class="ng-team">przy wejściu {escape(score_bet)}</span>
+  </p>
+  </a>
+</article>
 """
 
 

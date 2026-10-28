@@ -134,6 +134,7 @@ def _page(title: str, body: str) -> str:
 </head>
 <body><main>
   <p><a href="/advisor/report">Raport</a>
+    · <a href="/advisor/coupons">Kupony</a>
     · <a href="/advisor/recommendations">Rekomendacje</a>
     · <a href="/advisor/strategies">Strategie</a>
     · <a href="/advisor/browse">Tabele</a></p>

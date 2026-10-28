@@ -12,6 +12,8 @@ from predictor.services.advisor.domain import (
     CandidateView,
     FinalScore,
     LineQuote,
+    LiveProgress,
+    LiveScore,
     Period,
     PlayLimits,
     Settlement,
@@ -20,9 +22,12 @@ from predictor.services.advisor.domain import (
     assess,
     combined_odd,
     coupon_within_limits,
+    live_coupon_progress,
+    live_leg_progress,
     match_minute,
     over_under_market,
     period_for,
+    period_score_now,
     settle_coupon,
     settle_leg,
     settled_pnl,
@@ -305,3 +310,148 @@ def test_same_final_score_settles_the_same_way_twice() -> None:
     assert settle_leg(Period.REGULATION, 1, score) == settle_leg(
         Period.REGULATION, 1, score
     )
+
+
+def _live(
+    status_short: str = "2H",
+    goals_home: int | None = 1,
+    goals_away: int | None = 1,
+    fulltime_home: int | None = None,
+    fulltime_away: int | None = None,
+    extratime_home: int | None = None,
+    extratime_away: int | None = None,
+) -> LiveScore:
+    return LiveScore(
+        status_short=status_short,
+        goals_home=goals_home,
+        goals_away=goals_away,
+        fulltime_home=fulltime_home,
+        fulltime_away=fulltime_away,
+        extratime_home=extratime_home,
+        extratime_away=extratime_away,
+    )
+
+
+def test_live_leg_goal_in_second_half_hits_before_settlement() -> None:
+    hit = _live(goals_home=1, goals_away=1)
+    assert live_leg_progress(Period.REGULATION, 1, hit) is LiveProgress.HIT
+    assert live_leg_progress(Period.REGULATION, 2, hit) is LiveProgress.OPEN
+
+
+def test_live_leg_extra_time_goal_does_not_hit_regulation() -> None:
+    # Full time stayed 0-1; the equaliser was only in extra time.
+    score = _live(
+        status_short="ET",
+        goals_home=1,
+        goals_away=1,
+        fulltime_home=0,
+        fulltime_away=1,
+        extratime_home=1,
+        extratime_away=0,
+    )
+    assert live_leg_progress(Period.REGULATION, 1, score) is LiveProgress.LOST
+    assert live_leg_progress(Period.EXTRA_TIME, 0, score) is LiveProgress.HIT
+
+
+def test_live_leg_extra_time_counts_own_goals_from_live_minus_fulltime() -> None:
+    score = _live(
+        status_short="ET",
+        goals_home=2,
+        goals_away=1,
+        fulltime_home=1,
+        fulltime_away=1,
+        extratime_home=None,
+        extratime_away=None,
+    )
+    assert live_leg_progress(Period.EXTRA_TIME, 0, score) is LiveProgress.HIT
+    assert live_leg_progress(Period.EXTRA_TIME, 1, score) is LiveProgress.OPEN
+
+
+def test_live_leg_finished_without_goal_is_lost() -> None:
+    score = _live(
+        status_short="FT",
+        goals_home=1,
+        goals_away=0,
+        fulltime_home=1,
+        fulltime_away=0,
+    )
+    assert live_leg_progress(Period.REGULATION, 1, score) is LiveProgress.LOST
+
+
+def test_live_leg_irregular_status_is_void() -> None:
+    abd = _live(status_short="ABD")
+    assert live_leg_progress(Period.REGULATION, 1, abd) is LiveProgress.VOID
+    assert live_coupon_progress((LiveProgress.HIT, LiveProgress.VOID)) is (
+        LiveProgress.HIT
+    )
+    assert live_coupon_progress((LiveProgress.LOST, LiveProgress.OPEN)) is (
+        LiveProgress.LOST
+    )
+    assert live_coupon_progress((LiveProgress.VOID, LiveProgress.VOID)) is (
+        LiveProgress.VOID
+    )
+    assert live_coupon_progress((LiveProgress.HIT, LiveProgress.UNKNOWN)) is (
+        LiveProgress.UNKNOWN
+    )
+
+
+def test_live_leg_reads_goals_during_susp_and_int() -> None:
+    susp = _live(status_short="SUSP", goals_home=2, goals_away=0)
+    assert period_score_now(Period.REGULATION, susp) == (2, 0)
+    assert live_leg_progress(Period.REGULATION, 1, susp) is LiveProgress.HIT
+    paused = _live(status_short="INT", goals_home=1, goals_away=0)
+    assert live_leg_progress(Period.REGULATION, 1, paused) is LiveProgress.OPEN
+
+
+def test_live_leg_finished_extra_time_without_et_columns_is_lost() -> None:
+    score = _live(
+        status_short="AET",
+        goals_home=2,
+        goals_away=1,
+        fulltime_home=1,
+        fulltime_away=1,
+        extratime_home=None,
+        extratime_away=None,
+    )
+    assert live_leg_progress(Period.EXTRA_TIME, 0, score) is LiveProgress.LOST
+    assert period_score_now(Period.EXTRA_TIME, score) is None
+
+
+def test_live_leg_regulation_stoppage_hit_matches_settle_case() -> None:
+    # Same shape as settle: FT 1-1 wins regulation Over 1.5.
+    score = _live(
+        status_short="FT",
+        goals_home=1,
+        goals_away=1,
+        fulltime_home=1,
+        fulltime_away=1,
+    )
+    assert live_leg_progress(Period.REGULATION, 1, score) is LiveProgress.HIT
+
+
+def test_live_leg_penalties_do_not_count_for_extra_time() -> None:
+    score = _live(
+        status_short="PEN",
+        goals_home=2,
+        goals_away=2,
+        fulltime_home=1,
+        fulltime_away=1,
+        extratime_home=0,
+        extratime_away=0,
+    )
+    assert live_leg_progress(Period.EXTRA_TIME, 0, score) is LiveProgress.LOST
+
+
+def test_period_score_now_matches_progress_board() -> None:
+    live = _live(goals_home=1, goals_away=1)
+    assert period_score_now(Period.REGULATION, live) == (1, 1)
+    et = _live(
+        status_short="ET",
+        goals_home=2,
+        goals_away=1,
+        fulltime_home=1,
+        fulltime_away=1,
+        extratime_home=None,
+        extratime_away=None,
+    )
+    assert period_score_now(Period.EXTRA_TIME, et) == (1, 0)

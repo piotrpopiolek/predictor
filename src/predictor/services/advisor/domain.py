@@ -65,6 +65,16 @@ class Settlement(StrEnum):
     MANUAL = "manual"
 
 
+class LiveProgress(StrEnum):
+    """Live preview of a leg or coupon. Not a ledger settlement."""
+
+    HIT = "hit"
+    OPEN = "open"
+    LOST = "lost"
+    VOID = "void"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class StateKey:
     fixture_id: int
@@ -125,6 +135,27 @@ class FinalScore:
     extratime_away: int | None
     final_refreshed: bool
     awaiting_manual: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LiveScore:
+    """Fixture scoreboard for a live coupon preview. No settlement flags."""
+
+    status_short: str
+    goals_home: int | None
+    goals_away: int | None
+    fulltime_home: int | None
+    fulltime_away: int | None
+    extratime_home: int | None
+    extratime_away: int | None
+
+
+# Regulation period is over once the match leaves 1H/HT/2H (including ET).
+_REGULATION_ENDED = frozenset({"ET", "BT", "P", "FT", "AET", "PEN"})
+# Extra-time period ends at penalties or a finished status.
+_EXTRA_TIME_ENDED = frozenset({"P", "FT", "AET", "PEN"})
+# Interrupt mid-match: keep reading the live board for the open period.
+_IN_PLAY_PAUSE = frozenset({"SUSP", "INT", "LIVE"})
 
 
 def period_for(status_short: str) -> Period | None:
@@ -272,6 +303,74 @@ def settle_coupon(outcomes: Sequence[Settlement]) -> Settlement:
     return Settlement.WON
 
 
+def period_score_now(period: Period, score: LiveScore) -> tuple[int, int] | None:
+    """Home/away goals that settle the period right now. None when incomplete."""
+    status = score.status_short
+    if period is Period.REGULATION:
+        if status in _REGULATION_ENDED:
+            return _pair(score.fulltime_home, score.fulltime_away)
+        if status in _REGULATION or status in _IN_PLAY_PAUSE:
+            if (
+                status in _IN_PLAY_PAUSE
+                and score.fulltime_home is not None
+                and score.fulltime_away is not None
+            ):
+                return score.fulltime_home, score.fulltime_away
+            return _pair(score.goals_home, score.goals_away)
+        return None
+    et = _pair(score.extratime_home, score.extratime_away)
+    if et is not None:
+        return et
+    if status in _EXTRA_TIME or status in _IN_PLAY_PAUSE:
+        live = _pair(score.goals_home, score.goals_away)
+        fulltime = _pair(score.fulltime_home, score.fulltime_away)
+        if live is None or fulltime is None:
+            return None
+        return live[0] - fulltime[0], live[1] - fulltime[1]
+    return None
+
+
+def period_goals_now(period: Period, score: LiveScore) -> int | None:
+    """Goals that settle the period right now. None when the board is incomplete."""
+    board = period_score_now(period, score)
+    if board is None:
+        return None
+    return board[0] + board[1]
+
+
+def live_leg_progress(period: Period, n: int, score: LiveScore) -> LiveProgress:
+    """Preview whether the Over N+0.5 condition already holds. Not a settlement."""
+    if score.status_short in IRREGULAR_FIXTURE_STATUSES:
+        return LiveProgress.VOID
+    goals = period_goals_now(period, score)
+    if goals is None:
+        # Period over without a usable board: treat as failed, not unknown.
+        if _period_finished(period, score.status_short):
+            return LiveProgress.LOST
+        return LiveProgress.UNKNOWN
+    if goals > n:
+        return LiveProgress.HIT
+    if _period_finished(period, score.status_short):
+        return LiveProgress.LOST
+    return LiveProgress.OPEN
+
+
+def live_coupon_progress(outcomes: Sequence[LiveProgress]) -> LiveProgress:
+    """Same precedence as settle_coupon; hit/open/unknown stand in for won/pending."""
+    if not outcomes:
+        raise ValueError("coupon has no legs")
+    if any(item is LiveProgress.LOST for item in outcomes):
+        return LiveProgress.LOST
+    if any(item is LiveProgress.UNKNOWN for item in outcomes):
+        return LiveProgress.UNKNOWN
+    if any(item is LiveProgress.OPEN for item in outcomes):
+        return LiveProgress.OPEN
+    active = [item for item in outcomes if item is not LiveProgress.VOID]
+    if not active:
+        return LiveProgress.VOID
+    return LiveProgress.HIT
+
+
 def active_combined_odd(
     legs: Sequence[tuple[Decimal, Settlement]],
 ) -> Decimal | None:
@@ -356,6 +455,18 @@ def _final_goals(period: Period, score: FinalScore) -> int | None:
     if score.extratime_home is None or score.extratime_away is None:
         return None
     return score.extratime_home + score.extratime_away
+
+
+def _period_finished(period: Period, status_short: str) -> bool:
+    if period is Period.REGULATION:
+        return status_short in _REGULATION_ENDED
+    return status_short in _EXTRA_TIME_ENDED
+
+
+def _pair(home: int | None, away: int | None) -> tuple[int, int] | None:
+    if home is None or away is None:
+        return None
+    return home, away
 
 
 def _blocked(
