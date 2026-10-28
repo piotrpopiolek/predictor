@@ -16,6 +16,7 @@ from predictor.services.advisor.domain import (
     LiveScore,
     Period,
     PlayLimits,
+    PromptGate,
     Settlement,
     Skip,
     active_combined_odd,
@@ -28,6 +29,7 @@ from predictor.services.advisor.domain import (
     over_under_market,
     period_for,
     period_score_now,
+    prompt_gate_misses,
     settle_coupon,
     settle_leg,
     settled_pnl,
@@ -455,3 +457,92 @@ def test_period_score_now_matches_progress_board() -> None:
         extratime_away=None,
     )
     assert period_score_now(Period.EXTRA_TIME, et) == (1, 0)
+
+
+def test_prompt_gate_misses_period_goals_favorite_and_short_late() -> None:
+    ok = Decimal("1.50")
+    assert (
+        prompt_gate_misses(
+            period=Period.REGULATION,
+            n=2,
+            minute=55,
+            odd=ok,
+            favorite_odd=Decimal("1.99"),
+        )
+        == ()
+    )
+    assert prompt_gate_misses(
+        period=Period.REGULATION,
+        n=3,
+        minute=55,
+        odd=ok,
+        favorite_odd=Decimal("1.50"),
+    ) == (PromptGate.PERIOD_GOALS,)
+    assert (
+        prompt_gate_misses(
+            period=Period.EXTRA_TIME,
+            n=0,
+            minute=100,
+            odd=Decimal("1.40"),
+            favorite_odd=Decimal("1.50"),
+        )
+        == ()
+    )
+    assert prompt_gate_misses(
+        period=Period.EXTRA_TIME,
+        n=3,
+        minute=100,
+        odd=ok,
+        favorite_odd=Decimal("1.50"),
+    ) == (PromptGate.PERIOD_GOALS,)
+    assert prompt_gate_misses(
+        period=Period.REGULATION,
+        n=1,
+        minute=55,
+        odd=ok,
+        favorite_odd=Decimal("2.00"),
+    ) == (PromptGate.FAVORITE_ODD,)
+    assert prompt_gate_misses(
+        period=Period.REGULATION,
+        n=1,
+        minute=55,
+        odd=ok,
+        favorite_odd=None,
+    ) == (PromptGate.FAVORITE_ODD,)
+    assert (
+        prompt_gate_misses(
+            period=Period.REGULATION,
+            n=1,
+            minute=60,
+            odd=Decimal("1.40"),
+            favorite_odd=Decimal("1.50"),
+        )
+        == ()
+    )
+    assert prompt_gate_misses(
+        period=Period.REGULATION,
+        n=1,
+        minute=61,
+        odd=Decimal("1.40"),
+        favorite_odd=Decimal("1.50"),
+    ) == (PromptGate.SHORT_LATE,)
+    assert (
+        prompt_gate_misses(
+            period=Period.REGULATION,
+            n=1,
+            minute=61,
+            odd=Decimal("1.45"),
+            favorite_odd=Decimal("1.50"),
+        )
+        == ()
+    )
+    assert (
+        prompt_gate_misses(
+            period=Period.EXTRA_TIME,
+            n=1,
+            minute=100,
+            odd=Decimal("1.40"),
+            favorite_odd=Decimal("1.50"),
+        )
+        == ()
+    )

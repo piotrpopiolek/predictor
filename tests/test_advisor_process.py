@@ -18,20 +18,23 @@ from predictor.models.advisor import (
     AdvisorLeg,
     AdvisorSettlementEvent,
     AdvisorStrategy,
+    AdvisorStrategyEvent,
     AdvisorStrategyVersion,
 )
 from predictor.models.catalog import League, OddsLiveBet
 from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture, Team
-from predictor.models.odds import FixtureOddsLive
+from predictor.models.odds import FixtureOdds, FixtureOddsLive
 from predictor.models.predictions import Prediction
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.advisor import AdvisorSettings
 from predictor.schemas.settings import Settings
 from predictor.services.advisor.candidates import (
     MatchSnapshot,
+    lone_candidate_allowed,
     playable_candidate,
 )
+from predictor.services.advisor.cycle import CycleCandidate
 from predictor.services.advisor.domain import (
     MIN_ANALYSIS_ODD,
     PlayLimits,
@@ -91,18 +94,21 @@ def _limits() -> PlayLimits:
     )
 
 
-def _match() -> MatchSnapshot:
-    return MatchSnapshot(
-        fixture_id=7,
-        status_short="2H",
-        elapsed=70,
-        extra=None,
-        goals_home=0,
-        goals_away=1,
-        extratime_home=None,
-        extratime_away=None,
-        rule="favorite_losing",
-    )
+def _match(**overrides: object) -> MatchSnapshot:
+    values: dict[str, object] = {
+        "fixture_id": 7,
+        "status_short": "2H",
+        "elapsed": 70,
+        "extra": None,
+        "goals_home": 0,
+        "goals_away": 1,
+        "extratime_home": None,
+        "extratime_away": None,
+        "rule": "favorite_losing",
+        "favorite_odd": Decimal("1.50"),
+    }
+    values.update(overrides)
+    return MatchSnapshot(**values)  # type: ignore[arg-type]
 
 
 def test_over_line_matches_the_driver_total_and_not_another() -> None:
@@ -232,16 +238,13 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
         )
         is not None
     )
-    et = MatchSnapshot(
-        fixture_id=7,
+    et = _match(
         status_short="ET",
         elapsed=105,
-        extra=None,
         goals_home=1,
         goals_away=0,
         extratime_home=1,
         extratime_away=0,
-        rule="favorite_losing",
     )
     et_row = OverUnderRow(
         fixture_id=7,
@@ -264,17 +267,7 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
     assert et_candidate is not None
     assert et_candidate.period == "extra_time"
     assert et_candidate.n == 1
-    first_half = MatchSnapshot(
-        fixture_id=7,
-        status_short="1H",
-        elapsed=40,
-        extra=None,
-        goals_home=0,
-        goals_away=1,
-        extratime_home=None,
-        extratime_away=None,
-        rule="favorite_losing",
-    )
+    first_half = _match(status_short="1H", elapsed=40)
     assert (
         playable_candidate(
             first_half,
@@ -307,17 +300,7 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
         )
         is not None
     )
-    late = MatchSnapshot(
-        fixture_id=7,
-        status_short="2H",
-        elapsed=80,
-        extra=1,
-        goals_home=0,
-        goals_away=1,
-        extratime_home=None,
-        extratime_away=None,
-        rule="favorite_losing",
-    )
+    late = _match(elapsed=80, extra=1)
     assert (
         playable_candidate(
             late,
@@ -375,6 +358,8 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
 def test_playable_candidate_starts_analysis_from_min_analysis_odd() -> None:
     from predictor.services.advisor.sql import OverUnderRow
 
+    # Minute 60 keeps G3 (short_late) off so the 1.30 floor stays visible.
+    early = _match(elapsed=60)
     priced = OverUnderRow(
         fixture_id=7,
         label="Over",
@@ -385,7 +370,7 @@ def test_playable_candidate_starts_analysis_from_min_analysis_odd() -> None:
     )
     assert (
         playable_candidate(
-            _match(),
+            early,
             (priced,),
             limits=_limits(),
             now=NOW,
@@ -405,7 +390,7 @@ def test_playable_candidate_starts_analysis_from_min_analysis_odd() -> None:
     )
     assert (
         playable_candidate(
-            _match(),
+            early,
             (below,),
             limits=_limits(),
             now=NOW,
@@ -414,6 +399,123 @@ def test_playable_candidate_starts_analysis_from_min_analysis_odd() -> None:
             for_llm=True,
         )
         is None
+    )
+
+
+def test_prompt_gate_blocks_llm_but_not_baseline() -> None:
+    from predictor.services.advisor.sql import OverUnderRow
+
+    row = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="3.5",
+        odd=Decimal("1.70"),
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=10),
+    )
+    high = _match(goals_home=2, goals_away=1)
+    assert (
+        playable_candidate(
+            high,
+            (row,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=False,
+        )
+        is not None
+    )
+    assert (
+        playable_candidate(
+            high,
+            (row,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=True,
+        )
+        is None
+    )
+    short = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="1.5",
+        odd=Decimal("1.40"),
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=10),
+    )
+    assert (
+        playable_candidate(
+            _match(elapsed=61),
+            (short,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=True,
+        )
+        is None
+    )
+
+
+def test_lone_candidate_allowed_needs_strong_regulation_single() -> None:
+    weak = CycleCandidate(
+        fixture_id=1,
+        period="regulation",
+        goals_home=0,
+        goals_away=1,
+        ordinal=2,
+        candidate_rule="favorite_losing",
+        odd=Decimal("1.79"),
+        n=1,
+    )
+    strong = CycleCandidate(
+        fixture_id=1,
+        period="regulation",
+        goals_home=0,
+        goals_away=1,
+        ordinal=2,
+        candidate_rule="favorite_losing",
+        odd=Decimal("1.80"),
+        n=1,
+    )
+    et = CycleCandidate(
+        fixture_id=2,
+        period="extra_time",
+        goals_home=1,
+        goals_away=1,
+        ordinal=1,
+        candidate_rule="favorite_losing",
+        odd=Decimal("2.50"),
+        n=0,
+    )
+    floor = Decimal("1.600")
+    assert lone_candidate_allowed((), min_combined_odd=floor) is True
+    assert lone_candidate_allowed((strong,), min_combined_odd=floor) is True
+    assert lone_candidate_allowed((weak,), min_combined_odd=floor) is False
+    assert lone_candidate_allowed((et,), min_combined_odd=floor) is False
+    assert lone_candidate_allowed((weak, et), min_combined_odd=floor) is True
+    high_floor = Decimal("1.900")
+    assert lone_candidate_allowed((strong,), min_combined_odd=high_floor) is False
+    assert (
+        lone_candidate_allowed(
+            (
+                CycleCandidate(
+                    fixture_id=1,
+                    period="regulation",
+                    goals_home=0,
+                    goals_away=1,
+                    ordinal=2,
+                    candidate_rule="favorite_losing",
+                    odd=Decimal("1.900"),
+                    n=1,
+                ),
+            ),
+            min_combined_odd=high_floor,
+        )
+        is True
     )
 
 
@@ -623,6 +725,36 @@ async def test_empty_board_does_not_call_the_model() -> None:
         await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_lone_weak_candidate_does_not_call_the_model() -> None:
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    provider = _Provider(_wait_reply(880_754))
+    window = CandidateWindow()
+    try:
+        async with factory() as session, session.begin():
+            await _seed_live(session, 880_751, odd="1.700")
+        assert (
+            await run_tick(engine, factory, provider, _settings(), window, NOW) is False
+        )
+        assert (
+            await run_tick(
+                engine,
+                factory,
+                provider,
+                _settings(),
+                window,
+                NOW + timedelta(seconds=20),
+            )
+            is False
+        )
+        assert provider.calls == 0
+    finally:
+        async with factory() as session, session.begin():
+            await _drop_live(session, 880_751)
+        await engine.dispose()
+
+
 def _bet_reply(fixture_id: int) -> str:
     return json.dumps(
         {
@@ -712,15 +844,43 @@ async def test_a_stable_set_calls_the_model_once() -> None:
         await engine.dispose()
 
 
+def _bet_one_reject_other(bet_id: int, reject_id: int) -> str:
+    return json.dumps(
+        {
+            "candidates": [
+                {
+                    "fixture_id": bet_id,
+                    "decision": "bet",
+                    "estimated_probability": "0.70",
+                    "confidence": "0.60",
+                    "reasons": ["favorite_pressure"],
+                    "rationale": "the favourite is chasing",
+                },
+                {
+                    "fixture_id": reject_id,
+                    "decision": "reject",
+                    "estimated_probability": "0.40",
+                    "confidence": "0.50",
+                    "reasons": ["weak_favorite"],
+                    "rationale": "partner too weak",
+                },
+            ],
+            "coupons": [{"fixture_ids": [bet_id]}],
+        }
+    )
+
+
 @pytest.mark.asyncio
 async def test_below_threshold_sends_the_same_set_again() -> None:
     engine = make_async_engine(Settings())
     factory = make_session_factory(engine)
-    provider = _Provider(_bet_reply(880_734))
+    provider = _Provider(_bet_one_reject_other(880_734, 880_744))
     window = CandidateWindow()
     try:
         async with factory() as session, session.begin():
-            await _seed_live(session, 880_731, odd="1.350")
+            # Two legs so G4 allows the call; model singles one below 1.60.
+            await _seed_live(session, 880_731, odd="1.450")
+            await _seed_live(session, 880_741, odd="1.450")
         assert (
             await run_tick(engine, factory, provider, _settings(), window, NOW) is False
         )
@@ -759,6 +919,7 @@ async def test_below_threshold_sends_the_same_set_again() -> None:
         assert provider.calls == 2
     finally:
         async with factory() as session, session.begin():
+            await _drop_live(session, 880_741)
             await _drop_live(session, 880_731)
         await engine.dispose()
 
@@ -803,7 +964,7 @@ async def test_budget_block_leaves_the_set_for_the_next_tick() -> None:
         await engine.dispose()
 
 
-async def _seed_live(session, base: int, *, odd: str = "1.700") -> None:
+async def _seed_live(session, base: int, *, odd: str = "1.850") -> None:
     league, home, away, fixture = base, base + 1, base + 2, base + 3
     await _drop_live(session, base)
     session.add(League(id=league, name=f"advisor-live-{base}"))
@@ -824,6 +985,16 @@ async def _seed_live(session, base: int, *, odd: str = "1.700") -> None:
         )
     )
     session.add(Prediction(fixture_id=fixture, winner_team_id=home))
+    for label, price in (("Home", "1.50"), ("Draw", "3.80"), ("Away", "5.50")):
+        session.add(
+            FixtureOdds(
+                fixture_id=fixture,
+                bookmaker_id=1,
+                bet_id=1,
+                value_label=label,
+                odd=Decimal(price),
+            )
+        )
     live_task = await session.scalar(
         select(EtlTask)
         .where(EtlTask.endpoint == "/fixtures")
@@ -838,7 +1009,11 @@ async def _seed_live(session, base: int, *, odd: str = "1.700") -> None:
     if live_task is None:
         session.add(EtlTask(endpoint="/fixtures", params=params, status="pending"))
     else:
-        live_task.params = params
+        # Keep every seeded live fixture visible on the board.
+        existing = list(live_task.params.get("fixture_ids") or [])
+        if fixture not in existing:
+            existing.append(fixture)
+        live_task.params = {"live": "all", "fixture_ids": existing}
     session.add(OddsLiveBet(id=base + 8, name="Over/Under Line"))
     await session.flush()
     session.add(
@@ -859,11 +1034,26 @@ async def _drop_live(session, base: int) -> None:
     await session.execute(
         delete(FixtureOddsLive).where(FixtureOddsLive.fixture_id == fixture)
     )
+    await session.execute(delete(FixtureOdds).where(FixtureOdds.fixture_id == fixture))
     await session.execute(delete(OddsLiveBet).where(OddsLiveBet.id == base + 8))
     await session.execute(delete(Prediction).where(Prediction.fixture_id == fixture))
-    await session.execute(
-        delete(EtlTask).where(EtlTask.params.contains({"fixture_ids": [fixture]}))
+    live_task = await session.scalar(
+        select(EtlTask)
+        .where(EtlTask.endpoint == "/fixtures")
+        .where(EtlTask.cursor_kind.is_(None))
+        .where(EtlTask.fixture_id.is_(None))
+        .where(EtlTask.day_utc.is_(None))
+        .where(EtlTask.params.contains({"live": "all"}))
+        .order_by(EtlTask.id)
+        .limit(1)
     )
+    if live_task is not None:
+        kept = [
+            item
+            for item in (live_task.params.get("fixture_ids") or [])
+            if item != fixture
+        ]
+        live_task.params = {"live": "all", "fixture_ids": kept}
     await session.execute(delete(Fixture).where(Fixture.id == fixture))
     await session.execute(delete(Team).where(Team.id.in_((home, away))))
     await session.execute(delete(League).where(League.id == league))
@@ -919,5 +1109,8 @@ async def _drop_strategies(
         delete(AdvisorStrategyVersion).where(
             AdvisorStrategyVersion.strategy_id.in_(ids)
         )
+    )
+    await session.execute(
+        delete(AdvisorStrategyEvent).where(AdvisorStrategyEvent.strategy_id.in_(ids))
     )
     await session.execute(delete(AdvisorStrategy).where(AdvisorStrategy.id.in_(ids)))

@@ -21,6 +21,7 @@ from predictor.schemas.advisor import AdvisorSettings
 from predictor.services.advisor.candidates import (
     MatchSnapshot,
     candidate_signature,
+    lone_candidate_allowed,
     playable_candidate,
 )
 from predictor.services.advisor.cycle import CycleCandidate, CycleRequest, run_cycle
@@ -49,6 +50,7 @@ from predictor.services.advisor.sql import (
 from predictor.services.live_board.domain import (
     FirstLegScore,
     LiveMatch,
+    favorite_prematch_odd,
     select_next_goal_matches,
 )
 from predictor.services.live_board.sql import list_live_matches, load_first_legs
@@ -79,6 +81,7 @@ def board_snapshots(
             extratime_away=match.et_away,
             rule=rules[0],
             league_id=match.league_id,
+            favorite_odd=favorite_prematch_odd(match),
         )
         for match, rules in select_next_goal_matches(matches, first_legs)
         if rules
@@ -183,6 +186,10 @@ async def run_tick(
                 candidates = await _playable(
                     session, book, selected, quotes, now, for_llm=True
                 )
+                if not lone_candidate_allowed(
+                    candidates, min_combined_odd=book.min_odd
+                ):
+                    candidates = ()
                 opened = await open_fixture_ids(session, book.strategy_id)
                 prepared.append((book, candidates, opened))
             reco_open = await open_recommendation_fixtures(session)

@@ -26,6 +26,7 @@ from predictor.services.advisor.llm_note import (
     LlmDecisionNote,
     LlmGap,
     LlmNote,
+    _apply_lone_weak,
     llm_prompt_gaps,
     load_llm_notes,
 )
@@ -53,6 +54,7 @@ def _match(**overrides: object) -> MatchSnapshot:
         "extratime_home": None,
         "extratime_away": None,
         "rule": "",
+        "favorite_odd": Decimal("1.50"),
     }
     values.update(overrides)
     return MatchSnapshot(**values)  # type: ignore[arg-type]
@@ -158,6 +160,23 @@ def test_note_renders_gaps_or_the_decision() -> None:
     assert "Do LLM brakuje" in blocked
     assert "status inny niż 2H/ET/BT" in blocked
     assert "brak Over 1.5" in blocked
+    gates = render_llm_note(
+        LlmNote(
+            gaps=(
+                LlmGap.PERIOD_GOALS,
+                LlmGap.FAVORITE_ODD,
+                LlmGap.SHORT_LATE,
+                LlmGap.LONE_WEAK,
+            ),
+            minute_limit=80,
+            line="1.5",
+            decision=None,
+        )
+    )
+    assert "3 lub więcej goli w okresie" in gates
+    assert "faworyt bez kursu prematch albo z kursem od 2,00" in gates
+    assert "kurs poniżej 1,45 po 60. minucie" in gates
+    assert "jedyny kandydat za słaby na singiel" in gates
     ready = render_llm_note(
         LlmNote(
             gaps=(),
@@ -211,6 +230,53 @@ def test_note_renders_gaps_or_the_decision() -> None:
     assert "minuta powyżej limitu 80" in late
     assert "Ostatnia decyzja LLM: czekaj przy 1:1" in late
     assert late.endswith("…</p>") or "…" in late
+
+
+def test_prompt_gate_gaps_mirror_domain() -> None:
+    assert LlmGap.PERIOD_GOALS in _gaps(
+        _match(goals_home=2, goals_away=1), (_row(handicap="3.5", odd="1.700"),)
+    )
+    assert LlmGap.FAVORITE_ODD in _gaps(_match(favorite_odd=None), (_row(),))
+    assert LlmGap.FAVORITE_ODD in _gaps(_match(favorite_odd=Decimal("2.00")), (_row(),))
+    assert LlmGap.SHORT_LATE in _gaps(_match(elapsed=61), (_row(odd="1.400"),))
+    assert LlmGap.SHORT_LATE not in _gaps(_match(elapsed=60), (_row(odd="1.400"),))
+
+
+def test_apply_lone_weak_marks_only_a_sole_weak_ready_match() -> None:
+    floor = Decimal("1.600")
+    weak = _match(fixture_id=1)
+    partner = _match(fixture_id=2)
+    weak_row = _row(odd="1.700")
+    strong_row = _row(odd="1.850")
+    notes = {
+        1: LlmNote(gaps=(), minute_limit=80, line="1.5", decision=None),
+    }
+    _apply_lone_weak(notes, {1: weak}, {1: (weak_row,)}, min_combined_odd=floor)
+    assert notes[1].gaps == (LlmGap.LONE_WEAK,)
+
+    pair = {
+        1: LlmNote(gaps=(), minute_limit=80, line="1.5", decision=None),
+        2: LlmNote(gaps=(), minute_limit=80, line="1.5", decision=None),
+    }
+    _apply_lone_weak(
+        pair,
+        {1: weak, 2: partner},
+        {1: (weak_row,), 2: (strong_row,)},
+        min_combined_odd=floor,
+    )
+    assert pair[1].gaps == ()
+    assert pair[2].gaps == ()
+
+    strong_only = {
+        1: LlmNote(gaps=(), minute_limit=80, line="1.5", decision=None),
+    }
+    _apply_lone_weak(
+        strong_only,
+        {1: _match(fixture_id=1)},
+        {1: (strong_row,)},
+        min_combined_odd=floor,
+    )
+    assert strong_only[1].gaps == ()
 
 
 def test_remaining_prompt_gates() -> None:

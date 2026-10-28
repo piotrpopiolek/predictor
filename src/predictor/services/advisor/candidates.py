@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 
 from predictor.services.advisor.cycle import CycleCandidate
 from predictor.services.advisor.domain import (
+    LLM_SINGLE_MIN_ODD,
     LLM_STATUSES,
     MIN_ANALYSIS_ODD,
     CandidateView,
@@ -15,9 +17,11 @@ from predictor.services.advisor.domain import (
     Period,
     PlayLimits,
     assess,
+    match_minute,
     over_line_matches,
     over_under_market,
     period_for,
+    prompt_gate_misses,
 )
 from predictor.services.advisor.sql import OverUnderRow
 
@@ -36,6 +40,7 @@ class MatchSnapshot:
     extratime_away: int | None
     rule: str
     league_id: int = 0
+    favorite_odd: Decimal | None = None
 
 
 def candidate_signature(
@@ -67,9 +72,10 @@ def playable_candidate(
 ) -> CycleCandidate | None:
     """Build a priced Over N+0.5 leg, or None when the match is not playable.
 
-    ``for_llm`` adds the prompt gate: status 2H/ET/BT, minute within the
-    strategy period limit, open Over N+0.5 for that period, odd at least
-    ``MIN_ANALYSIS_ODD``, snapshot within ``limits.max_quote_age``.
+    Always requires a playable Over N+0.5 (period line, minute limits,
+    ``MIN_ANALYSIS_ODD``, quote age). ``for_llm`` also requires status in
+    ``LLM_STATUSES`` and an empty ``prompt_gate_misses`` (period goals,
+    favourite odd, short late).
     """
     if for_llm and match.status_short not in LLM_STATUSES:
         return None
@@ -109,6 +115,14 @@ def playable_candidate(
         or quote.odd < MIN_ANALYSIS_ODD
     ):
         return None
+    if for_llm and prompt_gate_misses(
+        period=play.period,
+        n=play.n,
+        minute=match_minute(match.status_short, match.elapsed, match.extra),
+        odd=quote.odd,
+        favorite_odd=match.favorite_odd,
+    ):
+        return None
     key = (
         play.state.fixture_id,
         play.state.period.value,
@@ -128,6 +142,20 @@ def playable_candidate(
         odd=quote.odd,
         n=play.n,
     )
+
+
+def lone_candidate_allowed(
+    candidates: Sequence[CycleCandidate],
+    *,
+    min_combined_odd: Decimal,
+) -> bool:
+    """Whether a candidate set may call the model. Empty or 2+ always ok."""
+    if len(candidates) != 1:
+        return True
+    sole = candidates[0]
+    if sole.period != Period.REGULATION.value:
+        return False
+    return sole.odd >= max(min_combined_odd, LLM_SINGLE_MIN_ODD)
 
 
 def quote_for_period(

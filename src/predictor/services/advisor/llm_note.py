@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import StrEnum
 
 from sqlalchemy import select
@@ -15,7 +16,12 @@ from predictor.models.advisor import (
     AdvisorStrategy,
     AdvisorStrategyVersion,
 )
-from predictor.services.advisor.candidates import MatchSnapshot, quote_for_period
+from predictor.services.advisor.candidates import (
+    MatchSnapshot,
+    lone_candidate_allowed,
+    quote_for_period,
+)
+from predictor.services.advisor.cycle import CycleCandidate
 from predictor.services.advisor.domain import (
     LLM_STATUSES,
     MIN_ANALYSIS_ODD,
@@ -26,6 +32,7 @@ from predictor.services.advisor.domain import (
     match_minute,
     over_half_line,
     period_for,
+    prompt_gate_misses,
 )
 from predictor.services.advisor.sql import (
     OverUnderRow,
@@ -34,8 +41,12 @@ from predictor.services.advisor.sql import (
     open_sandbox_coupon_labels,
     rejected_states,
 )
-from predictor.services.live_board.domain import LiveMatch, next_goal_reasons
-from predictor.services.live_board.sql import load_first_legs
+from predictor.services.live_board.domain import (
+    LiveMatch,
+    favorite_prematch_odd,
+    next_goal_reasons,
+)
+from predictor.services.live_board.sql import list_next_goal_matches, load_first_legs
 
 _ACTIVE = frozenset({"sandbox", "promoted"})
 _DEFAULT_MINUTE = 80
@@ -49,6 +60,10 @@ class LlmGap(StrEnum):
     SUSPENDED = "suspended"
     STALE = "stale"
     ODD_LOW = "odd_low"
+    PERIOD_GOALS = "period_goals"
+    FAVORITE_ODD = "favorite_odd"
+    SHORT_LATE = "short_late"
+    LONE_WEAK = "lone_weak"
     OPEN_COUPON = "open_coupon"
     REJECTED = "rejected"
     PENALTIES = "penalties"
@@ -145,11 +160,30 @@ def llm_prompt_gaps(
             gaps.append(LlmGap.STALE)
         if quote.odd < MIN_ANALYSIS_ODD:
             gaps.append(LlmGap.ODD_LOW)
+        if period is not None:
+            n = _period_goals(match, period)
+            if n is not None:
+                for miss in prompt_gate_misses(
+                    period=period,
+                    n=n,
+                    minute=match_minute(match.status_short, match.elapsed, match.extra),
+                    odd=quote.odd,
+                    favorite_odd=match.favorite_odd,
+                ):
+                    gaps.append(LlmGap(miss.value))
     if match.fixture_id in open_fixtures:
         gaps.append(LlmGap.OPEN_COUPON)
     if _state_rejected(match, rejected):
         gaps.append(LlmGap.REJECTED)
     return tuple(gaps)
+
+
+def _period_goals(match: MatchSnapshot, period: Period) -> int | None:
+    if period is Period.EXTRA_TIME:
+        return (match.extratime_home or 0) + (match.extratime_away or 0)
+    if match.goals_home is None or match.goals_away is None:
+        return None
+    return match.goals_home + match.goals_away
 
 
 def _quote_is_stale(quote: LineQuote, limits: PlayLimits, now: datetime) -> bool:
@@ -198,6 +232,7 @@ def _snapshot(match: LiveMatch) -> MatchSnapshot:
         extratime_away=match.et_away,
         rule="",
         league_id=match.league_id,
+        favorite_odd=favorite_prematch_odd(match),
     )
 
 
@@ -208,22 +243,33 @@ async def load_llm_notes(
     candidate_ids: set[int] | None = None,
     now: datetime | None = None,
 ) -> dict[int, LlmNote]:
-    """Notes for the listed matches. Candidate ids default to the next-goal rule."""
+    """Notes for the listed matches. Candidate ids default to the next-goal rule.
+
+    (``LONE_WEAK``) is evaluated on the full next-goal board, not only on
+    ``matches``, so a match page does not get a false lone-candidate gap.
+    """
     if not matches:
         return {}
     clock = now or datetime.now(UTC)
+    board = [match for match, _reasons in await list_next_goal_matches(engine)]
+    by_id = {match.fixture_id: match for match in board}
+    for match in matches:
+        by_id.setdefault(match.fixture_id, match)
+    scope = tuple(by_id.values())
     from predictor.postgres import make_session_factory
 
     factory = make_session_factory(engine)
     async with factory() as session:
         if candidate_ids is None:
-            legs = await load_first_legs(engine, matches)
+            legs = await load_first_legs(engine, scope)
             candidate_ids = {
                 match.fixture_id
-                for match in matches
+                for match in scope
                 if next_goal_reasons(match, legs.get(match.fixture_id))
             }
-        return await _notes(session, matches, candidate_ids=candidate_ids, now=clock)
+        notes = await _notes(session, scope, candidate_ids=candidate_ids, now=clock)
+    wanted = {match.fixture_id for match in matches}
+    return {fid: note for fid, note in notes.items() if fid in wanted}
 
 
 async def load_sandbox_coupon_labels(
@@ -244,7 +290,7 @@ async def _notes(
     candidate_ids: set[int],
     now: datetime,
 ) -> dict[int, LlmNote]:
-    strategy_id, minute_limit, paused = await _llm_strategy(session)
+    strategy_id, minute_limit, min_odd, paused = await _llm_strategy(session)
     fixture_ids = [match.fixture_id for match in matches]
     quotes = await latest_over_under(session, fixture_ids)
     opened: frozenset[int] = frozenset()
@@ -260,10 +306,13 @@ async def _notes(
         max_quote_age=QUOTE_MAX_AGE,
     )
     notes: dict[int, LlmNote] = {}
+    snapshots: dict[int, MatchSnapshot] = {}
     for match in matches:
+        snap = _snapshot(match)
+        snapshots[match.fixture_id] = snap
         rows = quotes.get(match.fixture_id, ())
         gaps = llm_prompt_gaps(
-            _snapshot(match),
+            snap,
             rows,
             is_candidate=match.fixture_id in candidate_ids,
             limits=limits,
@@ -282,28 +331,77 @@ async def _notes(
             decision=_decision_note(decisions.get(match.fixture_id), match),
             strategy_paused=paused,
         )
+    _apply_lone_weak(notes, snapshots, quotes, min_combined_odd=min_odd)
     return notes
 
 
-async def _llm_strategy(session: AsyncSession) -> tuple[int | None, int, bool]:
+def _apply_lone_weak(
+    notes: dict[int, LlmNote],
+    snapshots: dict[int, MatchSnapshot],
+    quotes: dict[int, tuple[OverUnderRow, ...]],
+    *,
+    min_combined_odd: Decimal,
+) -> None:
+    """Mark the sole prompt-ready match when G4 blocks a model call."""
+    ready = [fid for fid, note in notes.items() if not note.gaps]
+    if len(ready) != 1:
+        return
+    fixture_id = ready[0]
+    snap = snapshots[fixture_id]
+    period = period_for(snap.status_short)
+    if period is None:
+        return
+    quote = quote_for_period(
+        quotes.get(fixture_id, ()),
+        period=period,
+        goals_home=snap.goals_home,
+        goals_away=snap.goals_away,
+        extratime_home=snap.extratime_home,
+        extratime_away=snap.extratime_away,
+    )
+    if quote is None or quote.odd is None:
+        return
+    n = _period_goals(snap, period)
+    if n is None:
+        return
+    candidate = CycleCandidate(
+        fixture_id=fixture_id,
+        period=period.value,
+        goals_home=snap.goals_home or 0,
+        goals_away=snap.goals_away or 0,
+        ordinal=n + 1,
+        candidate_rule="",
+        odd=quote.odd,
+        n=n,
+    )
+    if lone_candidate_allowed((candidate,), min_combined_odd=min_combined_odd):
+        return
+    note = notes[fixture_id]
+    notes[fixture_id] = replace(note, gaps=(*note.gaps, LlmGap.LONE_WEAK))
+
+
+async def _llm_strategy(
+    session: AsyncSession,
+) -> tuple[int | None, int, Decimal, bool]:
     """Active sandbox first. A paused row still supplies its last decisions."""
     row = await _llm_row(session, statuses=_ACTIVE)
     if row is not None:
-        return int(row[0]), int(row[1]), False
+        return int(row[0]), int(row[1]), Decimal(str(row[2])), False
     paused = await _llm_row(session, statuses=frozenset({"paused"}))
     if paused is None:
-        return None, _DEFAULT_MINUTE, False
-    return int(paused[0]), int(paused[1]), True
+        return None, _DEFAULT_MINUTE, Decimal("1.600"), False
+    return int(paused[0]), int(paused[1]), Decimal(str(paused[2])), True
 
 
 async def _llm_row(
     session: AsyncSession, *, statuses: frozenset[str]
-) -> tuple[int, int, str] | None:
+) -> tuple[int, int, Decimal, str] | None:
     row = (
         await session.execute(
             select(
                 AdvisorStrategy.id,
                 AdvisorStrategyVersion.max_minute_regulation,
+                AdvisorStrategyVersion.min_combined_odd,
                 AdvisorStrategy.status,
             )
             .join(
@@ -318,7 +416,7 @@ async def _llm_row(
     ).first()
     if row is None:
         return None
-    return int(row[0]), int(row[1]), str(row[2])
+    return int(row[0]), int(row[1]), Decimal(str(row[2])), str(row[3])
 
 
 async def _latest_decisions(

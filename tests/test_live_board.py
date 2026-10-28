@@ -19,6 +19,7 @@ from predictor.services.live_board import (
     clock_sort_key,
     event_kind,
     favorite_outnumbered_after_red,
+    favorite_prematch_odd,
     favorite_side,
     format_odd,
     goal_clock_minute,
@@ -29,11 +30,13 @@ from predictor.services.live_board import (
     is_tie_deficit,
     market_is_next_goal,
     match_winner_side,
+    next_goal_reasons,
     next_goal_target,
     odd_side,
     order_day_matches,
     parse_live_fixture_ids,
     parse_query_day,
+    passes_next_goal_score_gates,
     pick_venue,
     safe_http_url,
     scoring_team_id,
@@ -518,6 +521,18 @@ def test_favorite_side_requires_strictly_shorter_price() -> None:
     assert favorite_side(None) is None
 
 
+def test_favorite_prematch_odd_uses_prematch_source_only() -> None:
+    home = _match(prematch=PrematchOdds("1.55", "3.8", "5.5", "Match Winner"))
+    assert favorite_prematch_odd(home) == Decimal("1.55")
+    live = _match(
+        prematch=PrematchOdds("1.55", "3.8", "5.5", "Match Winner", source="live")
+    )
+    assert favorite_prematch_odd(live) is None
+    tied = _match(prematch=PrematchOdds("2.0", "3.5", "2.0", "Match Winner"))
+    assert favorite_prematch_odd(tied) is None
+    assert favorite_prematch_odd(_match(prematch=None)) is None
+
+
 def test_favorite_losing_skips_draw_and_penalties() -> None:
     assert is_favorite_losing(_fav_home()) is True
     assert is_favorite_losing(_fav_home(goals_home=1, goals_away=2)) is True
@@ -570,6 +585,40 @@ def test_select_next_goal_matches_or_logic() -> None:
     assert by_id[1] == ("favorite_losing",)
     assert 2 not in by_id
     assert by_id[3] == ("tie_deficit",)
+
+
+def test_next_goal_board_requires_g1_and_g2() -> None:
+    assert passes_next_goal_score_gates(_fav_home()) is True
+    high = _fav_home(goals_home=1, goals_away=2)
+    assert is_favorite_losing(high) is True
+    assert passes_next_goal_score_gates(high) is False
+    assert next_goal_reasons(high) == ()
+    weak_fav = _fav_home(
+        prematch=PrematchOdds("2.00", "3.5", "3.2", "Match Winner", "Bet365")
+    )
+    assert is_favorite_losing(weak_fav) is True
+    assert passes_next_goal_score_gates(weak_fav) is False
+    assert next_goal_reasons(weak_fav) == ()
+    prediction_only = _fav_home(
+        prematch=PrematchOdds("1.222", "4.333", "41", "Fulltime Result", source="live"),
+        prediction_winner_team_id=10,
+        prediction_pct_home=60.0,
+        prediction_pct_away=20.0,
+    )
+    assert is_favorite_losing(prediction_only) is True
+    assert passes_next_goal_score_gates(prediction_only) is False
+    et_ok = _fav_home(
+        fixture_id=4,
+        status_short="ET",
+        goals_home=2,
+        goals_away=3,
+        et_home=0,
+        et_away=0,
+    )
+    assert is_favorite_losing(et_ok) is True
+    assert passes_next_goal_score_gates(et_ok) is True
+    selected = select_next_goal_matches([high, weak_fav, prediction_only, et_ok])
+    assert {match.fixture_id for match, _ in selected} == {4}
 
 
 def test_favorite_red_and_fewer_players_drops_next_goal() -> None:

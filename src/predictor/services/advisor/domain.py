@@ -31,6 +31,15 @@ QUOTE_MAX_AGE = timedelta(seconds=300)
 # snapshot within QUOTE_MAX_AGE. Baseline also uses 1H/HT.
 LLM_STATUS = "2H"
 LLM_STATUSES = frozenset({"2H", "ET", "BT"})
+# Prompt gate (for_llm only). Source: sandbox p4 / baseline yield on
+# predictor_dev — period goals 3+ lose; favourite prematch from 2.00
+# underperforms; short odds after minute 60 lose even in a pair; a lone
+# leg needs ~1.80 to clear the single break-even after tax.
+LLM_MAX_PERIOD_GOALS = 2
+LLM_MAX_FAVORITE_ODD = Decimal("2.000")  # must be strictly below
+LLM_SHORT_ODD = Decimal("1.450")
+LLM_SHORT_ODD_AFTER_MINUTE = 60
+LLM_SINGLE_MIN_ODD = Decimal("1.800")
 
 REGULATION_OVER_UNDER = "over/under line"
 # Live dictionary name (lowercased). Same Over value labels as regulation.
@@ -55,6 +64,14 @@ class Skip(StrEnum):
     NOT_IN_PLAY = "not_in_play"
     OPEN_COUPON = "open_coupon"
     REJECTED_STATE = "rejected_state"
+
+
+class PromptGate(StrEnum):
+    """LLM-only candidate filters beyond status / minute / line / min odd."""
+
+    PERIOD_GOALS = "period_goals"
+    FAVORITE_ODD = "favorite_odd"
+    SHORT_LATE = "short_late"
 
 
 class Settlement(StrEnum):
@@ -245,6 +262,30 @@ def assess(candidate: CandidateView, limits: PlayLimits, now: datetime) -> Playa
 def wait_continues(started: Period, current: Period) -> bool:
     """A wait does not cross from regulation into extra time."""
     return started == current
+
+
+def prompt_gate_misses(
+    *,
+    period: Period,
+    n: int,
+    minute: int | None,
+    odd: Decimal,
+    favorite_odd: Decimal | None,
+) -> tuple[PromptGate, ...]:
+    """Which prompt-gate rules this candidate fails. Empty means it passes."""
+    missed: list[PromptGate] = []
+    if n > LLM_MAX_PERIOD_GOALS:
+        missed.append(PromptGate.PERIOD_GOALS)
+    if favorite_odd is None or favorite_odd >= LLM_MAX_FAVORITE_ODD:
+        missed.append(PromptGate.FAVORITE_ODD)
+    if (
+        period is Period.REGULATION
+        and minute is not None
+        and minute > LLM_SHORT_ODD_AFTER_MINUTE
+        and odd < LLM_SHORT_ODD
+    ):
+        missed.append(PromptGate.SHORT_LATE)
+    return tuple(missed)
 
 
 def combined_odd(odds: Sequence[Decimal]) -> Decimal:

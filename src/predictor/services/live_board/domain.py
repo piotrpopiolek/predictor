@@ -16,6 +16,10 @@ from decimal import (
 )
 from typing import Any
 
+from predictor.services.advisor.domain import (
+    LLM_MAX_FAVORITE_ODD,
+    LLM_MAX_PERIOD_GOALS,
+)
 from predictor.services.ingest.next_goal import (
     is_next_goal_market,
     normalized_bet_name,
@@ -713,6 +717,17 @@ def favorite_side(odds: PrematchOdds | None) -> str | None:
     return None
 
 
+def favorite_prematch_odd(match: LiveMatch) -> Decimal | None:
+    """Prematch 1X2 price of the favourite side, or None when unavailable."""
+    odds = match.prematch
+    if odds is None or odds.source != "prematch":
+        return None
+    side = favorite_side(odds)
+    if side is None:
+        return None
+    return _parse_odd(odds.home if side == "home" else odds.away)
+
+
 def _prediction_favorite(match: LiveMatch) -> str | None:
     winner = match.prediction_winner_team_id
     if winner is not None and match.home_team_id and winner == match.home_team_id:
@@ -831,10 +846,30 @@ def is_tie_deficit(match: LiveMatch, first_leg: FirstLegScore | None) -> bool:
     return (int(live_opp) + first_opp) - (int(live_fav) + first_fav) == 1
 
 
+def _board_period_goals(match: LiveMatch) -> int | None:
+    """Goals that count for the settlement period (G1 on the next-goal board)."""
+    if match.status_short in _EXTRA_LIVE:
+        return (match.et_home or 0) + (match.et_away or 0)
+    if match.goals_home is None or match.goals_away is None:
+        return None
+    return int(match.goals_home) + int(match.goals_away)
+
+
+def passes_next_goal_score_gates(match: LiveMatch) -> bool:
+    """G1/G2 board visibility: period goals ≤ 2, prematch favourite odd < 2.00."""
+    n = _board_period_goals(match)
+    if n is None or n > LLM_MAX_PERIOD_GOALS:
+        return False
+    favorite_odd = favorite_prematch_odd(match)
+    return favorite_odd is not None and favorite_odd < LLM_MAX_FAVORITE_ODD
+
+
 def next_goal_reasons(
     match: LiveMatch, first_leg: FirstLegScore | None = None
 ) -> tuple[str, ...]:
     if favorite_outnumbered_after_red(match):
+        return ()
+    if not passes_next_goal_score_gates(match):
         return ()
     reasons: list[str] = []
     if is_favorite_losing(match):
