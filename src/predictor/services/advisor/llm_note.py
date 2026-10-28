@@ -180,9 +180,7 @@ def _state_rejected(
 def _line_label(match: LiveMatch) -> str | None:
     period = period_for(match.status_short)
     if period is Period.EXTRA_TIME:
-        return str(
-            over_half_line((match.et_home or 0) + (match.et_away or 0))
-        )
+        return str(over_half_line((match.et_home or 0) + (match.et_away or 0)))
     if match.goals_home is None or match.goals_away is None:
         return None
     return str(over_half_line(match.goals_home + match.goals_away))
@@ -275,9 +273,7 @@ async def _notes(
         )
         period = period_for(match.status_short)
         shown_limit = (
-            limits.max_minute_extra
-            if period is Period.EXTRA_TIME
-            else minute_limit
+            limits.max_minute_extra if period is Period.EXTRA_TIME else minute_limit
         )
         notes[match.fixture_id] = LlmNote(
             gaps=gaps,

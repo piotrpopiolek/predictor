@@ -37,9 +37,7 @@ class OverUnderRow:
 
 
 _OVER_UNDER_MARKETS = frozenset(
-    name
-    for name in (REGULATION_OVER_UNDER, EXTRA_TIME_OVER_UNDER)
-    if name is not None
+    name for name in (REGULATION_OVER_UNDER, EXTRA_TIME_OVER_UNDER) if name is not None
 )
 
 
@@ -58,9 +56,7 @@ async def latest_over_under(
     ).all()
     if not bets:
         return {}
-    market_by_bet = {
-        int(bet_id): str(name).casefold() for bet_id, name in bets
-    }
+    market_by_bet = {int(bet_id): str(name).casefold() for bet_id, name in bets}
     bet_ids = list(market_by_bet)
     latest = (
         select(
