@@ -25,7 +25,7 @@ from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings
 from predictor.services.advisor.settle import settle_finished
 from predictor.services.advisor.tick import board_snapshots
-from predictor.services.live_board.domain import LiveMatch
+from predictor.services.live_board.domain import LiveMatch, PrematchOdds
 
 NOW = datetime(2026, 10, 18, 21, 0, tzinfo=UTC)
 
@@ -49,6 +49,7 @@ def _live(**overrides: object) -> LiveMatch:
         home_team_id=10,
         away_team_id=20,
         prediction_winner_team_id=10,
+        prematch=PrematchOdds("1.50", "4.0", "6.0", "Match Winner", "Bet365"),
     )
     base.update(overrides)
     return LiveMatch(**base)
@@ -61,6 +62,7 @@ def test_strategies_share_the_board_list() -> None:
     selected = board_snapshots((drawing, losing, two_down))
     assert [item.fixture_id for item in selected] == [3]
     assert [item.rule for item in selected] == ["favorite_losing"]
+    assert selected[0].favorite_odd == Decimal("1.50")
 
 
 @pytest.mark.asyncio

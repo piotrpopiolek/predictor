@@ -48,6 +48,10 @@ MATCH_LIVE_HOURS = 2
 IDLE_SCORE_POLL_SECONDS = 5 * 60
 # Do not enqueue another historical wave while an open task is older than this.
 HISTORICAL_BACKLOG_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+# Re-fetch /fixtures?date= for days whose pending enrichment is stuck on NS/TBD.
+STALE_FIXTURE_DAY_REFRESH_PER_TICK = 8
+# Prematch enrichment may sit pending until kickoff; it must not block backfill.
+PARKED_PREMATCH_STATUSES = frozenset({"NS", "TBD"})
 LIVE_CONTEXT_DETAIL_CALLS = 40
 LIVE_CONTEXT_FINAL_CALLS = 8
 LIVE_CONTEXT_ONESHOT_CALLS = 12

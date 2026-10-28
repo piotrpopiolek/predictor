@@ -12,7 +12,6 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from predictor.constants import (
-    OPEN_ETL_STATUSES,
     QUOTA_SNAPSHOT_ENDPOINT,
 )
 from predictor.logutil import log_json
@@ -22,6 +21,7 @@ from predictor.models.odds import FixtureOddsLive
 from predictor.schemas.settings import Settings
 from predictor.services.live_board import load_live_all_fixture_ids
 from predictor.services.lock import HolderInfo, fetch_holder_sqlalchemy
+from predictor.services.queue import oldest_actionable_pending_at
 from predictor.services.quota import quota_gauges_from_params
 
 
@@ -189,12 +189,7 @@ async def scrape_gauges(engine: AsyncEngine) -> dict[str, float]:
                 FixtureOddsLive.captured_at <= func.now()
             )
         )
-        oldest = await session.scalar(
-            select(func.min(EtlTask.created_at)).where(
-                EtlTask.status.in_(tuple(OPEN_ETL_STATUSES)),
-                EtlTask.cursor_kind.is_(None),
-            )
-        )
+        oldest = await oldest_actionable_pending_at(session, now=datetime.now(UTC))
         quota_row = await session.scalar(
             select(EtlTask)
             .where(EtlTask.endpoint == QUOTA_SNAPSHOT_ENDPOINT)

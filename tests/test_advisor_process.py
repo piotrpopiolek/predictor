@@ -21,7 +21,7 @@ from predictor.models.advisor import (
     AdvisorStrategyEvent,
     AdvisorStrategyVersion,
 )
-from predictor.models.catalog import League, OddsLiveBet
+from predictor.models.catalog import Bookmaker, League, OddsBet, OddsLiveBet
 from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture, Team
 from predictor.models.odds import FixtureOdds, FixtureOddsLive
@@ -52,6 +52,8 @@ from predictor.services.advisor.tick import (
 )
 
 NOW = datetime(2026, 10, 18, 20, 0, tzinfo=UTC)
+_PREMATCH_BOOK = 9_701
+_PREMATCH_BET = 9_702
 
 
 class _Provider:
@@ -218,6 +220,8 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
     from predictor.services.advisor.domain import EXTRA_TIME_OVER_UNDER
     from predictor.services.advisor.sql import OverUnderRow
 
+    # Minute 60: G3 (short_late) stays off so MIN_ANALYSIS_ODD remains playable.
+    early = _match(elapsed=60)
     row = OverUnderRow(
         fixture_id=7,
         label="Over",
@@ -228,7 +232,7 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
     )
     assert (
         playable_candidate(
-            _match(),
+            early,
             (row,),
             limits=_limits(),
             now=NOW,
@@ -323,7 +327,7 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
     )
     assert (
         playable_candidate(
-            _match(),
+            early,
             (below,),
             limits=_limits(),
             now=NOW,
@@ -343,7 +347,7 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
     )
     assert (
         playable_candidate(
-            _match(),
+            early,
             (suspended,),
             limits=_limits(),
             now=NOW,
@@ -985,12 +989,17 @@ async def _seed_live(session, base: int, *, odd: str = "1.850") -> None:
         )
     )
     session.add(Prediction(fixture_id=fixture, winner_team_id=home))
+    if await session.get(Bookmaker, _PREMATCH_BOOK) is None:
+        session.add(Bookmaker(id=_PREMATCH_BOOK, name="advisor-test-book"))
+    if await session.get(OddsBet, _PREMATCH_BET) is None:
+        session.add(OddsBet(id=_PREMATCH_BET, name="Match Winner"))
+    await session.flush()
     for label, price in (("Home", "1.50"), ("Draw", "3.80"), ("Away", "5.50")):
         session.add(
             FixtureOdds(
                 fixture_id=fixture,
-                bookmaker_id=1,
-                bet_id=1,
+                bookmaker_id=_PREMATCH_BOOK,
+                bet_id=_PREMATCH_BET,
                 value_label=label,
                 odd=Decimal(price),
             )

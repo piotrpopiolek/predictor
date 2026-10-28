@@ -383,7 +383,11 @@ async def test_backfill_pauses_while_pending_is_older_than_a_week(
         called["day"] += 1
         return True
 
+    async def no_stale() -> None:
+        return None
+
     ingest._today_fixtures_complete = today_done  # type: ignore[method-assign]
+    ingest._refresh_stale_fixture_days = no_stale  # type: ignore[method-assign]
     ingest._ingest_day = ingest_day  # type: ignore[method-assign]
     monkeypatch.setattr(
         "predictor.services.ingest.fixtures.historical_backlog_blocks",

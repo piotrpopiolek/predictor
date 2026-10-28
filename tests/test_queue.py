@@ -23,15 +23,18 @@ from predictor.services.queue import (
     claim_odds_task,
     claim_urgent_odds_task,
     claim_urgent_predictions_task,
+    close_stale_prematch_enrichment,
     complete_task,
     empty_retry_status,
     enqueue_fixture_followups,
     ensure_cursors,
+    ensure_enrichment_task,
     ensure_prematch_for_fixture_ids,
     error_retry_status,
     historical_backlog_blocks,
     reopen_live_detail_task,
     requeue_orphans,
+    stale_fixture_days,
     unfinished_context_fixture_ids,
 )
 
@@ -337,6 +340,106 @@ async def test_forecast_day_load_skips_expired_windows_and_in_play() -> None:
             await session.execute(
                 delete(Fixture).where(Fixture.id.in_((future_id, expired_id, live_id)))
             )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_future_ns_enrichment_does_not_block_historical_backlog() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    fixture_id = 92097
+    try:
+        async with factory() as session, session.begin():
+            await upsert_fixtures(
+                session,
+                [
+                    FixtureItem.model_validate(
+                        _fixture_payload(
+                            fixture_id,
+                            kickoff=NOW + timedelta(days=3),
+                            status="NS",
+                            home_id=51,
+                            away_id=52,
+                        )
+                    )
+                ],
+            )
+            await ensure_enrichment_task(session, fixture_id)
+            task = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.fixture_id == fixture_id)
+                .where(EtlTask.endpoint == "/fixtures")
+            )
+            assert task is not None
+            task.created_at = NOW - timedelta(days=30)
+            blocked = await historical_backlog_blocks(session, NOW)
+            days = await stale_fixture_days(session, NOW, limit=10)
+        assert blocked is False
+        assert days == []
+    finally:
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask).where(EtlTask.fixture_id == fixture_id)
+            )
+            await session.execute(delete(Fixture).where(Fixture.id == fixture_id))
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_past_ns_enrichment_lists_stale_day_and_closes_after_repair() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    fixture_id = 92098
+    kickoff = NOW - timedelta(days=2)
+    try:
+        async with factory() as session, session.begin():
+            await upsert_fixtures(
+                session,
+                [
+                    FixtureItem.model_validate(
+                        _fixture_payload(
+                            fixture_id,
+                            kickoff=kickoff,
+                            status="NS",
+                            home_id=53,
+                            away_id=54,
+                        )
+                    )
+                ],
+            )
+            await ensure_enrichment_task(session, fixture_id)
+            task = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.fixture_id == fixture_id)
+                .where(EtlTask.endpoint == "/fixtures")
+            )
+            assert task is not None
+            task.created_at = NOW - timedelta(days=20)
+            blocked = await historical_backlog_blocks(session, NOW)
+            days = await stale_fixture_days(session, NOW, limit=10)
+            assert blocked is True
+            assert kickoff.date() in days
+            closed = await close_stale_prematch_enrichment(
+                session, kickoff.date(), NOW
+            )
+            assert closed == 1
+            task = await session.scalar(
+                select(EtlTask)
+                .where(EtlTask.fixture_id == fixture_id)
+                .where(EtlTask.endpoint == "/fixtures")
+            )
+            assert task is not None
+            assert task.status == "coverage_empty"
+            assert task.last_error == "stale_prematch_after_day_repair"
+            assert await historical_backlog_blocks(session, NOW) is False
+    finally:
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(EtlTask).where(EtlTask.fixture_id == fixture_id)
+            )
+            await session.execute(delete(Fixture).where(Fixture.id == fixture_id))
         await engine.dispose()
 
 

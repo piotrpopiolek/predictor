@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import Date, and_, cast, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from predictor.constants import (
@@ -20,11 +20,14 @@ from predictor.constants import (
     ETL_STATUSES,
     FINISHED_FIXTURE_STATUSES,
     HISTORICAL_BACKLOG_MAX_AGE_SECONDS,
+    IN_PLAY_FIXTURE_STATUSES,
     LIVE_CONTEXT_EMPTY_BACKOFF_SECONDS,
     LIVE_CONTEXT_MAX_EMPTY_ATTEMPTS,
+    MATCH_LIVE_HOURS,
     ODDS_MAPPING_REFRESH_SECONDS,
     ODDS_MAPPING_RETRY_BACKOFF_SECONDS,
     OPEN_ETL_STATUSES,
+    PARKED_PREMATCH_STATUSES,
     URGENT_PREMATCH_HORIZON_HOURS,
 )
 from predictor.models.catalog import UntrackedLeague
@@ -326,26 +329,132 @@ def _as_utc(stamp: datetime) -> datetime:
     return stamp.astimezone(UTC)
 
 
+def _parked_prematch_enrichment(stamp: datetime):
+    """Pending /fixtures?id= for a kickoff that has not started yet."""
+    return and_(
+        EtlTask.endpoint == "/fixtures",
+        EtlTask.fixture_id.is_not(None),
+        EtlTask.cursor_kind.is_(None),
+        exists(
+            select(1).where(
+                Fixture.id == EtlTask.fixture_id,
+                Fixture.status_short.in_(tuple(PARKED_PREMATCH_STATUSES)),
+                Fixture.date.is_not(None),
+                Fixture.date >= stamp,
+            )
+        ),
+    )
+
+
+def _stale_status_fixture(stamp: datetime):
+    """Kickoff already passed but the row still looks prematch or abandoned live."""
+    live_deadline = stamp - timedelta(hours=MATCH_LIVE_HOURS)
+    return or_(
+        and_(
+            Fixture.status_short.in_(tuple(PARKED_PREMATCH_STATUSES)),
+            Fixture.date.is_not(None),
+            Fixture.date < stamp,
+        ),
+        and_(
+            Fixture.status_short.in_(tuple(IN_PLAY_FIXTURE_STATUSES)),
+            Fixture.date.is_not(None),
+            Fixture.date < live_deadline,
+        ),
+    )
+
+
+async def oldest_actionable_pending_at(
+    session: AsyncSession, now: datetime | None = None
+) -> datetime | None:
+    """Oldest open non-cursor task, ignoring parked future prematch enrichment."""
+    stamp = _as_utc(now or datetime.now(UTC))
+    return await session.scalar(
+        select(func.min(EtlTask.created_at)).where(
+            EtlTask.status.in_(tuple(OPEN_ETL_STATUSES)),
+            EtlTask.cursor_kind.is_(None),
+            ~_parked_prematch_enrichment(stamp),
+        )
+    )
+
+
 async def historical_backlog_blocks(
     session: AsyncSession, now: datetime | None = None
 ) -> bool:
     """True when an open task has been waiting longer than a week.
 
     Same clock as the oldest-pending gauge: ``now - min(created_at)`` over
-    open tasks. Daily snapshot rows are re-dated when they are reopened, so
-    a finished table does not keep this gate shut.
+    actionable open tasks. Prematch ``NS``/``TBD`` enrichment for future
+    kickoffs is ignored so it does not freeze backfill. Daily snapshot rows
+    are re-dated when they are reopened, so a finished table does not keep
+    this gate shut.
     """
     stamp = _as_utc(now or datetime.now(UTC))
-    oldest = await session.scalar(
-        select(func.min(EtlTask.created_at)).where(
-            EtlTask.status.in_(tuple(OPEN_ETL_STATUSES)),
-            EtlTask.cursor_kind.is_(None),
-        )
-    )
+    oldest = await oldest_actionable_pending_at(session, stamp)
     if oldest is None:
         return False
     age = stamp - _as_utc(oldest)
     return age.total_seconds() > HISTORICAL_BACKLOG_MAX_AGE_SECONDS
+
+
+async def stale_fixture_days(
+    session: AsyncSession,
+    now: datetime | None = None,
+    *,
+    limit: int,
+) -> list[date]:
+    """UTC days whose pending fixture enrichment is stuck on a stale status."""
+    if limit <= 0:
+        return []
+    stamp = _as_utc(now or datetime.now(UTC))
+    day_utc = cast(func.timezone("UTC", Fixture.date), Date)
+    rows = (
+        await session.execute(
+            select(day_utc)
+            .select_from(EtlTask)
+            .join(Fixture, Fixture.id == EtlTask.fixture_id)
+            .where(EtlTask.endpoint == "/fixtures")
+            .where(EtlTask.fixture_id.is_not(None))
+            .where(EtlTask.cursor_kind.is_(None))
+            .where(EtlTask.status.in_(tuple(OPEN_ETL_STATUSES)))
+            .where(_stale_status_fixture(stamp))
+            .group_by(day_utc)
+            .order_by(day_utc)
+            .limit(limit)
+        )
+    ).all()
+    return [row[0] for row in rows if row[0] is not None]
+
+
+async def close_stale_prematch_enrichment(
+    session: AsyncSession, day: date, now: datetime | None = None
+) -> int:
+    """Close enrichment still stale after a day repair (past NS/TBD or abandoned live)."""
+    _require_transaction(session, "close stale prematch enrichment")
+    stamp = _as_utc(now or datetime.now(UTC))
+    day_utc = cast(func.timezone("UTC", Fixture.date), Date)
+    result = await session.execute(
+        update(EtlTask)
+        .where(
+            EtlTask.id.in_(
+                select(EtlTask.id)
+                .join(Fixture, Fixture.id == EtlTask.fixture_id)
+                .where(EtlTask.endpoint == "/fixtures")
+                .where(EtlTask.fixture_id.is_not(None))
+                .where(EtlTask.cursor_kind.is_(None))
+                .where(EtlTask.status.in_(tuple(OPEN_ETL_STATUSES)))
+                .where(_stale_status_fixture(stamp))
+                .where(day_utc == day)
+            )
+        )
+        .values(
+            status="coverage_empty",
+            last_error="stale_prematch_after_day_repair",
+            completed_at=stamp,
+            updated_at=stamp,
+        )
+        .returning(EtlTask.id)
+    )
+    return len(list(result.scalars().all()))
 
 
 async def untracked_league_ids(session: AsyncSession) -> set[int]:

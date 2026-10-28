@@ -16,6 +16,7 @@ from predictor.client.errors import (
     FootballHttpError,
     QuotaExhaustedError,
     RetryableHttpError,
+    SpendWindowClosed,
 )
 from predictor.client.football import FootballClient
 from predictor.constants import (
@@ -24,6 +25,7 @@ from predictor.constants import (
     IN_PLAY_FIXTURE_STATUSES,
     IRREGULAR_FIXTURE_STATUSES,
     MATCH_LIVE_HOURS,
+    STALE_FIXTURE_DAY_REFRESH_PER_TICK,
 )
 from predictor.logutil import log_json
 from predictor.models.catalog import UntrackedLeague
@@ -45,8 +47,10 @@ from predictor.services.queue import (
     enqueue_fixture_followups,
     get_cursor_task,
     get_or_create_day_task,
+    close_stale_prematch_enrichment,
     historical_backlog_blocks,
     needs_refresh,
+    stale_fixture_days,
 )
 from predictor.services.quota import DayLoadForecast, KickoffLoad
 
@@ -133,6 +137,7 @@ class FixtureIngest:
     async def refresh_backfill(self) -> None:
         if not self._quota_left():
             return
+        await self._refresh_stale_fixture_days()
         if not await self._today_fixtures_complete():
             return
         if await self._historical_backlog_blocks():
@@ -151,6 +156,33 @@ class FixtureIngest:
             return
         if await self._day_complete(day):
             await self._advance_backfill(day)
+
+    async def _refresh_stale_fixture_days(self) -> None:
+        """Re-pull /fixtures?date= for days stuck on past NS/TBD or abandoned live."""
+        async with self._session_factory() as session:
+            days = await stale_fixture_days(
+                session,
+                self._now(),
+                limit=STALE_FIXTURE_DAY_REFRESH_PER_TICK,
+            )
+        for day in days:
+            if not self._quota_left():
+                return
+            ok = await self._ingest_day(day, role="repair")
+            if not ok:
+                return
+            async with self._session_factory() as session, session.begin():
+                closed = await close_stale_prematch_enrichment(
+                    session, day, self._now()
+                )
+            if closed:
+                log_json(
+                    logging.INFO,
+                    service="worker",
+                    event="stale_prematch_enrichment_closed",
+                    day=day.isoformat(),
+                    closed=closed,
+                )
 
     async def _day_complete(self, day: date) -> bool:
         async with self._session_factory() as session, session.begin():
@@ -246,7 +278,8 @@ class FixtureIngest:
             cursor.updated_at = datetime.now(UTC)
 
     async def _ingest_day(self, day: date, *, role: str) -> bool:
-        task_id = await self._day_task_id(day, refresh=role == "forward")
+        force = role in {"forward", "repair"}
+        task_id = await self._day_task_id(day, refresh=force)
         if task_id is None:
             return True
         date_key = day.isoformat()
@@ -256,6 +289,8 @@ class FixtureIngest:
             )
         except AuthBlockedError:
             raise
+        except SpendWindowClosed:
+            return False
         except QuotaExhaustedError:
             await self._fail(task_id, "retryable_error", "quota_exhausted")
             return False
