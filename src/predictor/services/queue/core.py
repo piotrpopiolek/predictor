@@ -428,7 +428,7 @@ async def stale_fixture_days(
 async def close_stale_prematch_enrichment(
     session: AsyncSession, day: date, now: datetime | None = None
 ) -> int:
-    """Close enrichment still stale after a day repair (past NS/TBD or abandoned live)."""
+    """Close enrichment still stale after day repair (past NS/TBD or abandoned live)."""
     _require_transaction(session, "close stale prematch enrichment")
     stamp = _as_utc(now or datetime.now(UTC))
     day_utc = cast(func.timezone("UTC", Fixture.date), Date)

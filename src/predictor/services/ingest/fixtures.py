@@ -43,11 +43,11 @@ from predictor.services.ingest.task_completion import fail_task
 from predictor.services.queue import (
     claim_live_param_task,
     claim_rounds_task,
+    close_stale_prematch_enrichment,
     complete_task,
     enqueue_fixture_followups,
     get_cursor_task,
     get_or_create_day_task,
-    close_stale_prematch_enrichment,
     historical_backlog_blocks,
     needs_refresh,
     stale_fixture_days,
