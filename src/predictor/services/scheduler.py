@@ -578,7 +578,11 @@ class Scheduler:
         if self._probing_reset():
             return await self._fetch_status(now)
         observed = self._client_quota()
-        if observed is not None and _blocks_until_reset(observed, now):
+        if (
+            observed is not None
+            and _blocks_until_reset(observed, now)
+            and not self._quota_reading_stale(observed, now)
+        ):
             self._remember_status(observed)
             return observed
         cached = self._quota
@@ -587,18 +591,15 @@ class Scheduler:
             and cached.source == "api"
             and _is_same_utc_day(cached, now)
             and not self._needs_status_confirmation(cached)
+            and not self._quota_reading_stale(cached, now)
         ):
             if cached.remaining <= 0:
                 self._remember_status(cached)
                 return cached
             if self._status_confirms_buffer():
                 return self._status_quota or cached
-            fetched = cached.fetched_at
-            if fetched is not None:
-                age = (now - _as_utc(fetched)).total_seconds()
-                if age < self._status_refresh_seconds:
-                    self._remember_status(cached)
-                    return cached
+            self._remember_status(cached)
+            return cached
         return await self._fetch_status(now)
 
     async def _fetch_status(self, now: datetime) -> QuotaSnapshot:
@@ -644,8 +645,10 @@ class Scheduler:
         until_reset = seconds_until_utc_midnight(now)
         if self._probing_reset():
             return min(self._idle_cap_seconds, until_reset)
+        # A spent /status can lag past UTC midnight; keep re-probing instead of
+        # sleeping until the next day.
         if self._status_confirms_buffer():
-            return until_reset
+            return min(RESET_PROBE_SECONDS, until_reset)
         quota = self._quota
         if quota is not None and quota.source == "api" and quota.remaining <= 0:
             return min(self._idle_cap_seconds, until_reset)
@@ -658,6 +661,18 @@ class Scheduler:
     def _remember_status(self, snapshot: QuotaSnapshot) -> None:
         if snapshot.source == "api" and snapshot.reading == "status":
             self._status_quota = snapshot
+
+    def _quota_reading_stale(self, snapshot: QuotaSnapshot, now: datetime) -> bool:
+        """Re-check ``/status`` after a spent or buffered reading ages out."""
+        if snapshot.remaining > self._buffer_of(snapshot):
+            fetched = snapshot.fetched_at
+            if fetched is None:
+                return True
+            return (now - _as_utc(fetched)).total_seconds() >= self._status_refresh_seconds
+        fetched = snapshot.fetched_at
+        if fetched is None:
+            return True
+        return (now - _as_utc(fetched)).total_seconds() >= RESET_PROBE_SECONDS
 
     def _client_calls(self) -> int:
         made = getattr(self._client, "calls_made", None)

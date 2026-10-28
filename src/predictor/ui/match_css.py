@@ -66,6 +66,23 @@ _DETAIL_CSS = """
     padding: 16px 18px;
     margin-bottom: 14px;
   }
+  .hero { position: relative; }
+  .sandbox-coupon {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    z-index: 1;
+    font-size: 0.68rem;
+    font-weight: 650;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--live);
+    border: 1px solid rgba(63, 185, 80, 0.45);
+    background: rgba(63, 185, 80, 0.12);
+    padding: 2px 7px;
+    border-radius: 4px;
+    pointer-events: none;
+  }
   .kicker {
     margin: 0 0 12px;
     color: var(--muted);

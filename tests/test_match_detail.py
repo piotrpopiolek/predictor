@@ -221,6 +221,21 @@ def test_select_display_markets_keeps_main_lines_and_next_goal() -> None:
     assert all(quote.odd != "1.10" for market in markets for quote in market.quotes)
 
 
+def test_render_match_html_marks_sandbox_coupon_in_the_hero() -> None:
+    html = render_match_html(
+        _detail(),
+        generated_at=datetime(2026, 9, 22, 14, 0, tzinfo=UTC),
+        sandbox_coupon="Kupon",
+    )
+    assert 'class="sandbox-coupon"' in html
+    assert "Kupon" in html
+    assert "Baseline zagrał" in html
+    plain = render_match_html(
+        _detail(), generated_at=datetime(2026, 9, 22, 14, 0, tzinfo=UTC)
+    )
+    assert 'class="sandbox-coupon"' not in plain
+
+
 def test_render_match_html_shows_collected_sections() -> None:
     html = render_match_html(
         _detail(), generated_at=datetime(2026, 9, 22, 14, 0, tzinfo=UTC)

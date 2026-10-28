@@ -660,29 +660,40 @@ async def test_reset_lag_probes_status_for_fifteen_minutes(valid_env: None) -> N
 
 
 @pytest.mark.asyncio
-async def test_spent_status_sleeps_until_midnight_after_probe(
+async def test_spent_status_reprobes_instead_of_sleeping_until_midnight(
     valid_env: None,
 ) -> None:
     moment = {"at": datetime(2026, 10, 8, 0, 20, tzinfo=UTC)}
     calls = {"status": 0}
+    readings = [
+        QuotaSnapshot(
+            current=7496,
+            limit_day=7500,
+            remaining=4,
+            fetched_at=datetime(2026, 10, 8, 0, 20, tzinfo=UTC),
+            source="api",
+        ),
+        QuotaSnapshot(
+            current=0,
+            limit_day=7500,
+            remaining=7500,
+            fetched_at=datetime(2026, 10, 8, 0, 36, tzinfo=UTC),
+            source="api",
+        ),
+    ]
+    called: list[int] = []
 
     class _Client:
         quota: QuotaSnapshot | None = None
 
         async def get_status(self) -> QuotaSnapshot:
             calls["status"] += 1
-            snap = QuotaSnapshot(
-                current=7496,
-                limit_day=7500,
-                remaining=4,
-                fetched_at=moment["at"],
-                source="api",
-            )
+            snap = readings[min(calls["status"] - 1, len(readings) - 1)]
             self.quota = snap
             return snap
 
     async def history() -> None:
-        raise AssertionError("handlers must wait for the next utc day")
+        called.append(8)
 
     settings = load_settings()
     scheduler = Scheduler(
@@ -695,10 +706,16 @@ async def test_spent_status_sleeps_until_midnight_after_probe(
     )
     await scheduler._tick(asyncio.Event())
     assert calls["status"] == 1
-    assert scheduler.live_interval_seconds == 85200
+    assert called == []
+    assert scheduler._sleep_seconds() == 900
 
     await scheduler._tick(asyncio.Event())
     assert calls["status"] == 1
+
+    moment["at"] = datetime(2026, 10, 8, 0, 36, tzinfo=UTC)
+    await scheduler._tick(asyncio.Event())
+    assert calls["status"] == 2
+    assert called == [8]
 
 
 def test_history_allowance_spreads_surplus_across_cycles() -> None:

@@ -36,6 +36,9 @@ _OPEN_LEG = ("open", "won", "lost", "void", "manual")
 _COUPON = ("open", "placed", "won", "lost", "void")
 _FIRST_SETTLE = ("open", "placed")
 _COUNTED = ("bet", "reject", "wait_timeout")
+# Enrichment ends complete when children/coverage exist; coverage_empty when
+# the FT detail row was stored but the league has no events/lineups/stats.
+_DETAIL_REFRESHED = frozenset({"complete", "coverage_empty"})
 _TERMINAL = {
     Settlement.WON: "won",
     Settlement.LOST: "lost",
@@ -100,7 +103,7 @@ async def _refreshed(session: AsyncSession, fixture_ids: set[int]) -> set[int]:
         .where(EtlTask.endpoint == "/fixtures")
         .where(EtlTask.fixture_id.in_(fixture_ids))
         .where(EtlTask.cursor_kind.is_(None))
-        .where(EtlTask.status == "complete")
+        .where(EtlTask.status.in_(_DETAIL_REFRESHED))
     )
     return {int(fixture_id) for fixture_id in rows if fixture_id is not None}
 

@@ -23,7 +23,7 @@ from predictor.logutil import configure_logging, log_startup
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, SettingsError, load_settings
 from predictor.services.advisor.llm_note import (
-    load_llm_coupon_fixtures,
+    load_sandbox_coupon_labels,
     load_llm_notes,
 )
 from predictor.services.advisor.report import load_yield_report, report_as_dict
@@ -142,22 +142,43 @@ def create_app() -> FastAPI:
     @app.get("/")
     @app.get("/live")
     async def live() -> HTMLResponse:
+        engine = cast(AsyncEngine, app.state.engine)
         matches = await _live_matches()
+        try:
+            coupons = await load_sandbox_coupon_labels(
+                engine, [item.fixture_id for item in matches]
+            )
+        except Exception:
+            coupons = {}
         html = render_live_html(
             matches,
             generated_at=datetime.now(UTC),
             active_nav="all",
             operator_token=mutation_token,
+            sandbox_coupons=coupons,
         )
         return HTMLResponse(html)
 
     @app.get("/live.json")
     async def live_json() -> dict[str, Any]:
+        engine = cast(AsyncEngine, app.state.engine)
         matches = await _live_matches()
+        try:
+            coupons = await load_sandbox_coupon_labels(
+                engine, [item.fixture_id for item in matches]
+            )
+        except Exception:
+            coupons = {}
         return {
             "generated_at": datetime.now(UTC).isoformat(),
             "count": len(matches),
-            "matches": [item.as_dict() for item in matches],
+            "matches": [
+                {
+                    **item.as_dict(),
+                    "sandbox_coupon": coupons.get(item.fixture_id),
+                }
+                for item in matches
+            ],
         }
 
     async def _next_goal_board() -> list[tuple[LiveMatch, tuple[str, ...]]]:
@@ -182,7 +203,7 @@ def create_app() -> FastAPI:
                 matches,
                 candidate_ids={item.fixture_id for item in matches},
             )
-            llm_coupons = await load_llm_coupon_fixtures(
+            sandbox_coupons = await load_sandbox_coupon_labels(
                 engine, [item.fixture_id for item in matches]
             )
         except Exception:
@@ -208,7 +229,7 @@ def create_app() -> FastAPI:
             llm_notes={
                 fixture_id: render_llm_note(note) for fixture_id, note in notes.items()
             },
-            llm_coupons=llm_coupons,
+            sandbox_coupons=sandbox_coupons,
         )
         return HTMLResponse(html)
 
@@ -225,7 +246,7 @@ def create_app() -> FastAPI:
                 matches,
                 candidate_ids={item.fixture_id for item in matches},
             )
-            llm_coupons = await load_llm_coupon_fixtures(
+            sandbox_coupons = await load_sandbox_coupon_labels(
                 engine, [item.fixture_id for item in matches]
             )
         except Exception:
@@ -246,7 +267,8 @@ def create_app() -> FastAPI:
                         else bet_as_dict(open_bets[match.fixture_id])
                     ),
                     "llm": notes[match.fixture_id].as_dict(),
-                    "llm_coupon": match.fixture_id in llm_coupons,
+                    "sandbox_coupon": sandbox_coupons.get(match.fixture_id),
+                    "llm_coupon": sandbox_coupons.get(match.fixture_id) == "Kupon LLM",
                 }
                 for match, reasons in selected
             ],
@@ -301,6 +323,9 @@ def create_app() -> FastAPI:
             return HTMLResponse(render_match_missing(), status_code=404)
         try:
             notes = await load_llm_notes(engine, [detail.match])
+            coupons = await load_sandbox_coupon_labels(
+                engine, [detail.match.fixture_id]
+            )
         except Exception:
             raise HTTPException(
                 status_code=503, detail="postgres_unavailable"
@@ -308,7 +333,12 @@ def create_app() -> FastAPI:
         note = notes.get(detail.match.fixture_id)
         llm_html = "" if note is None else render_llm_note(note)
         return HTMLResponse(
-            render_match_html(detail, generated_at=datetime.now(UTC), llm_html=llm_html)
+            render_match_html(
+                detail,
+                generated_at=datetime.now(UTC),
+                llm_html=llm_html,
+                sandbox_coupon=coupons.get(detail.match.fixture_id),
+            )
         )
 
     @app.get("/live/bets")

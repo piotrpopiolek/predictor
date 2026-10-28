@@ -143,6 +143,15 @@ async def test_daily_limit_body_stops_further_http(valid_env: None) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
+        if request.url.path == "/status":
+            return httpx.Response(
+                200,
+                json=STATUS_BODY,
+                headers={
+                    "x-ratelimit-requests-limit": "7500",
+                    "x-ratelimit-requests-remaining": "10",
+                },
+            )
         return httpx.Response(
             200,
             json=LIMIT_BODY,
@@ -158,12 +167,13 @@ async def test_daily_limit_body_stops_further_http(valid_env: None) -> None:
             await client.get("/fixtures", domain=True)
         with pytest.raises(QuotaExhaustedError):
             await client.get("/fixtures", domain=True)
+        snap = await client.get_status()
     finally:
         await client.aclose()
-    assert calls["n"] == 1
+    assert calls["n"] == 2
+    assert snap.remaining == 10
     assert client.quota is not None
-    assert client.quota.remaining == 0
-    assert client.quota.current == 7500
+    assert client.quota.remaining == 10
 
 
 @pytest.mark.asyncio

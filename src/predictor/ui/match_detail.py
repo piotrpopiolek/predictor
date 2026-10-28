@@ -26,7 +26,7 @@ from predictor.services.match_detail.domain import (
     RankedSlot,
     _fmt_odd,
 )
-from predictor.ui.live_board import _img, _live_nav, _score
+from predictor.ui.live_board import _img, _live_nav, _score, sandbox_coupon_badge
 from predictor.ui.match_css import _DETAIL_CSS
 
 _EVENT_LABELS = {
@@ -59,10 +59,20 @@ def render_match_html(
     *,
     generated_at: datetime,
     llm_html: str = "",
+    sandbox_coupon: str | None = None,
 ) -> str:
     match = detail.match
     title = f"{match.home} – {match.away}"
-    return _page(title=title, body=_body(detail, generated_at, llm_html), refresh=True)
+    return _page(
+        title=title,
+        body=_body(
+            detail,
+            generated_at,
+            llm_html,
+            sandbox_coupon=sandbox_coupon,
+        ),
+        refresh=True,
+    )
 
 
 def _page(*, title: str, body: str, refresh: bool = False) -> str:
@@ -99,12 +109,20 @@ setTimeout(function () {{ location.reload(); }}, {REFRESH_SECONDS * 1000});
 """
 
 
-def _body(detail: MatchDetail, generated_at: datetime, llm_html: str = "") -> str:
+def _body(
+    detail: MatchDetail,
+    generated_at: datetime,
+    llm_html: str = "",
+    *,
+    sandbox_coupon: str | None = None,
+) -> str:
     match = detail.match
     chips = _chips(match)
     periods = _periods(match)
+    coupon_mark = sandbox_coupon_badge(sandbox_coupon)
     return f"""
 <section class="hero">
+  {coupon_mark}
   <p class="kicker">{escape(match.country)} · {escape(match.league)}</p>
   <div class="headline">
     {_team_side(match.home_logo, match.home, _opening_odd(match, "home"), home=True)}

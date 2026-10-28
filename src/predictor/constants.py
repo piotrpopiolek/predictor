@@ -8,7 +8,7 @@ ADVISOR_LOCK_KEY = 739202
 ADVISOR_CYCLE_LOCK_KEY = 739203
 PAYOUT_KEEP = Decimal("0.880")
 # Virtual portfolio (FR-120). The balance is the sum of coupons, not a stored column.
-SANDBOX_BANKROLL = Decimal("100.00")
+SANDBOX_BANKROLL = Decimal("200.00")
 # Same stake rule as the operator ledger: 21.00, then +0.10 per settled win.
 START_STAKE = Decimal("21.00")
 STAKE_STEP = Decimal("0.10")

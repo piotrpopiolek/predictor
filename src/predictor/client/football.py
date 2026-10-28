@@ -167,7 +167,9 @@ class FootballClient:
             raise AuthBlockedError(
                 "API authorization previously failed; new requests are stopped"
             )
-        if self._daily_quota_blocked():
+        # ``/status`` must stay reachable so a lagged midnight reading can
+        # clear once the vendor counter actually resets.
+        if self._daily_quota_blocked() and path != "/status":
             raise QuotaExhaustedError(path)
 
         async for attempt in AsyncRetrying(

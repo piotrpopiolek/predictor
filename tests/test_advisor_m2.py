@@ -110,6 +110,31 @@ async def test_settlement_wins_once_and_records_a_counterfactual() -> None:
 
 
 @pytest.mark.asyncio
+async def test_coverage_empty_detail_refresh_still_settles() -> None:
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    try:
+        async with factory() as session:
+            async with session.begin():
+                ids = await _seed(session, fulltime=(2, 1), status="FT")
+                task = await session.scalar(
+                    select(EtlTask).where(EtlTask.fixture_id == ids["fixture"])
+                )
+                assert task is not None
+                task.status = "coverage_empty"
+            async with session.begin():
+                changed = await settle_finished(session, NOW)
+            assert changed == 1
+            async with session.begin():
+                coupon = await session.get(AdvisorCoupon, ids["coupon"])
+            assert coupon is not None and coupon.status == "won"
+    finally:
+        async with factory() as session, session.begin():
+            await _wipe(session)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_unfinished_match_stays_open_until_the_detail_refresh() -> None:
     engine = make_async_engine(Settings())
     factory = make_session_factory(engine)

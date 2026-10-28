@@ -604,19 +604,23 @@ def test_render_next_goal_nav_and_empty() -> None:
     assert "formOpen" in html
 
 
-def test_render_marks_llm_sandbox_coupon_in_the_corner() -> None:
-    on_coupon = _match(fixture_id=42)
+def test_render_marks_sandbox_coupon_in_the_corner() -> None:
+    on_llm = _match(fixture_id=42)
+    on_baseline = _match(fixture_id=44, home="Base")
     plain = _match(fixture_id=43, home="Other")
     html = render_live_html(
-        [on_coupon, plain],
+        [on_llm, on_baseline, plain],
         generated_at=datetime(2026, 9, 13, 20, 0, tzinfo=UTC),
         active_nav="next_goal",
-        llm_coupons={42},
+        sandbox_coupons={42: "Kupon LLM", 44: "Kupon"},
     )
     assert 'data-fixture-id="42"' in html
-    assert 'class="llm-coupon"' in html
-    assert "Kupon LLM" in html
-    marked = html.split('data-fixture-id="42"', 1)[1].split("</article>", 1)[0]
+    llm_card = html.split('data-fixture-id="42"', 1)[1].split("</article>", 1)[0]
+    base_card = html.split('data-fixture-id="44"', 1)[1].split("</article>", 1)[0]
     plain_card = html.split('data-fixture-id="43"', 1)[1].split("</article>", 1)[0]
-    assert 'class="llm-coupon"' in marked
-    assert 'class="llm-coupon"' not in plain_card
+    assert 'class="sandbox-coupon"' in llm_card
+    assert "Kupon LLM" in llm_card
+    assert 'class="sandbox-coupon"' in base_card
+    assert "Kupon LLM" not in base_card
+    assert ">Kupon<" in base_card or ">Kupon</span>" in base_card
+    assert 'class="sandbox-coupon"' not in plain_card

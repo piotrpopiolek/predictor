@@ -30,8 +30,8 @@ from predictor.services.advisor.domain import (
 from predictor.services.advisor.sql import (
     OverUnderRow,
     latest_over_under,
-    llm_open_coupon_fixtures,
     open_fixture_ids,
+    open_sandbox_coupon_labels,
     rejected_states,
 )
 from predictor.services.live_board.domain import LiveMatch, next_goal_reasons
@@ -218,15 +218,15 @@ async def load_llm_notes(
         return await _notes(session, matches, candidate_ids=candidate_ids, now=clock)
 
 
-async def load_llm_coupon_fixtures(
+async def load_sandbox_coupon_labels(
     engine: AsyncEngine, fixture_ids: Sequence[int] | None = None
-) -> frozenset[int]:
-    """Open LLM sandbox coupons covering these fixtures."""
+) -> dict[int, str]:
+    """Open sandbox coupons covering these fixtures → corner badge text."""
     from predictor.postgres import make_session_factory
 
     factory = make_session_factory(engine)
     async with factory() as session:
-        return await llm_open_coupon_fixtures(session, fixture_ids)
+        return await open_sandbox_coupon_labels(session, fixture_ids)
 
 
 async def _notes(

@@ -347,7 +347,7 @@ _LIVE_CSS = """
     border-bottom: 1px solid var(--line);
   }
   .match:last-child { border-bottom: 0; }
-  .llm-coupon {
+  .sandbox-coupon {
     position: absolute;
     top: 8px;
     right: 10px;
@@ -605,6 +605,21 @@ def _token_field(operator_token: str | None) -> str:
     )
 
 
+def sandbox_coupon_badge(label: str | None) -> str:
+    """Corner mark for an open sandbox coupon on the board or match page."""
+    if not label:
+        return ""
+    title = (
+        "LLM zagrał — kupon piaskownicy"
+        if label == "Kupon LLM"
+        else "Baseline zagrał — kupon piaskownicy"
+    )
+    return (
+        f'<span class="sandbox-coupon" title="{escape(title)}">'
+        f"{escape(label)}</span>"
+    )
+
+
 def _match_card(
     match: LiveMatch,
     *,
@@ -614,7 +629,7 @@ def _match_card(
     show_kickoff: bool = False,
     operator_token: str | None = None,
     llm_html: str = "",
-    llm_coupon: bool = False,
+    sandbox_coupon: str | None = None,
 ) -> str:
     home = escape(match.home)
     away = escape(match.away)
@@ -647,12 +662,7 @@ def _match_card(
             current_stake=current_stake,
             operator_token=operator_token,
         )
-    coupon_mark = (
-        '<span class="llm-coupon" title="LLM zagrał — kupon piaskownicy">'
-        "Kupon LLM</span>"
-        if llm_coupon
-        else ""
-    )
+    coupon_mark = sandbox_coupon_badge(sandbox_coupon)
     return f"""
 <article class="match" data-fixture-id="{match.fixture_id}">
   {coupon_mark}
@@ -813,14 +823,14 @@ def render_live_html(
     operator_token: str | None = None,
     recommendation_html: str = "",
     llm_notes: dict[int, str] | None = None,
-    llm_coupons: frozenset[int] | set[int] | None = None,
+    sandbox_coupons: dict[int, str] | None = None,
 ) -> str:
     ordered = sort_matches_by_clock(matches)
     count = len(ordered)
     allow_bet = active_nav == "next_goal"
     bets = open_bets or {}
     notes = llm_notes or {}
-    coupons = llm_coupons or frozenset()
+    coupons = sandbox_coupons or {}
     sections: list[str] = []
     for (country, league), rows in groupby(
         ordered, key=lambda item: (item.country, item.league)
@@ -835,7 +845,7 @@ def render_live_html(
                 current_stake=current_stake,
                 operator_token=operator_token,
                 llm_html=notes.get(item.fixture_id, ""),
-                llm_coupon=item.fixture_id in coupons,
+                sandbox_coupon=coupons.get(item.fixture_id),
             )
             for item in group
         )

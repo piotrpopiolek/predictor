@@ -108,23 +108,42 @@ async def open_fixture_ids(session: AsyncSession, strategy_id: int) -> frozenset
     return frozenset(int(fixture_id) for fixture_id in rows)
 
 
-async def llm_open_coupon_fixtures(
+async def open_sandbox_coupon_labels(
     session: AsyncSession, fixture_ids: Sequence[int] | None = None
-) -> frozenset[int]:
-    """Fixtures on an open sandbox leg of any LLM strategy."""
+) -> dict[int, str]:
+    """Corner badge text for fixtures on an open sandbox leg.
+
+    LLM wins the label when both baseline and LLM cover the same match.
+    """
     stmt = (
-        select(AdvisorLeg.fixture_id)
+        select(AdvisorLeg.fixture_id, AdvisorStrategy.kind)
         .join(AdvisorStrategy, AdvisorStrategy.id == AdvisorLeg.strategy_id)
-        .where(AdvisorStrategy.kind == "llm")
+        .where(AdvisorStrategy.kind.in_(("baseline", "llm")))
         .where(AdvisorLeg.mode == "sandbox")
         .where(AdvisorLeg.status.in_(("open", "manual")))
     )
     if fixture_ids is not None:
         if not fixture_ids:
-            return frozenset()
+            return {}
         stmt = stmt.where(AdvisorLeg.fixture_id.in_(fixture_ids))
-    rows = await session.scalars(stmt)
-    return frozenset(int(fixture_id) for fixture_id in rows)
+    labels: dict[int, str] = {}
+    for fixture_id, kind in (await session.execute(stmt)).all():
+        fid = int(fixture_id)
+        if kind == "llm":
+            labels[fid] = "Kupon LLM"
+        elif fid not in labels:
+            labels[fid] = "Kupon"
+    return labels
+
+
+async def llm_open_coupon_fixtures(
+    session: AsyncSession, fixture_ids: Sequence[int] | None = None
+) -> frozenset[int]:
+    """Fixtures on an open sandbox leg of any LLM strategy."""
+    labels = await open_sandbox_coupon_labels(session, fixture_ids)
+    return frozenset(
+        fixture_id for fixture_id, label in labels.items() if label == "Kupon LLM"
+    )
 
 
 async def rejected_states(
