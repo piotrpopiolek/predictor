@@ -251,8 +251,11 @@ async def test_matches_left_today_feeds_the_budget(valid_env: None) -> None:
         matches_left_today=left,
     )
     await scheduler._tick(asyncio.Event())
-    assert called["history"] == 0
+    # Slate overload zeros oneshots; history may still catch up above score reserve.
     assert scheduler._gate.oneshot_calls == 0
+    assert scheduler._plan is not None
+    assert scheduler._plan.overloaded is True
+    assert called["history"] == 1
 
     async def broken() -> int:
         raise RuntimeError("db")
@@ -470,7 +473,7 @@ async def test_stale_header_cannot_hide_a_fresh_status(valid_env: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_overload_blocks_lower_priorities_until_the_slate_shrinks(
+async def test_overload_blocks_odds_but_history_may_catch_up(
     valid_env: None,
 ) -> None:
     start = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
@@ -504,14 +507,15 @@ async def test_overload_blocks_lower_priorities_until_the_slate_shrinks(
         live_match_count=lambda: board["live"],
     )
     await scheduler._tick(asyncio.Event())
-    assert called == []
+    assert called == [8]
     assert scheduler._plan is not None
     assert scheduler._plan.overloaded is True
 
     board["live"] = 1
     scheduler._quota = None
+    called.clear()
     await scheduler._tick(asyncio.Event())
-    assert 8 in called
+    assert called == [4, 8]
     assert scheduler._plan is not None
     assert scheduler._plan.overloaded is False
 
