@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import Date, and_, cast, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from predictor.constants import (
     CURSOR_KINDS,
@@ -329,7 +330,7 @@ def _as_utc(stamp: datetime) -> datetime:
     return stamp.astimezone(UTC)
 
 
-def _parked_prematch_enrichment(stamp: datetime):
+def _parked_prematch_enrichment(stamp: datetime) -> ColumnElement[bool]:
     """Pending /fixtures?id= for a kickoff that has not started yet."""
     return and_(
         EtlTask.endpoint == "/fixtures",
@@ -346,7 +347,7 @@ def _parked_prematch_enrichment(stamp: datetime):
     )
 
 
-def _stale_status_fixture(stamp: datetime):
+def _stale_status_fixture(stamp: datetime) -> ColumnElement[bool]:
     """Kickoff already passed but the row still looks prematch or abandoned live."""
     live_deadline = stamp - timedelta(hours=MATCH_LIVE_HOURS)
     return or_(
@@ -368,13 +369,14 @@ async def oldest_actionable_pending_at(
 ) -> datetime | None:
     """Oldest open non-cursor task, ignoring parked future prematch enrichment."""
     stamp = _as_utc(now or datetime.now(UTC))
-    return await session.scalar(
+    value = await session.scalar(
         select(func.min(EtlTask.created_at)).where(
             EtlTask.status.in_(tuple(OPEN_ETL_STATUSES)),
             EtlTask.cursor_kind.is_(None),
             ~_parked_prematch_enrichment(stamp),
         )
     )
+    return value if isinstance(value, datetime) else None
 
 
 async def historical_backlog_blocks(
