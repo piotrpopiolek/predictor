@@ -197,7 +197,10 @@ class Scheduler:
         plan = self._plan
         if quota is None or plan is None or quota.source != "api" or plan.overloaded:
             return
-        surplus = quota.remaining - plan.safety_buffer - plan.full_reserve
+        # Catch-up: keep score polls + buffer. Detail/odds still win inside the
+        # live tick; they must not park the whole day budget away from history.
+        surplus = quota.remaining - plan.safety_buffer - plan.score_need
+        catch_up_cap = self._settings.quota_requests_per_minute
         allowance = history_call_allowance(
             surplus=surplus,
             seconds_left=seconds_until_utc_midnight(self._now()),
@@ -205,8 +208,17 @@ class Scheduler:
                 window,
                 float(self._settings.live_poll_target_seconds),
             ),
+            catch_up_cap=catch_up_cap,
         )
         if allowance <= 0:
+            log_json(
+                logging.INFO,
+                service="worker",
+                event="history_window_skip",
+                surplus=surplus,
+                score_need=plan.score_need,
+                full_reserve=plan.full_reserve,
+            )
             return
         baseline = self._client_calls()
         deadline = self._history_deadline()
@@ -243,6 +255,8 @@ class Scheduler:
                 event="history_window",
                 allowance=allowance,
                 spent=spent,
+                surplus=surplus,
+                catch_up_cap=catch_up_cap,
             )
 
     async def _yield_score_tick(

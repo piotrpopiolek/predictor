@@ -27,7 +27,7 @@ def _plan(matches: int, remaining: int, now: datetime):
     )
 
 
-def test_history_runs_only_above_the_full_live_reserve() -> None:
+def test_history_catch_up_runs_above_score_reserve() -> None:
     now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     snap = QuotaSnapshot(current=7100, limit_day=7500, remaining=400, source="api")
     plan = _plan(30, snap.remaining, now)
@@ -38,7 +38,15 @@ def test_history_runs_only_above_the_full_live_reserve() -> None:
     assert plan.overloaded is True
     assert quota_allows(1, snap, plan) is True
     assert quota_allows(2, snap, plan) is True
-    assert quota_allows(9, snap, plan) is False
+    # Detail parking no longer blocks catch-up history.
+    assert quota_allows(9, snap, plan) is True
+    at_score = QuotaSnapshot(
+        current=7100,
+        limit_day=7500,
+        remaining=plan.safety_buffer + plan.score_need,
+        source="api",
+    )
+    assert quota_allows(9, at_score, plan) is False
 
 
 def test_surplus_allows_history_and_five_minute_details() -> None:
@@ -93,10 +101,13 @@ def test_matches_still_to_play_today_are_reserved_before_kickoff() -> None:
     assert plan.overloaded is False
     snap = QuotaSnapshot(current=5500, limit_day=7500, remaining=2000, source="api")
     assert quota_allows(8, snap, plan) is True
-    at_reserve = QuotaSnapshot(
-        current=6500, limit_day=7500, remaining=plan.full_reserve, source="api"
+    at_score = QuotaSnapshot(
+        current=6500,
+        limit_day=7500,
+        remaining=plan.safety_buffer + plan.score_need,
+        source="api",
     )
-    assert quota_allows(8, at_reserve, plan) is False
+    assert quota_allows(8, at_score, plan) is False
     assert quota_allows(2, snap, plan) is True
 
 

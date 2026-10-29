@@ -276,16 +276,25 @@ def history_call_allowance(
     surplus: int,
     seconds_left: float,
     cycle_seconds: float,
+    catch_up_cap: int = 0,
 ) -> int:
-    """Calls for one sleep so the surplus above the live reserve lasts to midnight."""
+    """Calls for one history window from ``surplus``.
+
+    ``surplus`` is whatever the scheduler left above protected live score
+    calls. With ``catch_up_cap`` > 0 the window spends up to that many calls
+    now (catch-up). Without a cap the old drip applies: surplus spread
+    evenly until UTC midnight.
+    """
     if surplus <= 0 or seconds_left <= 0 or cycle_seconds <= 0:
         return 0
+    if catch_up_cap > 0:
+        return min(surplus, catch_up_cap)
     cycles_left = max(1.0, seconds_left / cycle_seconds)
     return min(surplus, math.floor(surplus / cycles_left))
 
 
 def quota_allows(priority: int, snapshot: QuotaSnapshot, plan: LiveBudgetPlan) -> bool:
-    """History and odds run only above the live reserve. Scores always run."""
+    """Live scores always run. History catch-up runs above the score reserve."""
     remaining = snapshot.remaining
     if remaining <= 0 or remaining <= plan.safety_buffer:
         return False
@@ -296,11 +305,11 @@ def quota_allows(priority: int, snapshot: QuotaSnapshot, plan: LiveBudgetPlan) -
         return False
     if priority == 3:
         return plan.context_calls_per_tick > 0
-    if plan.overloaded:
-        return False
     if priority == 4:
+        if plan.overloaded:
+            return False
         return plan.poll_odds and remaining > protected + plan.detail_need
-    return remaining > plan.safety_buffer + plan.full_reserve
+    return remaining > protected
 
 
 def draw_context_credit(credit: ContextCredit, rate: float) -> int:

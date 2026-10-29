@@ -728,6 +728,27 @@ def test_history_allowance_spreads_surplus_across_cycles() -> None:
     )
 
 
+def test_history_allowance_catch_up_spends_up_to_cap() -> None:
+    assert (
+        history_call_allowance(
+            surplus=34000,
+            seconds_left=29880,
+            cycle_seconds=120,
+            catch_up_cap=450,
+        )
+        == 450
+    )
+    assert (
+        history_call_allowance(
+            surplus=200,
+            seconds_left=29880,
+            cycle_seconds=120,
+            catch_up_cap=450,
+        )
+        == 200
+    )
+
+
 def _history_client(now: datetime, *, recent: int = 0) -> Any:
     class _Client:
         quota = QuotaSnapshot(
@@ -785,14 +806,15 @@ async def test_sleep_spends_the_history_pool(valid_env: None) -> None:
         buffer_percent=0.1,
     )
     window = 0.2
-    surplus = 70000 - scheduler._plan.safety_buffer - scheduler._plan.full_reserve
+    surplus = 70000 - scheduler._plan.safety_buffer - scheduler._plan.score_need
     allowance = history_call_allowance(
         surplus=surplus,
         seconds_left=seconds_until_utc_midnight(now),
         cycle_seconds=queue_cycle_seconds(window, 60),
+        catch_up_cap=settings.quota_requests_per_minute,
     )
     await scheduler._drain_during_sleep(asyncio.Event(), window)
-    assert allowance > 10
+    assert allowance == settings.quota_requests_per_minute
     assert called.count(9) == allowance
     assert 4 not in called
 
@@ -839,12 +861,13 @@ async def test_history_drains_past_the_score_sleep(valid_env: None) -> None:
     )
     window = 0.05
     allowance = history_call_allowance(
-        surplus=70000 - scheduler._plan.safety_buffer - scheduler._plan.full_reserve,
+        surplus=70000 - scheduler._plan.safety_buffer - scheduler._plan.score_need,
         seconds_left=seconds_until_utc_midnight(now),
         cycle_seconds=queue_cycle_seconds(window, 60),
+        catch_up_cap=settings.quota_requests_per_minute,
     )
     await scheduler._drain_during_sleep(asyncio.Event(), window)
-    assert allowance > 1
+    assert allowance == settings.quota_requests_per_minute
     assert client.calls == allowance
     assert opened["deadline"] - opened["at"] > window
 
@@ -880,9 +903,10 @@ async def test_score_tick_runs_on_its_clock_during_history(valid_env: None) -> N
     )
     window = 0.05
     allowance = history_call_allowance(
-        surplus=70000 - scheduler._plan.safety_buffer - scheduler._plan.full_reserve,
+        surplus=70000 - scheduler._plan.safety_buffer - scheduler._plan.score_need,
         seconds_left=seconds_until_utc_midnight(now),
         cycle_seconds=queue_cycle_seconds(window, 60),
+        catch_up_cap=settings.quota_requests_per_minute,
     )
 
     async def fake_tick(stop: asyncio.Event) -> None:
@@ -897,7 +921,7 @@ async def test_score_tick_runs_on_its_clock_during_history(valid_env: None) -> N
         window,
         score_clock=[time.monotonic() + window],
     )
-    assert allowance > 3
+    assert allowance == settings.quota_requests_per_minute
     assert ticks
     assert ticks[0] < client.calls
     assert client.calls == allowance
