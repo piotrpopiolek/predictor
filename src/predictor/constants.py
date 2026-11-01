@@ -143,6 +143,8 @@ def lane_split(live_matches: int) -> LaneSplit:
         live_per_minute=live_per_minute,
         history_per_minute=history_per_minute,
     )
+
+
 ODDS_MAPPING_RETRY_BACKOFF_SECONDS = 15 * 60
 ODDS_MAPPING_REFRESH_SECONDS = 2 * 60 * 60
 
