@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from predictor.constants import LIVE_DETAIL_CONCURRENCY
+from predictor.constants import lane_split
 from predictor.services.ingest.live_context import LiveContextIngest, _Spend
 
 NOW = datetime(2026, 10, 24, 16, 0, tzinfo=UTC)
@@ -56,7 +56,7 @@ async def _peak(limit: int) -> int:
         nonlocal inflight, peak
         inflight += 1
         peak = max(peak, inflight)
-        if inflight == min(limit, LIVE_DETAIL_CONCURRENCY):
+        if inflight == min(limit, lane_split(0).live_concurrency):
             release.set()
         await release.wait()
         inflight -= 1
@@ -70,7 +70,7 @@ async def _peak(limit: int) -> int:
 
 @pytest.mark.asyncio
 async def test_match_details_go_out_two_at_a_time() -> None:
-    assert LIVE_DETAIL_CONCURRENCY == 2
+    assert lane_split(0).live_concurrency == 2
     assert await _peak(8) == 2
 
 

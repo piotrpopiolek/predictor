@@ -20,10 +20,10 @@ from predictor.client.errors import (
 )
 from predictor.client.football import FootballClient
 from predictor.constants import (
-    HISTORY_FETCH_CONCURRENCY,
     LOOKUP_WITHOUT_HTTP,
     TEAM_STATS_SENTINEL_DATE,
     TOP_PLAYER_ENDPOINTS,
+    lane_split,
 )
 from predictor.logutil import log_json
 from predictor.models.catalog import LeagueSeason
@@ -99,12 +99,14 @@ class GlobalIngest:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         now_fn: Callable[[], datetime] | None = None,
-        per_tick: int = HISTORY_FETCH_CONCURRENCY,
+        per_tick: int | None = None,
     ) -> None:
         self._client = client
         self._session_factory = session_factory
         self._now = now_fn or (lambda: datetime.now(UTC))
-        self._per_tick = per_tick
+        self._per_tick = (
+            lane_split(0).history_concurrency if per_tick is None else per_tick
+        )
 
     def _quota_left(self) -> bool:
         snapshot = self._client.quota
@@ -121,7 +123,7 @@ class GlobalIngest:
         while left > 0:
             if not self._quota_left():
                 return
-            room = min(left, self._fetch_limit(), HISTORY_FETCH_CONCURRENCY)
+            room = min(left, self._fetch_limit(), self._concurrency())
             if room <= 0:
                 return
             task_ids = await self._claim_ids(room)
@@ -130,8 +132,14 @@ class GlobalIngest:
             await self._run_batch(task_ids)
             left -= len(task_ids)
 
+    def _concurrency(self) -> int:
+        value = getattr(self._client, "history_concurrency", None)
+        if isinstance(value, int) and value > 0:
+            return value
+        return self._per_tick
+
     def _fetch_limit(self) -> int:
-        limit = self._per_tick
+        limit = self._concurrency()
         room = getattr(self._client, "history_room", None)
         if callable(room):
             available = room()

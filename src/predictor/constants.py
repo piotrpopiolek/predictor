@@ -1,5 +1,6 @@
 """Process-wide constants. The writer lock key is shared by worker and status."""
 
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
 WRITER_LOCK_KEY = 739201
@@ -109,8 +110,39 @@ PREMATCH_PER_TICK = 4
 URGENT_PREMATCH_PER_TICK = 4
 URGENT_PREMATCH_HORIZON_HOURS = 6
 GLOBAL_PER_TICK = 3
-HISTORY_FETCH_CONCURRENCY = 8
-LIVE_DETAIL_CONCURRENCY = 2
+# In-flight HTTP shared by the live lane and the history lane.
+FETCH_CONCURRENCY = 12
+LIVE_LANE_MATCH_THRESHOLD = 50
+
+
+@dataclass(frozen=True, slots=True)
+class LaneSplit:
+    live_concurrency: int
+    history_concurrency: int
+    live_per_minute: int
+    history_per_minute: int
+
+
+def lane_split(live_matches: int) -> LaneSplit:
+    """Share one parallel pool and the vendor minute between live and history.
+
+    A busy board keeps most in-flight calls on live details. A quiet board
+    gives them to history. The two minute budgets add up to the vendor cap.
+    """
+    if live_matches >= LIVE_LANE_MATCH_THRESHOLD:
+        live_concurrency = 8
+        live_per_minute = 300
+        history_per_minute = 150
+    else:
+        live_concurrency = 2
+        live_per_minute = 120
+        history_per_minute = 330
+    return LaneSplit(
+        live_concurrency=live_concurrency,
+        history_concurrency=FETCH_CONCURRENCY - live_concurrency,
+        live_per_minute=live_per_minute,
+        history_per_minute=history_per_minute,
+    )
 ODDS_MAPPING_RETRY_BACKOFF_SECONDS = 15 * 60
 ODDS_MAPPING_REFRESH_SECONDS = 2 * 60 * 60
 

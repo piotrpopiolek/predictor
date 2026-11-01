@@ -18,6 +18,7 @@ from predictor.client.errors import (
 )
 from predictor.client.football import FootballClient
 from predictor.client.quota import QuotaSnapshot
+from predictor.constants import lane_split
 from predictor.schemas.settings import load_settings
 from predictor.services.quota import (
     history_call_allowance,
@@ -815,10 +816,10 @@ async def test_sleep_spends_the_history_pool(valid_env: None) -> None:
         surplus=surplus,
         seconds_left=seconds_until_utc_midnight(now),
         cycle_seconds=queue_cycle_seconds(window, 60),
-        catch_up_cap=settings.quota_requests_per_minute,
+        catch_up_cap=lane_split(0).history_per_minute,
     )
     await scheduler._drain_during_sleep(asyncio.Event(), window)
-    assert allowance == settings.quota_requests_per_minute
+    assert allowance == lane_split(0).history_per_minute
     assert called.count(9) == allowance
     assert 4 not in called
 
@@ -868,10 +869,10 @@ async def test_history_drains_past_the_score_sleep(valid_env: None) -> None:
         surplus=70000 - scheduler._plan.safety_buffer - scheduler._plan.score_need,
         seconds_left=seconds_until_utc_midnight(now),
         cycle_seconds=queue_cycle_seconds(window, 60),
-        catch_up_cap=settings.quota_requests_per_minute,
+        catch_up_cap=lane_split(0).history_per_minute,
     )
     await scheduler._drain_during_sleep(asyncio.Event(), window)
-    assert allowance == settings.quota_requests_per_minute
+    assert allowance == lane_split(0).history_per_minute
     assert client.calls == allowance
     assert opened["deadline"] - opened["at"] > window
 
@@ -910,7 +911,7 @@ async def test_score_tick_runs_on_its_clock_during_history(valid_env: None) -> N
         surplus=70000 - scheduler._plan.safety_buffer - scheduler._plan.score_need,
         seconds_left=seconds_until_utc_midnight(now),
         cycle_seconds=queue_cycle_seconds(window, 60),
-        catch_up_cap=settings.quota_requests_per_minute,
+        catch_up_cap=lane_split(0).history_per_minute,
     )
 
     async def fake_tick(stop: asyncio.Event) -> None:
@@ -925,7 +926,7 @@ async def test_score_tick_runs_on_its_clock_during_history(valid_env: None) -> N
         window,
         score_clock=[time.monotonic() + window],
     )
-    assert allowance == settings.quota_requests_per_minute
+    assert allowance == lane_split(0).history_per_minute
     assert ticks
     assert ticks[0] < client.calls
     assert client.calls == allowance
@@ -994,5 +995,65 @@ async def test_closed_history_window_does_not_send(valid_env: None) -> None:
         with pytest.raises(SpendWindowClosed):
             await client.get("/timezone")
         assert sent["n"] == 1
+    finally:
+        await client.aclose()
+
+
+def test_lane_split_shares_one_pool_and_the_vendor_minute() -> None:
+    from predictor.constants import FETCH_CONCURRENCY
+
+    quiet = lane_split(0)
+    busy = lane_split(50)
+    assert quiet.live_concurrency + quiet.history_concurrency == FETCH_CONCURRENCY
+    assert busy.live_concurrency + busy.history_concurrency == FETCH_CONCURRENCY
+    assert quiet.live_per_minute + quiet.history_per_minute == 450
+    assert busy.live_per_minute + busy.history_per_minute == 450
+    assert quiet.history_concurrency > busy.history_concurrency
+    assert busy.live_concurrency > quiet.live_concurrency
+
+
+def test_score_clock_is_measured_from_the_tick_start(valid_env: None) -> None:
+    now = datetime(2026, 10, 11, 16, 0, tzinfo=UTC)
+    scheduler = Scheduler(
+        load_settings(),
+        _history_client(now),
+        _unused_factory(),
+        now_fn=lambda: now,
+    )
+    scheduler._sleep_seconds = lambda: 0.01  # type: ignore[method-assign]
+    started = time.monotonic()
+    time.sleep(0.03)
+    assert scheduler._arm_score_clock(started) < time.monotonic()
+
+
+@pytest.mark.asyncio
+async def test_history_minute_ignores_earlier_live_calls(valid_env: None) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={"response": []},
+            headers={
+                "x-ratelimit-requests-limit": "75000",
+                "x-ratelimit-requests-remaining": "70000",
+            },
+        )
+
+    client = FootballClient(
+        load_settings(),
+        locked=True,
+        transport=httpx.MockTransport(handler),
+        retry_wait=WaitZero(),
+    )
+    try:
+        await client.get("/timezone")
+        client.open_history_window(
+            deadline=time.monotonic() + 5,
+            call_ceiling=10,
+            per_minute=1,
+        )
+        assert client.history_room() == 1
+        await client.get("/timezone")
+        assert client.history_room() == 0
     finally:
         await client.aclose()

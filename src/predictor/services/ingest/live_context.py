@@ -25,9 +25,9 @@ from predictor.constants import (
     LIVE_CONTEXT_MAX_CALLS_PER_TICK,
     LIVE_CONTEXT_ONESHOT_CALLS,
     LIVE_CONTEXT_TIME_FRACTION,
-    LIVE_DETAIL_CONCURRENCY,
     LIVE_DETAIL_REFRESH_SECONDS,
     TOP_PLAYER_ENDPOINTS,
+    lane_split,
 )
 from predictor.logutil import log_json
 from predictor.models.etl import EtlTask
@@ -220,10 +220,21 @@ class LiveContextIngest:
         self._detail_cursor = 0
 
     def _quota_left(self) -> bool:
-        snapshot = self._enrichment._client.quota
+        client = self._enrichment._client
+        live_full = getattr(client, "live_minute_full", None)
+        if callable(live_full) and live_full():
+            return False
+        snapshot = client.quota
         if snapshot is None:
             return True
         return snapshot.remaining > 0
+
+    def _detail_concurrency(self) -> int:
+        client = getattr(self._enrichment, "_client", None)
+        value = getattr(client, "live_concurrency", None)
+        if isinstance(value, int) and value > 0:
+            return value
+        return lane_split(0).live_concurrency
 
     async def refresh(
         self,
@@ -434,7 +445,7 @@ class LiveContextIngest:
                 continue
             pending.append((fixture_id, match_status, due_after))
             batch_cap = min(
-                LIVE_DETAIL_CONCURRENCY,
+                self._detail_concurrency(),
                 limit - fetched,
                 spend.slots(),
             )

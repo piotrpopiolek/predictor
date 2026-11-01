@@ -1,4 +1,4 @@
-"""History fetch batch: eight independent tasks overlap, one stays alone."""
+"""History fetch batch: the quiet lane overlaps, one task stays alone."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from predictor.constants import HISTORY_FETCH_CONCURRENCY
+from predictor.constants import lane_split
 from predictor.services.ingest.global_entities import GlobalIngest
 
 
@@ -34,10 +34,10 @@ async def _peak(ingest: GlobalIngest, task_ids: list[int]) -> int:
 
 
 @pytest.mark.asyncio
-async def test_eight_transfers_overlap_in_flight() -> None:
-    assert HISTORY_FETCH_CONCURRENCY == 8
-    ingest = GlobalIngest(object(), object(), per_tick=8)  # type: ignore[arg-type]
-    assert await _peak(ingest, [1, 2, 3, 4, 5, 6, 7, 8]) == 8
+async def test_quiet_history_lane_overlaps_in_flight() -> None:
+    width = lane_split(0).history_concurrency
+    ingest = GlobalIngest(object(), object(), per_tick=width)  # type: ignore[arg-type]
+    assert await _peak(ingest, list(range(width))) == width
 
 
 @pytest.mark.asyncio

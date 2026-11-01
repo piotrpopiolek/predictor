@@ -21,6 +21,7 @@ from predictor.client.errors import (
 )
 from predictor.client.football import FootballClient
 from predictor.client.quota import QuotaSnapshot
+from predictor.constants import lane_split
 from predictor.logutil import log_json
 from predictor.schemas.settings import Settings
 from predictor.services.completeness import write_daily_report
@@ -149,8 +150,9 @@ class Scheduler:
         score_clock = [time.monotonic()]
         while not stop.is_set():
             if time.monotonic() >= score_clock[0]:
+                started = time.monotonic()
                 await self._tick(stop)
-                score_clock[0] = time.monotonic() + self._sleep_seconds()
+                score_clock[0] = self._arm_score_clock(started)
             if stop.is_set():
                 return
             if not self._work_started:
@@ -200,7 +202,8 @@ class Scheduler:
         # Catch-up: keep score polls + buffer. Detail/odds still win inside the
         # live tick; they must not park the whole day budget away from history.
         surplus = quota.remaining - plan.safety_buffer - plan.score_need
-        catch_up_cap = self._settings.quota_requests_per_minute
+        self._apply_lane()
+        catch_up_cap = lane_split(self._live_match_count()).history_per_minute
         allowance = history_call_allowance(
             surplus=surplus,
             seconds_left=seconds_until_utc_midnight(self._now()),
@@ -271,8 +274,9 @@ class Scheduler:
         """
         self._close_history_window()
         history_spent = self._client_calls() - baseline
+        started = time.monotonic()
         await self._tick(stop)
-        score_clock[0] = time.monotonic() + self._sleep_seconds()
+        score_clock[0] = self._arm_score_clock(started)
         if stop.is_set() or not self._work_started:
             return None
         return self._client_calls() - history_spent
@@ -330,7 +334,7 @@ class Scheduler:
         opener(
             deadline=deadline,
             call_ceiling=call_ceiling,
-            per_minute=self._settings.quota_requests_per_minute,
+            per_minute=lane_split(self._live_match_count()).history_per_minute,
         )
 
     def _close_history_window(self) -> None:
@@ -339,10 +343,22 @@ class Scheduler:
             closer()
 
     def _minute_full(self) -> bool:
+        full = getattr(self._client, "history_minute_full", None)
+        if callable(full):
+            return bool(full())
         recent = getattr(self._client, "calls_in_recent_seconds", None)
         if recent is None:
             return False
         return int(recent(60.0)) >= self._settings.quota_requests_per_minute
+
+    def _apply_lane(self) -> None:
+        apply = getattr(self._client, "apply_lane", None)
+        if callable(apply):
+            apply(lane_split(self._live_match_count()))
+
+    def _arm_score_clock(self, started: float) -> float:
+        """Next score poll is one interval after the tick started."""
+        return started + self._sleep_seconds()
 
     async def _settle_open_bets(self) -> None:
         """DB-only. Runs even when the API quota is exhausted."""
@@ -393,7 +409,10 @@ class Scheduler:
             self._warn_if_live_stretched(plan, target, quota)
             self._work_started = True
             tick_start = self._now()
+            self._apply_lane()
             for slot in PRIORITY_ORDER:
+                if slot.priority >= 2:
+                    self._apply_lane()
                 if stop.is_set():
                     return
                 quota = self._prefer_observed(quota)

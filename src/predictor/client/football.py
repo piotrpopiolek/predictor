@@ -40,6 +40,8 @@ from predictor.constants import (
     HTTP_READ_TIMEOUT_SECONDS,
     HTTP_RETRY_ATTEMPTS,
     HTTP_WRITE_TIMEOUT_SECONDS,
+    LaneSplit,
+    lane_split,
 )
 from predictor.schemas.api_football import ApiEnvelope
 from predictor.schemas.settings import Settings
@@ -61,6 +63,14 @@ class FootballClient:
         self._quota: QuotaSnapshot | None = None
         self._calls_made = 0
         self._call_marks: deque[float] = deque()
+        self._live_marks: deque[float] = deque()
+        self._history_marks: deque[float] = deque()
+        self._vendor_per_minute = settings.quota_requests_per_minute
+        quiet = lane_split(0)
+        self._live_per_minute = quiet.live_per_minute
+        self._history_per_minute = quiet.history_per_minute
+        self._live_concurrency = quiet.live_concurrency
+        self._history_concurrency = quiet.history_concurrency
         self._window_deadline: float | None = None
         self._window_ceiling = 0
         self._window_per_minute = 0
@@ -104,6 +114,20 @@ class FootballClient:
     def calls_made(self) -> int:
         return self._calls_made
 
+    def apply_lane(self, split: LaneSplit) -> None:
+        self._live_per_minute = split.live_per_minute
+        self._history_per_minute = split.history_per_minute
+        self._live_concurrency = split.live_concurrency
+        self._history_concurrency = split.history_concurrency
+
+    @property
+    def live_concurrency(self) -> int:
+        return self._live_concurrency
+
+    @property
+    def history_concurrency(self) -> int:
+        return self._history_concurrency
+
     def open_history_window(
         self,
         *,
@@ -111,7 +135,7 @@ class FootballClient:
         call_ceiling: int,
         per_minute: int,
     ) -> None:
-        """Refuse HTTP once the deadline, the call pool, or the minute cap is spent."""
+        """Refuse history HTTP once the deadline, the pool, or its minute is spent."""
         self._window_deadline = deadline
         self._window_ceiling = call_ceiling
         self._window_per_minute = per_minute
@@ -120,20 +144,39 @@ class FootballClient:
         self._window_deadline = None
 
     def history_room(self) -> int | None:
-        """Calls still allowed in the open window, or None when it is unset."""
+        """History calls still allowed, ignoring live calls in the same minute."""
         if self._window_deadline is None:
             return None
         if time.monotonic() >= self._window_deadline:
             return 0
         by_ceiling = max(0, self._window_ceiling - self._calls_made)
-        by_minute = max(0, self._window_per_minute - self.calls_in_recent_seconds(60))
-        return min(by_ceiling, by_minute)
+        by_minute = max(0, self._window_per_minute - self._recent(self._history_marks))
+        by_vendor = max(0, self._vendor_per_minute - self.calls_in_recent_seconds(60))
+        return min(by_ceiling, by_minute, by_vendor)
+
+    def history_minute_full(self) -> bool:
+        cap = (
+            self._window_per_minute
+            if self._window_deadline is not None
+            else self._history_per_minute
+        )
+        if self._recent(self._history_marks) >= cap:
+            return True
+        return self.calls_in_recent_seconds(60) >= self._vendor_per_minute
+
+    def live_minute_full(self) -> bool:
+        if self._recent(self._live_marks) >= self._live_per_minute:
+            return True
+        return self.calls_in_recent_seconds(60) >= self._vendor_per_minute
 
     def calls_in_recent_seconds(self, seconds: float) -> int:
+        return self._recent(self._call_marks, seconds)
+
+    def _recent(self, marks: deque[float], seconds: float = 60.0) -> int:
         cutoff = time.monotonic() - seconds
-        while self._call_marks and self._call_marks[0] < cutoff:
-            self._call_marks.popleft()
-        return len(self._call_marks)
+        while marks and marks[0] < cutoff:
+            marks.popleft()
+        return len(marks)
 
     def _redact(self, text: str) -> str:
         if self._key and self._key in text:
@@ -196,8 +239,7 @@ class FootballClient:
         params: Mapping[str, str | int] | None,
     ) -> httpx.Response:
         self._refuse_closed_window()
-        self._calls_made += 1
-        self._call_marks.append(time.monotonic())
+        self._note_call()
         try:
             response = await self._http.request(method, path, params=params)
         except httpx.TransportError:
@@ -221,13 +263,23 @@ class FootballClient:
             raise FootballHttpError(response.status_code, path)
         return response
 
+    def _note_call(self) -> None:
+        now = time.monotonic()
+        self._calls_made += 1
+        self._call_marks.append(now)
+        if self._window_deadline is not None:
+            self._history_marks.append(now)
+        else:
+            self._live_marks.append(now)
+
     def _refuse_closed_window(self) -> None:
         if self._window_deadline is None:
             return
         closed = (
             time.monotonic() >= self._window_deadline
             or self._calls_made >= self._window_ceiling
-            or self.calls_in_recent_seconds(60) >= self._window_per_minute
+            or self._recent(self._history_marks) >= self._window_per_minute
+            or self.calls_in_recent_seconds(60) >= self._vendor_per_minute
         )
         if closed:
             raise SpendWindowClosed()
