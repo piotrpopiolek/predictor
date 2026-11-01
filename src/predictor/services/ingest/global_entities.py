@@ -104,9 +104,7 @@ class GlobalIngest:
         self._client = client
         self._session_factory = session_factory
         self._now = now_fn or (lambda: datetime.now(UTC))
-        self._per_tick = (
-            lane_split(0).history_concurrency if per_tick is None else per_tick
-        )
+        self._per_tick = per_tick
 
     def _quota_left(self) -> bool:
         snapshot = self._client.quota
@@ -133,10 +131,12 @@ class GlobalIngest:
             left -= len(task_ids)
 
     def _concurrency(self) -> int:
+        if self._per_tick is not None:
+            return self._per_tick
         value = getattr(self._client, "history_concurrency", None)
         if isinstance(value, int) and value > 0:
             return value
-        return self._per_tick
+        return lane_split(0).history_concurrency
 
     def _fetch_limit(self) -> int:
         limit = self._concurrency()
