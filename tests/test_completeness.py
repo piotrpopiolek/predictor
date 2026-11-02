@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from predictor.client.quota import QuotaSnapshot
 from predictor.constants import DAILY_REPORT_ENDPOINT
+from predictor.models.catalog import UntrackedLeague
 from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture
 from predictor.postgres import make_async_engine, make_session_factory
@@ -39,9 +40,11 @@ REPORT_DAY = date(2026, 9, 12)
 FT_ID = 99101
 NS_ID = 99102
 PST_ID = 99103
+UNTRACKED_FT_ID = 99104
 HOME_ID = 960
 AWAY_ID = 961
 LEAGUE_ID = 39
+UNTRACKED_LEAGUE_ID = 99062
 SEASON = 2026
 NOW = datetime(2026, 9, 13, 0, 5, tzinfo=UTC)
 
@@ -51,6 +54,7 @@ def _fixture_payload(
     *,
     status: str,
     kickoff: str,
+    league_id: int = LEAGUE_ID,
 ) -> dict[str, Any]:
     long_status = {
         "FT": "Match Finished",
@@ -69,7 +73,7 @@ def _fixture_payload(
             "status": {"long": long_status, "short": status, "elapsed": None},
         },
         "league": {
-            "id": LEAGUE_ID,
+            "id": league_id,
             "name": "Premier League",
             "country": "England",
             "season": SEASON,
@@ -90,7 +94,7 @@ def _fixture_payload(
 
 
 async def _reset(factory: async_sessionmaker[AsyncSession]) -> None:
-    ids = (FT_ID, NS_ID, PST_ID)
+    ids = (FT_ID, NS_ID, PST_ID, UNTRACKED_FT_ID)
     async with factory() as session, session.begin():
         await session.execute(
             delete(EtlTask)
@@ -115,6 +119,11 @@ async def _reset(factory: async_sessionmaker[AsyncSession]) -> None:
         )
         await session.execute(delete(EtlTask).where(EtlTask.fixture_id.in_(ids)))
         await session.execute(delete(Fixture).where(Fixture.id.in_(ids)))
+        await session.execute(
+            delete(UntrackedLeague).where(
+                UntrackedLeague.league_id == UNTRACKED_LEAGUE_ID
+            )
+        )
         await ensure_cursors(session)
 
 
@@ -143,9 +152,12 @@ async def _seed_fixture(
     *,
     status: str,
     kickoff: str,
+    league_id: int = LEAGUE_ID,
 ) -> None:
     item = FixtureItem.model_validate(
-        _fixture_payload(fixture_id, status=status, kickoff=kickoff)
+        _fixture_payload(
+            fixture_id, status=status, kickoff=kickoff, league_id=league_id
+        )
     )
     async with factory() as session, session.begin():
         await upsert_fixtures(session, [item])
@@ -202,6 +214,28 @@ async def test_ns_open_children_do_not_block_the_day() -> None:
             assert fixture is not None
             assert await match_blockers(session, fixture) == []
             assert await match_is_complete(session, fixture) is True
+            assert await day_is_complete(session, DAY) is True
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_untracked_ft_without_enrichment_does_not_block_the_day() -> None:
+    settings = load_settings()
+    engine = make_async_engine(settings)
+    factory = make_session_factory(engine)
+    try:
+        await _reset(factory)
+        await _seed_fixture(
+            factory,
+            UNTRACKED_FT_ID,
+            status="FT",
+            kickoff="2099-01-02T18:00:00+00:00",
+            league_id=UNTRACKED_LEAGUE_ID,
+        )
+        async with factory() as session, session.begin():
+            session.add(UntrackedLeague(league_id=UNTRACKED_LEAGUE_ID, note="test"))
+            await _mark_day_fetched(session, DAY)
             assert await day_is_complete(session, DAY) is True
     finally:
         await engine.dispose()

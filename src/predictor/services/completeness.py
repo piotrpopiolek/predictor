@@ -16,6 +16,7 @@ from predictor.constants import (
     FINISHED_FIXTURE_STATUSES,
     OPEN_ETL_STATUSES,
 )
+from predictor.models.catalog import UntrackedLeague
 from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture
 from predictor.services.queue import TERMINAL_STATUSES, h2h_param
@@ -53,9 +54,12 @@ async def day_fixtures_fetched(session: AsyncSession, day: date) -> bool:
 
 
 async def fixtures_on_utc_day(session: AsyncSession, day: date) -> list[Fixture]:
+    """Fixtures on ``day`` UTC, excluding leagues we do not follow."""
     start, end = _utc_day_range(day)
     result = await session.scalars(
         select(Fixture)
+        .outerjoin(UntrackedLeague, UntrackedLeague.league_id == Fixture.league_id)
+        .where(UntrackedLeague.league_id.is_(None))
         .where(Fixture.date.is_not(None))
         .where(Fixture.date >= start)
         .where(Fixture.date < end)
