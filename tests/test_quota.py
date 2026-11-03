@@ -27,7 +27,7 @@ def _plan(matches: int, remaining: int, now: datetime):
     )
 
 
-def test_history_catch_up_runs_above_score_reserve() -> None:
+def test_history_waits_when_live_reserve_fills_the_day() -> None:
     now = datetime(2026, 9, 23, 20, 0, tzinfo=UTC)
     snap = QuotaSnapshot(current=7100, limit_day=7500, remaining=400, source="api")
     plan = _plan(30, snap.remaining, now)
@@ -38,8 +38,8 @@ def test_history_catch_up_runs_above_score_reserve() -> None:
     assert plan.overloaded is True
     assert quota_allows(1, snap, plan) is True
     assert quota_allows(2, snap, plan) is True
-    # Detail parking no longer blocks catch-up history.
-    assert quota_allows(9, snap, plan) is True
+    # Overload keeps the full live reserve; history must wait.
+    assert quota_allows(9, snap, plan) is False
     at_score = QuotaSnapshot(
         current=7100,
         limit_day=7500,

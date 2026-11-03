@@ -199,9 +199,9 @@ class Scheduler:
         plan = self._plan
         if quota is None or plan is None or quota.source != "api" or plan.overloaded:
             return
-        # Catch-up: keep score polls + buffer. Detail/odds still win inside the
-        # live tick; they must not park the whole day budget away from history.
-        surplus = quota.remaining - plan.safety_buffer - plan.score_need
+        # Keep the full live reserve until UTC midnight. History spends only
+        # the paced surplus above that; the lane minute is a ceiling.
+        surplus = quota.remaining - plan.safety_buffer - plan.full_reserve
         self._apply_lane()
         catch_up_cap = lane_split(self._live_match_count()).history_per_minute
         allowance = history_call_allowance(

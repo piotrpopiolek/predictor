@@ -259,16 +259,16 @@ _URGENT_MATCH_SHARE = 0.25
 
 
 def queue_cycle_seconds(sleep_seconds: float, live_target_seconds: float) -> float:
-    """Wall-clock length of one loop: work plus the sleep that follows it.
+    """Wall-clock length of one score-clock interval.
 
-    A fast poll spends about as long working as it sleeps, so the cycle is
-    both. An idle poll is almost all sleep.
+    The scheduler arms the next tick from the start of the previous one, so
+    the cycle is exactly the sleep window (60s live, 300s idle).
+    ``live_target_seconds`` is unused and kept for call-site compatibility.
     """
+    del live_target_seconds
     if sleep_seconds <= 0:
         return 0.0
-    if sleep_seconds <= live_target_seconds:
-        return sleep_seconds + live_target_seconds
-    return sleep_seconds
+    return float(sleep_seconds)
 
 
 def history_call_allowance(
@@ -280,21 +280,21 @@ def history_call_allowance(
 ) -> int:
     """Calls for one history window from ``surplus``.
 
-    ``surplus`` is whatever the scheduler left above protected live score
-    calls. With ``catch_up_cap`` > 0 the window spends up to that many calls
-    now (catch-up). Without a cap the old drip applies: surplus spread
-    evenly until UTC midnight.
+    ``surplus`` is the budget above the protected live reserve. The drip
+    spreads it evenly until UTC midnight (``ceil`` so a leftover call is not
+    stranded). ``catch_up_cap`` is only a per-window ceiling (lane minute).
     """
     if surplus <= 0 or seconds_left <= 0 or cycle_seconds <= 0:
         return 0
-    if catch_up_cap > 0:
-        return min(surplus, catch_up_cap)
     cycles_left = max(1.0, seconds_left / cycle_seconds)
-    return min(surplus, math.floor(surplus / cycles_left))
+    paced = min(surplus, math.ceil(surplus / cycles_left))
+    if catch_up_cap > 0:
+        return min(paced, catch_up_cap)
+    return paced
 
 
 def quota_allows(priority: int, snapshot: QuotaSnapshot, plan: LiveBudgetPlan) -> bool:
-    """Live scores always run. History catch-up runs above the score reserve."""
+    """History runs only above the full live reserve. Scores always run."""
     remaining = snapshot.remaining
     if remaining <= 0 or remaining <= plan.safety_buffer:
         return False
@@ -305,11 +305,11 @@ def quota_allows(priority: int, snapshot: QuotaSnapshot, plan: LiveBudgetPlan) -
         return False
     if priority == 3:
         return plan.context_calls_per_tick > 0
+    if plan.overloaded:
+        return False
     if priority == 4:
-        if plan.overloaded:
-            return False
         return plan.poll_odds and remaining > protected + plan.detail_need
-    return remaining > protected
+    return remaining > plan.safety_buffer + plan.full_reserve
 
 
 def draw_context_credit(credit: ContextCredit, rate: float) -> int:

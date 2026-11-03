@@ -252,11 +252,11 @@ async def test_matches_left_today_feeds_the_budget(valid_env: None) -> None:
         matches_left_today=left,
     )
     await scheduler._tick(asyncio.Event())
-    # Slate overload zeros oneshots; history may still catch up above score reserve.
+    # Slate overload zeros oneshots and parks history behind the live reserve.
     assert scheduler._gate.oneshot_calls == 0
     assert scheduler._plan is not None
     assert scheduler._plan.overloaded is True
-    assert called["history"] == 1
+    assert called["history"] == 0
 
     async def broken() -> int:
         raise RuntimeError("db")
@@ -474,7 +474,7 @@ async def test_stale_header_cannot_hide_a_fresh_status(valid_env: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_overload_blocks_odds_but_history_may_catch_up(
+async def test_overload_blocks_odds_and_history(
     valid_env: None,
 ) -> None:
     start = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
@@ -508,7 +508,7 @@ async def test_overload_blocks_odds_but_history_may_catch_up(
         live_match_count=lambda: board["live"],
     )
     await scheduler._tick(asyncio.Event())
-    assert called == [8]
+    assert called == []
     assert scheduler._plan is not None
     assert scheduler._plan.overloaded is True
 
@@ -724,21 +724,26 @@ async def test_spent_status_reprobes_instead_of_sleeping_until_midnight(
 
 
 def test_history_allowance_spreads_surplus_across_cycles() -> None:
-    assert queue_cycle_seconds(60, 60) == 120
+    assert queue_cycle_seconds(60, 60) == 60
     assert queue_cycle_seconds(300, 60) == 300
-    assert history_call_allowance(surplus=0, seconds_left=3600, cycle_seconds=120) == 0
+    assert history_call_allowance(surplus=0, seconds_left=3600, cycle_seconds=60) == 0
+    assert (
+        history_call_allowance(surplus=34000, seconds_left=29880, cycle_seconds=60)
+        == 69
+    )
+    # ceil keeps a leftover call from being stranded across cycles.
     assert (
         history_call_allowance(surplus=34000, seconds_left=29880, cycle_seconds=120)
-        == 136
+        == 137
     )
 
 
-def test_history_allowance_catch_up_spends_up_to_cap() -> None:
+def test_history_allowance_minute_cap_ceilings_the_drip() -> None:
     assert (
         history_call_allowance(
             surplus=34000,
-            seconds_left=29880,
-            cycle_seconds=120,
+            seconds_left=3600,
+            cycle_seconds=60,
             catch_up_cap=450,
         )
         == 450
@@ -750,7 +755,7 @@ def test_history_allowance_catch_up_spends_up_to_cap() -> None:
             cycle_seconds=120,
             catch_up_cap=450,
         )
-        == 200
+        == 1
     )
 
 
@@ -810,8 +815,8 @@ async def test_sleep_spends_the_history_pool(valid_env: None) -> None:
         limit_day=75000,
         buffer_percent=0.1,
     )
-    window = 0.2
-    surplus = 70000 - scheduler._plan.safety_buffer - scheduler._plan.score_need
+    window = 60.0
+    surplus = 70000 - scheduler._plan.safety_buffer - scheduler._plan.full_reserve
     allowance = history_call_allowance(
         surplus=surplus,
         seconds_left=seconds_until_utc_midnight(now),
@@ -819,7 +824,7 @@ async def test_sleep_spends_the_history_pool(valid_env: None) -> None:
         catch_up_cap=lane_split(0).history_per_minute,
     )
     await scheduler._drain_during_sleep(asyncio.Event(), window)
-    assert allowance == lane_split(0).history_per_minute
+    assert 0 < allowance <= lane_split(0).history_per_minute
     assert called.count(9) == allowance
     assert 4 not in called
 
@@ -833,7 +838,7 @@ async def test_history_drains_past_the_score_sleep(valid_env: None) -> None:
     async def history() -> None:
         client.calls += 1
         if client.calls == 1:
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.05)
 
     def open_history_window(
         *,
@@ -864,17 +869,17 @@ async def test_history_drains_past_the_score_sleep(valid_env: None) -> None:
         limit_day=75000,
         buffer_percent=0.1,
     )
-    window = 0.05
+    window = 60.0
     allowance = history_call_allowance(
-        surplus=70000 - scheduler._plan.safety_buffer - scheduler._plan.score_need,
+        surplus=70000 - scheduler._plan.safety_buffer - scheduler._plan.full_reserve,
         seconds_left=seconds_until_utc_midnight(now),
         cycle_seconds=queue_cycle_seconds(window, 60),
         catch_up_cap=lane_split(0).history_per_minute,
     )
     await scheduler._drain_during_sleep(asyncio.Event(), window)
-    assert allowance == lane_split(0).history_per_minute
+    assert 0 < allowance <= lane_split(0).history_per_minute
     assert client.calls == allowance
-    assert opened["deadline"] - opened["at"] > window
+    assert opened["deadline"] - opened["at"] > 1.0
 
 
 @pytest.mark.asyncio
@@ -906,9 +911,9 @@ async def test_score_tick_runs_on_its_clock_during_history(valid_env: None) -> N
         limit_day=75000,
         buffer_percent=0.1,
     )
-    window = 0.05
+    window = 60.0
     allowance = history_call_allowance(
-        surplus=70000 - scheduler._plan.safety_buffer - scheduler._plan.score_need,
+        surplus=70000 - scheduler._plan.safety_buffer - scheduler._plan.full_reserve,
         seconds_left=seconds_until_utc_midnight(now),
         cycle_seconds=queue_cycle_seconds(window, 60),
         catch_up_cap=lane_split(0).history_per_minute,
@@ -920,13 +925,13 @@ async def test_score_tick_runs_on_its_clock_during_history(valid_env: None) -> N
         scheduler._work_started = True
 
     scheduler._tick = fake_tick  # type: ignore[method-assign]
-    scheduler._sleep_seconds = lambda: window  # type: ignore[method-assign]
+    scheduler._sleep_seconds = lambda: 0.05  # type: ignore[method-assign]
     await scheduler._spend_history(
         asyncio.Event(),
         window,
-        score_clock=[time.monotonic() + window],
+        score_clock=[time.monotonic() + 0.05],
     )
-    assert allowance == lane_split(0).history_per_minute
+    assert 0 < allowance <= lane_split(0).history_per_minute
     assert ticks
     assert ticks[0] < client.calls
     assert client.calls == allowance
