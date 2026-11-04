@@ -1,4 +1,4 @@
-"""Advisor process loop. One instance, sandbox only, no API-Football."""
+"""Advisor process loop. One instance, sandbox/recommendation, no API-Football."""
 
 from __future__ import annotations
 

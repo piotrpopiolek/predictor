@@ -34,6 +34,8 @@ class OverUnderRow:
     tradable: bool
     captured_at: datetime
     market: str = REGULATION_OVER_UNDER
+    home_goals: int | None = None
+    away_goals: int | None = None
 
 
 _OVER_UNDER_MARKETS = frozenset(
@@ -82,6 +84,8 @@ async def latest_over_under(
                 FixtureOddsLive.blocked,
                 FixtureOddsLive.finished,
                 FixtureOddsLive.captured_at,
+                FixtureOddsLive.home_goals,
+                FixtureOddsLive.away_goals,
             )
             .join(
                 latest,
@@ -110,6 +114,8 @@ async def latest_over_under(
                 ),
                 captured_at=row.captured_at,
                 market=market,
+                home_goals=row.home_goals,
+                away_goals=row.away_goals,
             )
         )
     return {fixture_id: tuple(items) for fixture_id, items in grouped.items()}

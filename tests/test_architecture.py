@@ -140,7 +140,7 @@ def test_no_vendor_api_host_in_application() -> None:
 
 
 def test_alembic_head_helper_matches_w1() -> None:
-    assert current_alembic_head() == "0024_cycle_validation_status"
+    assert current_alembic_head() == "0025_advisor_odds_refresh"
 
 
 def test_status_report_does_not_settle() -> None:
@@ -188,6 +188,7 @@ def test_advisor_browse_is_read_only() -> None:
 
 
 def test_advisor_process_does_not_call_api_football() -> None:
+    """Advisor process never constructs FootballClient or takes the writer lock."""
     root = Path("src/predictor/advisor")
     bodies = [path.read_text(encoding="utf-8") for path in root.rglob("*.py")]
     assert bodies
@@ -196,6 +197,9 @@ def test_advisor_process_does_not_call_api_football() -> None:
         assert "api-sports.io" not in body.lower()
         assert "google.genai" not in body
         assert "from google" not in body
+        assert "WRITER_LOCK_KEY" not in body
+        assert "refresh_candidate_fixtures" not in body
+        assert "persist_targeted_live" not in body
 
 
 def test_advisor_lock_is_not_the_writer_lock() -> None:
@@ -216,6 +220,7 @@ def test_advisor_domain_does_not_touch_io() -> None:
         body = path.read_text(encoding="utf-8")
         assert "FootballClient" not in body
         assert "api-sports.io" not in body.lower()
+        assert "WRITER_LOCK_KEY" not in body
         if path.name != "gemini.py":
             assert "google.genai" not in body
             assert "from google" not in body
@@ -226,6 +231,16 @@ def test_advisor_domain_does_not_touch_io() -> None:
     assert "google.genai" in gemini
     assert "_ATTEMPTS = 5" in gemini
     assert "HttpRetryOptions(attempts=_ATTEMPTS)" in gemini
+    refresh = Path("src/predictor/services/ingest/candidate_refresh.py").read_text(
+        encoding="utf-8"
+    )
+    assert "FootballClient" in refresh
+    assert "persist_targeted_live" in refresh
+    assert "WriterLock" not in refresh
+    assert "WRITER_LOCK_KEY" not in refresh
+    assert "enqueue_odds_refresh" in Path(
+        "src/predictor/services/advisor/odds_refresh.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_advisory_lock_parts_split_bigint() -> None:

@@ -167,18 +167,29 @@ def quote_for_period(
     extratime_home: int | None,
     extratime_away: int | None,
 ) -> LineQuote | None:
-    """Over N+0.5 for the settlement period's own market."""
+    """Over N+0.5 for the settlement period's own market.
+
+    The odds row must carry the same scoreboard as the candidate. Live
+    snapshots stamp total goals; a pre-goal Over line must not price a
+    post-goal board.
+    """
     market = over_under_market(period)
     if market is None:
         return None
     if period is Period.EXTRA_TIME:
         n = (extratime_home or 0) + (extratime_away or 0)
+        board = _board_score(goals_home, goals_away)
     else:
         if goals_home is None or goals_away is None:
             return None
         n = goals_home + goals_away
+        board = (goals_home, goals_away)
+    if board is None:
+        return None
     for row in rows:
         if row.market != market:
+            continue
+        if (row.home_goals, row.away_goals) != board:
             continue
         if not over_line_matches(row.label, row.handicap, n):
             continue
@@ -186,3 +197,47 @@ def quote_for_period(
             odd=row.odd, tradable=row.tradable, captured_at=row.captured_at
         )
     return None
+
+
+def fixtures_needing_odds_refresh(
+    matches: Sequence[MatchSnapshot],
+    quotes: dict[int, tuple[OverUnderRow, ...]],
+    *,
+    only: frozenset[int] | None = None,
+) -> tuple[int, ...]:
+    """Fixtures whose Over/Under snapshot is stamped at a different board score.
+
+    ``only`` limits the check to LLM-gate fixtures (the set about to enter the
+    prompt). A true ``no_line`` at the matching score does not need a refresh.
+    """
+    need: list[int] = []
+    for match in matches:
+        if only is not None and match.fixture_id not in only:
+            continue
+        rows = quotes.get(match.fixture_id, ())
+        if not rows:
+            continue
+        period = period_for(match.status_short)
+        if period is None:
+            continue
+        market = over_under_market(period)
+        if market is None:
+            continue
+        board = _board_score(match.goals_home, match.goals_away)
+        if board is None:
+            continue
+        stamped = tuple(row for row in rows if row.market == market)
+        if not stamped:
+            continue
+        if any((row.home_goals, row.away_goals) == board for row in stamped):
+            continue
+        need.append(match.fixture_id)
+    return tuple(need)
+
+
+def _board_score(
+    goals_home: int | None, goals_away: int | None
+) -> tuple[int, int] | None:
+    if goals_home is None or goals_away is None:
+        return None
+    return goals_home, goals_away

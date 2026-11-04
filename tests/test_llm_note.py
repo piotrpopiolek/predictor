@@ -66,6 +66,8 @@ def _row(
     tradable: bool = True,
     age: int = 20,
     handicap: str = "1.5",
+    home_goals: int | None = 0,
+    away_goals: int | None = 1,
 ) -> OverUnderRow:
     return OverUnderRow(
         fixture_id=1,
@@ -74,6 +76,8 @@ def _row(
         odd=Decimal(odd),
         tradable=tradable,
         captured_at=NOW - timedelta(seconds=age),
+        home_goals=home_goals,
+        away_goals=away_goals,
     )
 
 
@@ -116,6 +120,8 @@ def test_extra_time_uses_et_goals_and_et_market() -> None:
         tradable=True,
         captured_at=NOW - timedelta(seconds=20),
         market=EXTRA_TIME_OVER_UNDER,
+        home_goals=1,
+        away_goals=0,
     )
     assert _gaps(et, (priced,)) == ()
     late = _match(
@@ -234,7 +240,8 @@ def test_note_renders_gaps_or_the_decision() -> None:
 
 def test_prompt_gate_gaps_mirror_domain() -> None:
     assert LlmGap.PERIOD_GOALS in _gaps(
-        _match(goals_home=2, goals_away=1), (_row(handicap="3.5", odd="1.700"),)
+        _match(goals_home=2, goals_away=1),
+        (_row(handicap="3.5", odd="1.700", home_goals=2, away_goals=1),),
     )
     assert LlmGap.FAVORITE_ODD in _gaps(_match(favorite_odd=None), (_row(),))
     assert LlmGap.FAVORITE_ODD in _gaps(_match(favorite_odd=Decimal("2.00")), (_row(),))
@@ -300,6 +307,8 @@ def test_remaining_prompt_gates() -> None:
         odd=Decimal("1.500"),
         tradable=True,
         captured_at=datetime(2026, 10, 24, 15, 0),
+        home_goals=0,
+        away_goals=1,
     )
     future = OverUnderRow(
         fixture_id=1,
@@ -308,6 +317,8 @@ def test_remaining_prompt_gates() -> None:
         odd=Decimal("1.500"),
         tradable=True,
         captured_at=NOW + timedelta(minutes=5),
+        home_goals=0,
+        away_goals=1,
     )
     assert LlmGap.STALE in _gaps(_match(), (naive,))
     assert LlmGap.STALE in _gaps(_match(), (future,))

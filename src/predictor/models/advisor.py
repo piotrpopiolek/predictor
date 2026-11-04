@@ -457,6 +457,19 @@ class AdvisorStrategyEvent(Base):
     )
 
 
+class AdvisorOddsRefresh(Base):
+    """Urgent live odds pull requested by advisor; drained by the worker."""
+
+    __tablename__ = "advisor_odds_refresh"
+
+    fixture_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("fixtures.id", ondelete="CASCADE"), primary_key=True
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class AdvisorTelegramOutbox(Base):
     """One Telegram send. The payload is the message text, never a token."""
 

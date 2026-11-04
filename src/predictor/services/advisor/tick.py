@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -12,6 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from predictor.constants import ODDS_REFRESH_POLL_SECONDS, ODDS_REFRESH_WAIT_SECONDS
 from predictor.models.advisor import (
     AdvisorCycle,
     AdvisorStrategy,
@@ -21,6 +23,7 @@ from predictor.schemas.advisor import AdvisorSettings
 from predictor.services.advisor.candidates import (
     MatchSnapshot,
     candidate_signature,
+    fixtures_needing_odds_refresh,
     lone_candidate_allowed,
     playable_candidate,
 )
@@ -29,6 +32,7 @@ from predictor.services.advisor.domain import QUOTE_MAX_AGE, PlayLimits
 from predictor.services.advisor.langfuse import TraceSink
 from predictor.services.advisor.llm.protocol import LlmProvider
 from predictor.services.advisor.llm.validate import PricedCandidate, review_model_output
+from predictor.services.advisor.odds_refresh import enqueue_odds_refresh
 from predictor.services.advisor.prompts.cycle import PROMPT_VERSION, render_cycle_prompt
 from predictor.services.advisor.recommend import (
     RecommendationSetup,
@@ -234,6 +238,27 @@ async def run_tick(
             signature = candidate_signature(candidates)
             if book.status not in _ACTIVE or not own.ready(signature, now, wait):
                 continue
+            refreshed = await _refresh_before_llm(
+                engine,
+                factory,
+                book,
+                selected,
+                quotes,
+                now,
+                candidates=candidates,
+            )
+            if refreshed is None:
+                continue
+            selected, quotes, candidates, opened = refreshed
+            if not candidates:
+                continue
+            allowed = frozenset(
+                item.fixture_id
+                for item in selected
+                if recommendation is not None
+                and item.fixture_id not in reco_open
+                and league_allowed(item.league_id, recommendation, untracked=ignored)
+            )
             details = await _match_details(
                 engine, [item.fixture_id for item in candidates]
             )
@@ -276,6 +301,89 @@ async def run_tick(
             if outcome.called:
                 called = True
         return called
+
+
+async def _refresh_before_llm(
+    engine: AsyncEngine,
+    factory: async_sessionmaker[AsyncSession],
+    book: StrategyBook,
+    selected: tuple[MatchSnapshot, ...],
+    quotes: dict[int, tuple[OverUnderRow, ...]],
+    now: datetime,
+    *,
+    candidates: tuple[CycleCandidate, ...],
+) -> (
+    tuple[
+        tuple[MatchSnapshot, ...],
+        dict[int, tuple[OverUnderRow, ...]],
+        tuple[CycleCandidate, ...],
+        frozenset[int],
+    ]
+    | None
+):
+    """Ask the worker for score-mismatched LLM fixtures, then re-price from DB.
+
+    Only fixtures that already passed the LLM gate are enqueued or can block
+    the call. Returns None on wait timeout or a gated fixture still mismatched.
+    """
+    llm_ids = frozenset(item.fixture_id for item in candidates)
+    need = fixtures_needing_odds_refresh(selected, quotes, only=llm_ids)
+    if need:
+        async with factory() as session, session.begin():
+            await enqueue_odds_refresh(session, need, now=now)
+        waited = await _wait_for_matching_quotes(
+            engine, factory, selected, llm_ids=llm_ids
+        )
+        if waited is None:
+            return None
+        selected, quotes = waited
+    async with factory() as session, session.begin():
+        quotes = await latest_over_under(
+            session,
+            [item.fixture_id for item in selected],
+        )
+        if fixtures_needing_odds_refresh(selected, quotes, only=llm_ids):
+            return None
+        candidates = await _playable(session, book, selected, quotes, now, for_llm=True)
+        if not lone_candidate_allowed(candidates, min_combined_odd=book.min_odd):
+            candidates = ()
+        opened = await open_fixture_ids(session, book.strategy_id)
+    return selected, quotes, candidates, opened
+
+
+async def _wait_for_matching_quotes(
+    engine: AsyncEngine,
+    factory: async_sessionmaker[AsyncSession],
+    selected: tuple[MatchSnapshot, ...],
+    *,
+    llm_ids: frozenset[int],
+) -> tuple[tuple[MatchSnapshot, ...], dict[int, tuple[OverUnderRow, ...]]] | None:
+    """Poll until gated fixtures have score-matched quotes, or time out."""
+    originals = {
+        item.fixture_id: item for item in selected if item.fixture_id in llm_ids
+    }
+    deadline = time.monotonic() + ODDS_REFRESH_WAIT_SECONDS
+    while True:
+        matches = await list_live_matches(engine)
+        legs = await load_first_legs(engine, matches)
+        board = board_snapshots(matches, legs)
+        by_id = {item.fixture_id: item for item in board}
+        tracked = tuple(
+            by_id.get(fixture_id, originals[fixture_id])
+            for fixture_id in llm_ids
+            if fixture_id in by_id or fixture_id in originals
+        )
+        async with factory() as session:
+            quotes = await latest_over_under(
+                session,
+                [item.fixture_id for item in tracked],
+            )
+        if tracked and not fixtures_needing_odds_refresh(tracked, quotes, only=llm_ids):
+            return (board if board else tracked), quotes
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        await asyncio.sleep(min(ODDS_REFRESH_POLL_SECONDS, remaining))
 
 
 async def restore_window(session: AsyncSession, strategy_id: int) -> CandidateWindow:

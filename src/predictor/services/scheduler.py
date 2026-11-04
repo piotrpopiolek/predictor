@@ -114,6 +114,8 @@ class Scheduler:
         finishing_match_count: Callable[[], int] | None = None,
         gate: LiveSpendGate | None = None,
         settle_open: Callable[[], Awaitable[int]] | None = None,
+        odds_refresh_wake: asyncio.Event | None = None,
+        drain_odds_refresh: Callable[[], Awaitable[int]] | None = None,
     ) -> None:
         self._settings = settings
         self._client = client
@@ -129,6 +131,8 @@ class Scheduler:
         self._forecast: DayLoadForecast | None = None
         self._gate = gate or LiveSpendGate()
         self._settle_open = settle_open
+        self._odds_refresh_wake = odds_refresh_wake
+        self._drain_odds_refresh = drain_odds_refresh
         self._credit = ContextCredit()
         self._quota: QuotaSnapshot | None = None
         self._status_quota: QuotaSnapshot | None = None
@@ -169,9 +173,31 @@ class Scheduler:
 
     async def _sleep_until(self, stop: asyncio.Event, when: float) -> None:
         leftover = when - time.monotonic()
-        if leftover > 0 and not stop.is_set():
+        if leftover <= 0 or stop.is_set():
+            return
+        wake = self._odds_refresh_wake
+        if wake is None:
             with suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=leftover)
+            return
+        if wake.is_set():
+            wake.clear()
+            await self._run_odds_refresh_drain()
+            return
+        stop_task = asyncio.create_task(stop.wait())
+        wake_task = asyncio.create_task(wake.wait())
+        done, pending = await asyncio.wait(
+            {stop_task, wake_task},
+            timeout=leftover,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        if wake_task in done and not stop.is_set():
+            wake.clear()
+            await self._run_odds_refresh_drain()
 
     async def _drain_during_sleep(self, stop: asyncio.Event, window: float) -> None:
         """Spend one history allowance. ``window`` sizes it and does not end it."""
@@ -373,10 +399,32 @@ class Scheduler:
                 event="operator_bets_settle_failed",
             )
 
+    async def _run_odds_refresh_drain(self) -> None:
+        drain = self._drain_odds_refresh
+        if drain is None:
+            return
+        try:
+            cleared = await drain()
+        except Exception:
+            log_json(
+                logging.WARNING,
+                service="worker",
+                event="odds_refresh_drain_failed",
+            )
+            return
+        if cleared:
+            log_json(
+                logging.INFO,
+                service="worker",
+                event="odds_refresh_drained",
+                fixtures=cleared,
+            )
+
     async def _tick(self, stop: asyncio.Event) -> None:
         self._work_started = False
         if stop.is_set():
             return
+        await self._run_odds_refresh_drain()
         await self._settle_open_bets()
         try:
             await self._maybe_daily_report()

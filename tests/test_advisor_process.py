@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -25,7 +26,7 @@ from predictor.models.catalog import Bookmaker, League, OddsBet, OddsLiveBet
 from predictor.models.etl import EtlTask
 from predictor.models.fixtures import Fixture, Team
 from predictor.models.odds import FixtureOdds, FixtureOddsLive
-from predictor.models.predictions import Prediction
+from predictor.models.predictions import Prediction, PredictionH2H
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.advisor import AdvisorSettings
 from predictor.schemas.settings import Settings
@@ -121,6 +122,66 @@ def test_over_line_matches_the_driver_total_and_not_another() -> None:
     assert not over_line_matches("Under", "1.5", 1)
 
 
+def test_quote_rejects_snapshot_from_a_previous_score() -> None:
+    from predictor.services.advisor.candidates import quote_for_period
+    from predictor.services.advisor.domain import Period
+    from predictor.services.advisor.sql import OverUnderRow
+
+    stale = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="1.5",
+        odd=Decimal("1.70"),
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=10),
+        home_goals=0,
+        away_goals=0,
+    )
+    assert (
+        quote_for_period(
+            (stale,),
+            period=Period.REGULATION,
+            goals_home=0,
+            goals_away=1,
+            extratime_home=None,
+            extratime_away=None,
+        )
+        is None
+    )
+    assert (
+        playable_candidate(
+            _match(),
+            (stale,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=True,
+        )
+        is None
+    )
+    fresh = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="1.5",
+        odd=Decimal("1.70"),
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=10),
+        home_goals=0,
+        away_goals=1,
+    )
+    quote = quote_for_period(
+        (fresh,),
+        period=Period.REGULATION,
+        goals_home=0,
+        goals_away=1,
+        extratime_home=None,
+        extratime_away=None,
+    )
+    assert quote is not None
+    assert quote.odd == Decimal("1.70")
+
+
 def test_window_waits_for_a_stable_set_and_fires_once() -> None:
     window = CandidateWindow()
     signature = ((7, "regulation", 0, 1, 2),)
@@ -168,6 +229,8 @@ def test_playable_candidate_uses_over_n_plus_half() -> None:
         odd=Decimal("1.70"),
         tradable=True,
         captured_at=NOW - timedelta(seconds=10),
+        home_goals=0,
+        away_goals=1,
     )
     candidate = playable_candidate(
         _match(),
@@ -201,6 +264,8 @@ def test_playable_candidate_uses_over_n_plus_half() -> None:
         odd=Decimal("1.70"),
         tradable=True,
         captured_at=NOW - timedelta(seconds=301),
+        home_goals=0,
+        away_goals=1,
     )
     assert (
         playable_candidate(
@@ -229,6 +294,8 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
         odd=MIN_ANALYSIS_ODD,
         tradable=True,
         captured_at=NOW - timedelta(seconds=300),
+        home_goals=0,
+        away_goals=1,
     )
     assert (
         playable_candidate(
@@ -258,6 +325,8 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
         tradable=True,
         captured_at=NOW - timedelta(seconds=10),
         market=EXTRA_TIME_OVER_UNDER,
+        home_goals=1,
+        away_goals=0,
     )
     et_candidate = playable_candidate(
         et,
@@ -291,6 +360,8 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
         odd=MIN_ANALYSIS_ODD,
         tradable=True,
         captured_at=NOW - timedelta(seconds=10),
+        home_goals=0,
+        away_goals=1,
     )
     assert (
         playable_candidate(
@@ -324,6 +395,8 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
         odd=MIN_ANALYSIS_ODD - Decimal("0.001"),
         tradable=True,
         captured_at=NOW - timedelta(seconds=10),
+        home_goals=0,
+        away_goals=1,
     )
     assert (
         playable_candidate(
@@ -344,6 +417,8 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
         odd=MIN_ANALYSIS_ODD,
         tradable=False,
         captured_at=NOW - timedelta(seconds=10),
+        home_goals=0,
+        away_goals=1,
     )
     assert (
         playable_candidate(
@@ -371,6 +446,8 @@ def test_playable_candidate_starts_analysis_from_min_analysis_odd() -> None:
         odd=MIN_ANALYSIS_ODD,
         tradable=True,
         captured_at=NOW - timedelta(seconds=10),
+        home_goals=0,
+        away_goals=1,
     )
     assert (
         playable_candidate(
@@ -391,6 +468,8 @@ def test_playable_candidate_starts_analysis_from_min_analysis_odd() -> None:
         odd=MIN_ANALYSIS_ODD - Decimal("0.001"),
         tradable=True,
         captured_at=NOW - timedelta(seconds=10),
+        home_goals=0,
+        away_goals=1,
     )
     assert (
         playable_candidate(
@@ -416,6 +495,8 @@ def test_prompt_gate_blocks_llm_but_not_baseline() -> None:
         odd=Decimal("1.70"),
         tradable=True,
         captured_at=NOW - timedelta(seconds=10),
+        home_goals=2,
+        away_goals=1,
     )
     high = _match(goals_home=2, goals_away=1)
     assert (
@@ -449,6 +530,8 @@ def test_prompt_gate_blocks_llm_but_not_baseline() -> None:
         odd=Decimal("1.40"),
         tradable=True,
         captured_at=NOW - timedelta(seconds=10),
+        home_goals=0,
+        away_goals=1,
     )
     assert (
         playable_candidate(
@@ -806,6 +889,261 @@ def _tight_budget() -> AdvisorSettings:
 
 
 @pytest.mark.asyncio
+async def test_score_mismatch_outside_llm_gate_does_not_enqueue() -> None:
+    from predictor.models.advisor import AdvisorOddsRefresh
+
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    # Playable LLM leg opens the window; a stale sibling is out of the gate.
+    provider = _Provider(_wait_reply(880_764))
+    window = CandidateWindow()
+    try:
+        async with factory() as session, session.begin():
+            await _seed_live(session, 880_761)
+            await _seed_live(session, 880_771)
+            await session.execute(
+                delete(FixtureOddsLive).where(FixtureOddsLive.fixture_id == 880_774)
+            )
+            session.add(
+                FixtureOddsLive(
+                    fixture_id=880_774,
+                    bet_id=880_779,
+                    value_label="Over",
+                    handicap="1.5",
+                    odd=Decimal("1.850"),
+                    home_goals=0,
+                    away_goals=0,
+                    captured_at=NOW - timedelta(seconds=10),
+                )
+            )
+        assert (
+            await run_tick(engine, factory, provider, _settings(), window, NOW) is False
+        )
+        called = await run_tick(
+            engine,
+            factory,
+            provider,
+            _settings(),
+            window,
+            NOW + timedelta(seconds=20),
+        )
+        assert called is True
+        assert provider.calls == 1
+        async with factory() as session:
+            pending = list(await session.scalars(select(AdvisorOddsRefresh.fixture_id)))
+        assert pending == []
+    finally:
+        async with factory() as session, session.begin():
+            await session.execute(delete(AdvisorOddsRefresh))
+            await _drop_live(session, 880_771)
+            await _drop_live(session, 880_761)
+        await engine.dispose()
+
+
+def test_odds_refresh_only_scopes_gated_fixtures() -> None:
+    from predictor.services.advisor.candidates import fixtures_needing_odds_refresh
+    from predictor.services.advisor.sql import OverUnderRow
+
+    gated = _match(fixture_id=880_764)
+    stale = OverUnderRow(
+        fixture_id=880_764,
+        label="Over",
+        handicap="1.5",
+        odd=Decimal("1.850"),
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=10),
+        home_goals=0,
+        away_goals=0,
+    )
+    assert fixtures_needing_odds_refresh(
+        (gated,),
+        {880_764: (stale,)},
+        only=frozenset({880_764}),
+    ) == (880_764,)
+    assert (
+        fixtures_needing_odds_refresh(
+            (gated,),
+            {880_764: (stale,)},
+            only=frozenset({880_999}),
+        )
+        == ()
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_wait_timeout_enqueues_and_skips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from predictor.models.advisor import AdvisorOddsRefresh
+    from predictor.services.advisor import tick as tick_mod
+    from predictor.services.advisor.sql import OverUnderRow
+    from predictor.services.advisor.tick import _refresh_before_llm
+
+    monkeypatch.setattr(tick_mod, "ODDS_REFRESH_WAIT_SECONDS", 0.25)
+    monkeypatch.setattr(tick_mod, "ODDS_REFRESH_POLL_SECONDS", 0.05)
+
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    try:
+        async with factory() as session, session.begin():
+            await _seed_live(session, 880_761)
+            await session.execute(
+                delete(FixtureOddsLive).where(FixtureOddsLive.fixture_id == 880_764)
+            )
+            session.add(
+                FixtureOddsLive(
+                    fixture_id=880_764,
+                    bet_id=880_769,
+                    value_label="Over",
+                    handicap="1.5",
+                    odd=Decimal("1.850"),
+                    home_goals=0,
+                    away_goals=0,
+                    captured_at=NOW,
+                )
+            )
+            book = await ensure_strategy(session, LLM_NAME, "llm")
+        selected = (_match(fixture_id=880_764),)
+        stale = OverUnderRow(
+            fixture_id=880_764,
+            label="Over",
+            handicap="1.5",
+            odd=Decimal("1.850"),
+            tradable=True,
+            captured_at=NOW,
+            home_goals=0,
+            away_goals=0,
+        )
+        gated = CycleCandidate(
+            fixture_id=880_764,
+            period="regulation",
+            goals_home=0,
+            goals_away=1,
+            ordinal=2,
+            candidate_rule="favorite_losing",
+            odd=Decimal("1.850"),
+            n=1,
+        )
+        result = await _refresh_before_llm(
+            engine,
+            factory,
+            book,
+            selected,
+            {880_764: (stale,)},
+            NOW,
+            candidates=(gated,),
+        )
+        assert result is None
+        async with factory() as session:
+            pending = set(await session.scalars(select(AdvisorOddsRefresh.fixture_id)))
+        assert pending == {880_764}
+    finally:
+        async with factory() as session, session.begin():
+            await session.execute(delete(AdvisorOddsRefresh))
+            await _drop_live(session, 880_761)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_refresh_unblocks_after_worker_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from predictor.models.advisor import AdvisorOddsRefresh
+    from predictor.services.advisor import tick as tick_mod
+    from predictor.services.advisor.sql import OverUnderRow
+    from predictor.services.advisor.tick import _refresh_before_llm
+
+    monkeypatch.setattr(tick_mod, "ODDS_REFRESH_WAIT_SECONDS", 2.0)
+    monkeypatch.setattr(tick_mod, "ODDS_REFRESH_POLL_SECONDS", 0.05)
+
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    try:
+        async with factory() as session, session.begin():
+            await _seed_live(session, 880_761)
+            await session.execute(
+                delete(FixtureOddsLive).where(FixtureOddsLive.fixture_id == 880_764)
+            )
+            session.add(
+                FixtureOddsLive(
+                    fixture_id=880_764,
+                    bet_id=880_769,
+                    value_label="Over",
+                    handicap="1.5",
+                    odd=Decimal("1.850"),
+                    home_goals=0,
+                    away_goals=0,
+                    captured_at=NOW - timedelta(seconds=30),
+                )
+            )
+            book = await ensure_strategy(session, LLM_NAME, "llm")
+
+        async def worker_write() -> None:
+            await asyncio.sleep(0.1)
+            async with factory() as session, session.begin():
+                session.add(
+                    FixtureOddsLive(
+                        fixture_id=880_764,
+                        bet_id=880_769,
+                        value_label="Over",
+                        handicap="1.5",
+                        odd=Decimal("1.900"),
+                        home_goals=0,
+                        away_goals=1,
+                        captured_at=NOW,
+                    )
+                )
+                await session.execute(
+                    delete(AdvisorOddsRefresh).where(
+                        AdvisorOddsRefresh.fixture_id == 880_764
+                    )
+                )
+
+        selected = (_match(fixture_id=880_764),)
+        stale = OverUnderRow(
+            fixture_id=880_764,
+            label="Over",
+            handicap="1.5",
+            odd=Decimal("1.850"),
+            tradable=True,
+            captured_at=NOW - timedelta(seconds=30),
+            home_goals=0,
+            away_goals=0,
+        )
+        gated = CycleCandidate(
+            fixture_id=880_764,
+            period="regulation",
+            goals_home=0,
+            goals_away=1,
+            ordinal=2,
+            candidate_rule="favorite_losing",
+            odd=Decimal("1.850"),
+            n=1,
+        )
+        task = asyncio.create_task(worker_write())
+        result = await _refresh_before_llm(
+            engine,
+            factory,
+            book,
+            selected,
+            {880_764: (stale,)},
+            NOW,
+            candidates=(gated,),
+        )
+        await task
+        assert result is not None
+        _selected, _quotes, candidates, _opened = result
+        assert len(candidates) == 1
+        assert candidates[0].fixture_id == 880_764
+        assert candidates[0].odd == Decimal("1.900")
+    finally:
+        async with factory() as session, session.begin():
+            await session.execute(delete(AdvisorOddsRefresh))
+            await _drop_live(session, 880_761)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_a_stable_set_calls_the_model_once() -> None:
     engine = make_async_engine(Settings())
     factory = make_session_factory(engine)
@@ -1032,6 +1370,8 @@ async def _seed_live(session, base: int, *, odd: str = "1.850") -> None:
             value_label="Over",
             handicap="1.5",
             odd=Decimal(odd),
+            home_goals=0,
+            away_goals=1,
             captured_at=NOW - timedelta(seconds=10),
         )
     )
@@ -1046,6 +1386,12 @@ async def _drop_live(session, base: int) -> None:
     await session.execute(delete(FixtureOdds).where(FixtureOdds.fixture_id == fixture))
     await session.execute(delete(OddsLiveBet).where(OddsLiveBet.id == base + 8))
     await session.execute(delete(Prediction).where(Prediction.fixture_id == fixture))
+    await session.execute(
+        delete(PredictionH2H).where(
+            (PredictionH2H.fixture_id == fixture)
+            | (PredictionH2H.h2h_fixture_id == fixture)
+        )
+    )
     live_task = await session.scalar(
         select(EtlTask)
         .where(EtlTask.endpoint == "/fixtures")

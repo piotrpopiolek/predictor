@@ -7,7 +7,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from predictor.client.errors import (
@@ -19,9 +18,8 @@ from predictor.client.errors import (
 from predictor.client.football import FootballClient
 from predictor.logutil import log_json
 from predictor.models.etl import EtlTask
-from predictor.schemas.live import OddsLiveItem
-from predictor.services.ingest.drift import warn_model_extra
 from predictor.services.ingest.fixtures import parse_fixtures
+from predictor.services.ingest.odds_live_parse import parse_odds_live_items
 from predictor.services.ingest.paging import fetch_all_pages
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.ingest.persist_live import (
@@ -176,7 +174,7 @@ class LiveIngest:
         except (RetryableHttpError, FootballHttpError) as exc:
             await self._fail(task_id, "retryable_error", type(exc).__name__)
             return
-        parsed = _parse_odds_live(items)
+        parsed = parse_odds_live_items(items, service="worker")
         captured_at = self._now()
         extra: dict[str, Any] = {}
         try:
@@ -283,27 +281,3 @@ def _int_ids(raw: object) -> list[int]:
         except TypeError, ValueError:
             continue
     return out
-
-
-def _parse_odds_live(raw: list[Any]) -> list[OddsLiveItem]:
-    items: list[OddsLiveItem] = []
-    for row in raw:
-        try:
-            item = OddsLiveItem.model_validate(row)
-        except ValidationError:
-            log_json(
-                logging.WARNING,
-                service="worker",
-                event="catalog_row_invalid",
-                endpoint="/odds/live",
-            )
-            continue
-        warn_model_extra("/odds/live", item)
-        if item.fixture.status is not None:
-            warn_model_extra("/odds/live", item.fixture.status)
-        for bet in item.odds:
-            warn_model_extra("/odds/live", bet)
-            for value in bet.values:
-                warn_model_extra("/odds/live", value)
-        items.append(item)
-    return items

@@ -7,6 +7,11 @@ WRITER_LOCK_KEY = 739201
 ADVISOR_LOCK_KEY = 739202
 # Serializes one budget check plus its model call. Not the process-lifetime lock.
 ADVISOR_CYCLE_LOCK_KEY = 739203
+# Worker LISTEN channel for urgent /fixtures+/odds/live pulls.
+ADVISOR_ODDS_REFRESH_CHANNEL = "advisor_odds_refresh"
+# Advisor waits this long for the worker to stamp a matching score quote.
+ODDS_REFRESH_WAIT_SECONDS = 20.0
+ODDS_REFRESH_POLL_SECONDS = 0.5
 PAYOUT_KEEP = Decimal("0.880")
 # Virtual portfolio (FR-120). The balance is the sum of coupons, not a stored column.
 SANDBOX_BANKROLL = Decimal("200.00")

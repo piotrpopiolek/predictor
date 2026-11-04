@@ -26,6 +26,10 @@ from predictor.services.ingest import (
     PrematchIngest,
 )
 from predictor.services.ingest.fixtures import forecast_day_load
+from predictor.services.ingest.odds_refresh_drain import (
+    OddsRefreshWake,
+    drain_odds_refresh,
+)
 from predictor.services.lock import LockBusyError, WriterLock, lock_busy_message
 from predictor.services.operator_bets import settle_open_from_engine
 from predictor.services.queue import (
@@ -73,7 +77,9 @@ async def run_locked_loop(
     session_factory = make_session_factory(engine)
     client = client or FootballClient(settings, locked=True)
     run_id: int | None = None
+    wake = OddsRefreshWake(settings)
     try:
+        await wake.start()
         async with session_factory() as session, session.begin():
             run_id = await record_run_start(session, settings, lock)
             await requeue_orphans(session)
@@ -127,6 +133,9 @@ async def run_locked_loop(
             await prematch.refresh_pending()
             await global_ingest.refresh_pending()
 
+        async def drain_pending() -> int:
+            return await drain_odds_refresh(client, session_factory)
+
         scheduler = Scheduler(
             settings,
             client,
@@ -138,6 +147,8 @@ async def run_locked_loop(
             ),
             gate=gate,
             settle_open=lambda: settle_open_from_engine(engine),
+            odds_refresh_wake=wake.event,
+            drain_odds_refresh=drain_pending,
             handlers={
                 1: catalog.refresh_priority_one,
                 2: live.refresh_live_fixtures,
@@ -152,6 +163,7 @@ async def run_locked_loop(
         )
         await scheduler.run(stop)
     finally:
+        await wake.close()
         if run_id is not None:
             async with session_factory() as session, session.begin():
                 await record_run_end(session, run_id)
