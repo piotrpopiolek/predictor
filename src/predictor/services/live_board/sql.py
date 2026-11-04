@@ -70,6 +70,7 @@ from predictor.services.live_board.domain import (
     avg_minute_from_goal_bins,
     event_kind,
     goal_clock_minute,
+    is_final_round,
     is_fulltime_1x2_market,
     is_second_leg,
     order_day_matches,
@@ -258,22 +259,26 @@ async def load_fixture_match(engine: AsyncEngine, fixture_id: int) -> LiveMatch 
 async def load_first_legs(
     engine: AsyncEngine, matches: Sequence[LiveMatch]
 ) -> dict[int, FirstLegScore]:
-    candidates = [
-        match
-        for match in matches
-        if is_second_leg(match.round, match.leg)
-        and match.home_team_id
-        and match.away_team_id
-        and match.league_id
-    ]
+    marked: list[LiveMatch] = []
+    pairable: list[LiveMatch] = []
+    for match in matches:
+        if not (match.home_team_id and match.away_team_id and match.league_id):
+            continue
+        if is_second_leg(match.round, match.leg):
+            marked.append(match)
+        elif match.season and match.round and not is_final_round(match.round):
+            pairable.append(match)
+    candidates = marked + pairable
     if not candidates:
         return {}
+    marked_ids = frozenset(match.fixture_id for match in marked)
     live_ids = [match.fixture_id for match in candidates]
     team_pairs = {
         (min(m.home_team_id, m.away_team_id), max(m.home_team_id, m.away_team_id))
         for m in candidates
     }
     league_ids = sorted({m.league_id for m in candidates})
+    seasons = sorted({m.season for m in candidates})
     pair_filter = tuple_(
         func.least(Fixture.home_team_id, Fixture.away_team_id),
         func.greatest(Fixture.home_team_id, Fixture.away_team_id),
@@ -290,8 +295,11 @@ async def load_first_legs(
                 Fixture.goals_home_fulltime,
                 Fixture.goals_away_fulltime,
                 Fixture.date,
+                Fixture.season,
+                Fixture.round,
             )
             .where(Fixture.league_id.in_(league_ids))
+            .where(Fixture.season.in_(seasons))
             .where(Fixture.status_short.in_(tuple(FINISHED_FIXTURE_STATUSES)))
             .where(Fixture.id.not_in(live_ids))
             .where(pair_filter.in_(list(team_pairs)))
@@ -316,10 +324,14 @@ async def load_first_legs(
         for row in rows:
             if int(row[1]) != match.league_id:
                 continue
+            if int(row[9]) != match.season:
+                continue
             if {int(row[2]), int(row[3])} != {
                 match.home_team_id,
                 match.away_team_id,
             }:
+                continue
+            if match.fixture_id not in marked_ids and row[10] != match.round:
                 continue
             kickoff = row[8]
             if (

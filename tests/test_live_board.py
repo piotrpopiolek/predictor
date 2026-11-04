@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from html import escape
 from typing import Any
 
+import pytest
+from sqlalchemy import delete
+
+from predictor.models.catalog import League
+from predictor.models.fixtures import Fixture, Team
+from predictor.models.predictions import Prediction, PredictionH2H
+from predictor.postgres import make_async_engine, make_session_factory
+from predictor.schemas.settings import Settings
 from predictor.services.live_board import (
     FirstLegScore,
     LiveMatch,
@@ -24,10 +32,12 @@ from predictor.services.live_board import (
     format_odd,
     goal_clock_minute,
     is_favorite_losing,
+    is_final_round,
     is_fulltime_1x2_market,
     is_match_winner_market,
     is_second_leg,
     is_tie_deficit,
+    load_first_legs,
     market_is_next_goal,
     match_winner_side,
     next_goal_reasons,
@@ -48,6 +58,36 @@ from predictor.services.live_board import (
     summarize_team_goal_form,
 )
 from predictor.ui import render_day_html, render_live_html
+
+_PAIR_LEAGUE = 9_720_001
+_PAIR_HOME = 9_720_002
+_PAIR_AWAY = 9_720_003
+_PAIR_OTHER_LEAGUE = 9_720_004
+_PAIR_MARKED_HOME = 9_720_005
+_PAIR_MARKED_AWAY = 9_720_006
+_PAIR_LIVE = 9_720_010
+_PAIR_FIRST = 9_720_011
+_PAIR_WRONG_SEASON = 9_720_012
+_PAIR_WRONG_ROUND = 9_720_013
+_PAIR_WRONG_LEAGUE = 9_720_014
+_PAIR_FINAL_LIVE = 9_720_020
+_PAIR_FINAL_FT = 9_720_021
+_PAIR_MARKED_LIVE = 9_720_030
+_PAIR_MARKED_FIRST = 9_720_031
+_PAIR_FIXTURE_IDS = (
+    _PAIR_FIRST,
+    _PAIR_WRONG_SEASON,
+    _PAIR_WRONG_ROUND,
+    _PAIR_WRONG_LEAGUE,
+    _PAIR_FINAL_FT,
+    _PAIR_MARKED_FIRST,
+)
+_PAIR_TEAM_IDS = (
+    _PAIR_HOME,
+    _PAIR_AWAY,
+    _PAIR_MARKED_HOME,
+    _PAIR_MARKED_AWAY,
+)
 
 _SAMPLE = LiveMatch(
     fixture_id=1,
@@ -563,6 +603,17 @@ def test_second_leg_and_tie_deficit() -> None:
     assert is_second_leg("2nd Leg") is True
     assert is_second_leg("Champions League - Semi-finals", leg=2) is True
     assert is_second_leg("Regular Season - 4") is False
+    assert is_final_round("Final") is True
+    assert is_final_round("Grand Final") is True
+    assert is_final_round("Apertura - Final") is True
+    assert is_final_round("3rd Place Final") is True
+    assert is_final_round("Semi-finals") is False
+    assert is_final_round("Quarter-finals") is False
+    assert is_final_round("Finals") is False
+    assert is_final_round("Final - Second Leg") is False
+    assert is_final_round("Semi Final") is True
+    assert is_final_round("Quarter Final") is True
+    assert is_final_round("semi final") is True
     first = FirstLegScore(home_team_id=20, away_team_id=10, goals_home=1, goals_away=0)
     # First leg 20 beat 10 by 1; live 0-0 → home favorite (10) trails aggregate 0-1
     live = _fav_home(round="2nd Leg", goals_home=0, goals_away=0)
@@ -585,6 +636,71 @@ def test_select_next_goal_matches_or_logic() -> None:
     assert by_id[1] == ("favorite_losing",)
     assert 2 not in by_id
     assert by_id[3] == ("tie_deficit",)
+
+
+def test_return_leg_pair_skips_favorite_losing_and_level_aggregate() -> None:
+    """1646171 shape: Semi-finals rematch, favorite first-leg lead, live 1-0."""
+    # Away favorite (Hammarby @ 1.47); first leg was home for favorite 1-0.
+    live = _fav_home(
+        fixture_id=1646171,
+        round="Semi-finals",
+        season=2026,
+        home_team_id=28406,
+        away_team_id=7982,
+        goals_home=1,
+        goals_away=0,
+        prematch=PrematchOdds("5", "4.2", "1.47", "Match Winner", "Betfair"),
+    )
+    first = FirstLegScore(
+        home_team_id=7982, away_team_id=28406, goals_home=1, goals_away=0
+    )
+    assert is_favorite_losing(live) is True
+    assert is_tie_deficit(live, first) is False
+    assert next_goal_reasons(live, first) == ()
+    assert select_next_goal_matches([live], {1646171: first}) == []
+
+
+def test_return_leg_pair_chase_is_tie_deficit_only() -> None:
+    live = _fav_home(
+        fixture_id=10,
+        round="Semi-finals",
+        season=2026,
+        goals_home=0,
+        goals_away=1,
+    )
+    first = FirstLegScore(home_team_id=20, away_team_id=10, goals_home=0, goals_away=0)
+    assert is_favorite_losing(live) is True
+    assert is_tie_deficit(live, first) is True
+    assert next_goal_reasons(live, first) == ("tie_deficit",)
+
+
+def test_marked_second_leg_without_first_leg_is_not_candidate() -> None:
+    live = _fav_home(round="2nd Leg", goals_home=0, goals_away=1)
+    assert is_favorite_losing(live) is True
+    assert next_goal_reasons(live) == ()
+    assert next_goal_reasons(live, None) == ()
+
+
+def test_final_round_keeps_favorite_losing_without_pair() -> None:
+    live = _fav_home(round="Final", goals_home=0, goals_away=1)
+    assert is_final_round(live.round) is True
+    assert next_goal_reasons(live) == ("favorite_losing",)
+
+
+def test_singular_semi_or_quarter_final_excluded_from_pairing() -> None:
+    """Negative: suffix ' final' treats singular Semi/Quarter Final as finals."""
+    assert is_final_round("Semi Final") is True
+    assert is_final_round("Quarter Final") is True
+    assert is_final_round("semi final") is True
+    assert is_final_round("Semi-finals") is False
+    assert is_final_round("Quarter-finals") is False
+    # load_first_legs skips these rounds, so no first_leg → favorite_losing only.
+    semi_space = _fav_home(round="Semi Final", season=2026, goals_home=0, goals_away=1)
+    quarter_space = _fav_home(
+        round="Quarter Final", season=2026, goals_home=0, goals_away=1
+    )
+    assert next_goal_reasons(semi_space) == ("favorite_losing",)
+    assert next_goal_reasons(quarter_space) == ("favorite_losing",)
 
 
 def test_next_goal_board_requires_g1_and_g2() -> None:
@@ -673,3 +789,180 @@ def test_render_marks_sandbox_coupon_in_the_corner() -> None:
     assert "Kupon LLM" not in base_card
     assert ">Kupon<" in base_card or ">Kupon</span>" in base_card
     assert 'class="sandbox-coupon"' not in plain_card
+
+
+async def _drop_pair_fixtures(session) -> None:
+    ids = _PAIR_FIXTURE_IDS
+    await session.execute(delete(Prediction).where(Prediction.fixture_id.in_(ids)))
+    await session.execute(
+        delete(PredictionH2H).where(
+            PredictionH2H.fixture_id.in_(ids) | PredictionH2H.h2h_fixture_id.in_(ids)
+        )
+    )
+    await session.execute(delete(Fixture).where(Fixture.id.in_(ids)))
+    await session.execute(delete(Team).where(Team.id.in_(_PAIR_TEAM_IDS)))
+    await session.execute(
+        delete(League).where(League.id.in_((_PAIR_LEAGUE, _PAIR_OTHER_LEAGUE)))
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_first_legs_filters_season_round_league_and_final() -> None:
+    """DB pairing must not invent a return leg from the wrong row."""
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    live_kickoff = datetime(2026, 5, 20, 18, 0, tzinfo=UTC)
+    try:
+        async with factory() as session, session.begin():
+            await _drop_pair_fixtures(session)
+            session.add(League(id=_PAIR_LEAGUE, name="pair-league"))
+            session.add(League(id=_PAIR_OTHER_LEAGUE, name="pair-other-league"))
+            session.add(Team(id=_PAIR_HOME, name="Pair Home"))
+            session.add(Team(id=_PAIR_AWAY, name="Pair Away"))
+            session.add(Team(id=_PAIR_MARKED_HOME, name="Marked Home"))
+            session.add(Team(id=_PAIR_MARKED_AWAY, name="Marked Away"))
+            await session.flush()
+            session.add_all(
+                [
+                    Fixture(
+                        id=_PAIR_FIRST,
+                        league_id=_PAIR_LEAGUE,
+                        season=2026,
+                        round="Semi-finals",
+                        home_team_id=_PAIR_AWAY,
+                        away_team_id=_PAIR_HOME,
+                        status_short="FT",
+                        date=live_kickoff - timedelta(days=7),
+                        goals_home=1,
+                        goals_away=0,
+                        goals_home_fulltime=1,
+                        goals_away_fulltime=0,
+                    ),
+                    Fixture(
+                        id=_PAIR_WRONG_SEASON,
+                        league_id=_PAIR_LEAGUE,
+                        season=2025,
+                        round="Semi-finals",
+                        home_team_id=_PAIR_AWAY,
+                        away_team_id=_PAIR_HOME,
+                        status_short="FT",
+                        date=live_kickoff - timedelta(days=8),
+                        goals_home=5,
+                        goals_away=0,
+                        goals_home_fulltime=5,
+                        goals_away_fulltime=0,
+                    ),
+                    Fixture(
+                        id=_PAIR_WRONG_ROUND,
+                        league_id=_PAIR_LEAGUE,
+                        season=2026,
+                        round="Quarter-finals",
+                        home_team_id=_PAIR_AWAY,
+                        away_team_id=_PAIR_HOME,
+                        status_short="FT",
+                        date=live_kickoff - timedelta(days=6),
+                        goals_home=4,
+                        goals_away=0,
+                        goals_home_fulltime=4,
+                        goals_away_fulltime=0,
+                    ),
+                    Fixture(
+                        id=_PAIR_WRONG_LEAGUE,
+                        league_id=_PAIR_OTHER_LEAGUE,
+                        season=2026,
+                        round="Semi-finals",
+                        home_team_id=_PAIR_AWAY,
+                        away_team_id=_PAIR_HOME,
+                        status_short="FT",
+                        date=live_kickoff - timedelta(days=5),
+                        goals_home=3,
+                        goals_away=0,
+                        goals_home_fulltime=3,
+                        goals_away_fulltime=0,
+                    ),
+                    Fixture(
+                        id=_PAIR_FINAL_FT,
+                        league_id=_PAIR_LEAGUE,
+                        season=2026,
+                        round="Final",
+                        home_team_id=_PAIR_AWAY,
+                        away_team_id=_PAIR_HOME,
+                        status_short="FT",
+                        date=live_kickoff - timedelta(days=14),
+                        goals_home=2,
+                        goals_away=1,
+                        goals_home_fulltime=2,
+                        goals_away_fulltime=1,
+                    ),
+                    Fixture(
+                        id=_PAIR_MARKED_FIRST,
+                        league_id=_PAIR_LEAGUE,
+                        season=2026,
+                        round="1st Leg",
+                        home_team_id=_PAIR_MARKED_HOME,
+                        away_team_id=_PAIR_MARKED_AWAY,
+                        status_short="FT",
+                        date=live_kickoff - timedelta(days=7),
+                        goals_home=0,
+                        goals_away=0,
+                        goals_home_fulltime=0,
+                        goals_away_fulltime=0,
+                    ),
+                ]
+            )
+
+        semi = _fav_home(
+            fixture_id=_PAIR_LIVE,
+            round="Semi-finals",
+            season=2026,
+            league_id=_PAIR_LEAGUE,
+            home_team_id=_PAIR_HOME,
+            away_team_id=_PAIR_AWAY,
+            kickoff=live_kickoff,
+            goals_home=1,
+            goals_away=0,
+            prematch=PrematchOdds("5", "4.2", "1.47", "Match Winner", "Betfair"),
+        )
+        final = _fav_home(
+            fixture_id=_PAIR_FINAL_LIVE,
+            round="Final",
+            season=2026,
+            league_id=_PAIR_LEAGUE,
+            home_team_id=_PAIR_HOME,
+            away_team_id=_PAIR_AWAY,
+            kickoff=live_kickoff,
+        )
+        marked = _fav_home(
+            fixture_id=_PAIR_MARKED_LIVE,
+            round="2nd Leg",
+            season=2026,
+            league_id=_PAIR_LEAGUE,
+            home_team_id=_PAIR_MARKED_HOME,
+            away_team_id=_PAIR_MARKED_AWAY,
+            kickoff=live_kickoff,
+            goals_home=0,
+            goals_away=1,
+        )
+
+        legs = await load_first_legs(engine, [semi, final, marked])
+        assert _PAIR_FINAL_LIVE not in legs
+        assert legs[_PAIR_LIVE] == FirstLegScore(
+            home_team_id=_PAIR_AWAY,
+            away_team_id=_PAIR_HOME,
+            goals_home=1,
+            goals_away=0,
+        )
+        assert legs[_PAIR_MARKED_LIVE] == FirstLegScore(
+            home_team_id=_PAIR_MARKED_HOME,
+            away_team_id=_PAIR_MARKED_AWAY,
+            goals_home=0,
+            goals_away=0,
+        )
+        assert is_favorite_losing(semi) is True
+        assert next_goal_reasons(semi, legs[_PAIR_LIVE]) == ()
+        assert next_goal_reasons(final) == ("favorite_losing",)
+        assert next_goal_reasons(marked, legs[_PAIR_MARKED_LIVE]) == ("tie_deficit",)
+    finally:
+        async with factory() as session, session.begin():
+            await _drop_pair_fixtures(session)
+        await engine.dispose()

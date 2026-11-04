@@ -797,6 +797,17 @@ def is_second_leg(round_name: str | None, leg: int | None = None) -> bool:
     return any(marker in folded for marker in _SECOND_LEG_MARKERS)
 
 
+def is_final_round(round_name: str | None) -> bool:
+    """Cup final by exact ``final`` or suffix `` final``.
+
+    ``Semi-finals`` / ``Quarter-finals`` / ``Finals`` stay pairable. Singular
+    ``Semi Final`` / ``Quarter Final`` also match the suffix (plan: ends with
+    `` final``) and are excluded from DB pairing.
+    """
+    folded = (round_name or "").casefold().strip()
+    return folded == "final" or folded.endswith(" final")
+
+
 def _goals_for_team(
     team_id: int,
     home_id: int,
@@ -815,8 +826,6 @@ def _goals_for_team(
 
 def is_tie_deficit(match: LiveMatch, first_leg: FirstLegScore | None) -> bool:
     if match.status_short in _PEN_STATUSES:
-        return False
-    if not is_second_leg(match.round, match.leg):
         return False
     if first_leg is None:
         return False
@@ -871,8 +880,9 @@ def next_goal_reasons(
         return ()
     if not passes_next_goal_score_gates(match):
         return ()
+    return_leg = is_second_leg(match.round, match.leg) or first_leg is not None
     reasons: list[str] = []
-    if is_favorite_losing(match):
+    if not return_leg and is_favorite_losing(match):
         reasons.append("favorite_losing")
     if is_tie_deficit(match, first_leg):
         reasons.append("tie_deficit")
