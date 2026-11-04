@@ -65,9 +65,7 @@ def _detail() -> MatchDetail:
     return MatchDetail(
         match=match,
         events=(DetailEvent(55, None, "away", "Goal", "Normal Goal", "Saipa", None),),
-        stats=(
-            DetailStat("Posiadanie", "48%", "52%", stat_type="Ball Possession"),
-        ),
+        stats=(DetailStat("Posiadanie", "48%", "52%", stat_type="Ball Possession"),),
         home_xi=(DetailPlayer("Ali", 9, "F", True),),
         away_xi=(DetailPlayer("Reza", 10, "M", True),),
         home_bench=(),
@@ -116,9 +114,7 @@ def test_match_detail_as_llm_dict_drops_low_signal_sections() -> None:
             DetailEvent(80, 1, "home", "Goal", "Penalty", "Ali", None),
         ),
         stats=(
-            DetailStat(
-                "Posiadanie", "48%", "52%", stat_type="Ball Possession"
-            ),
+            DetailStat("Posiadanie", "48%", "52%", stat_type="Ball Possession"),
             DetailStat("Strzały celne", "5", "1", stat_type="Shots on Goal"),
             DetailStat("Faule", "10", "8", stat_type="Fouls"),
         ),
@@ -185,7 +181,9 @@ def test_match_detail_as_llm_dict_keeps_null_stat_side() -> None:
 def test_match_detail_as_llm_dict_ignores_polish_label_for_whitelist() -> None:
     detail = replace(
         _detail(),
-        stats=(DetailStat("Zmieniona etykieta", "48%", "52%", stat_type="Ball Possession"),),
+        stats=(
+            DetailStat("Zmieniona etykieta", "48%", "52%", stat_type="Ball Possession"),
+        ),
     )
     payload = detail.as_llm_dict()
     assert payload["stats"] == {
