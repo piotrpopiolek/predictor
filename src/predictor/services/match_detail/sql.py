@@ -389,6 +389,7 @@ async def _stats(session: AsyncSession, match: LiveMatch) -> list[DetailStat]:
             label=_STAT_LABELS.get(name, name),
             home=paired[name]["home"],
             away=paired[name]["away"],
+            stat_type=name,
         )
         for name in ordered
     ]

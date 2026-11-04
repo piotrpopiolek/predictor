@@ -65,7 +65,9 @@ def _detail() -> MatchDetail:
     return MatchDetail(
         match=match,
         events=(DetailEvent(55, None, "away", "Goal", "Normal Goal", "Saipa", None),),
-        stats=(DetailStat("Posiadanie", "48%", "52%"),),
+        stats=(
+            DetailStat("Posiadanie", "48%", "52%", stat_type="Ball Possession"),
+        ),
         home_xi=(DetailPlayer("Ali", 9, "F", True),),
         away_xi=(DetailPlayer("Reza", 10, "M", True),),
         home_bench=(),
@@ -111,7 +113,16 @@ def test_match_detail_as_llm_dict_drops_low_signal_sections() -> None:
             DetailEvent(55, None, "away", "Goal", "Normal Goal", "Saipa", None),
             DetailEvent(60, None, "home", "subst", None, "Ali", "Omid"),
             DetailEvent(70, None, "home", "Card", "Yellow Card", "Ali", None),
+            DetailEvent(80, 1, "home", "Goal", "Penalty", "Ali", None),
         ),
+        stats=(
+            DetailStat(
+                "Posiadanie", "48%", "52%", stat_type="Ball Possession"
+            ),
+            DetailStat("Strzały celne", "5", "1", stat_type="Shots on Goal"),
+            DetailStat("Faule", "10", "8", stat_type="Fouls"),
+        ),
+        home_strength=LineupStrength(label="silny", note="ignored", missing=("X",)),
     )
     payload = detail.as_llm_dict()
     assert "table" not in payload
@@ -120,13 +131,79 @@ def test_match_detail_as_llm_dict_drops_low_signal_sections() -> None:
     assert "form_results" not in payload
     assert "home_xi" not in payload
     assert "away_bench" not in payload
-    assert "home_logo" not in payload["match"]
-    assert "venue" not in payload["match"]
+    assert "goal_price" not in payload
+    assert "fixture_id" not in payload["match"]
+    assert "scorers" not in payload["match"]
+    assert "status_short" not in payload["match"]
+    assert "clock" not in payload["match"]
+    assert "next_goal" not in payload["match"]
+    assert "home_formation" not in payload["match"]
     assert payload["match"]["home"] == "Mes Kerman"
-    assert payload["stats"][0]["label"] == "Posiadanie"
-    assert [item["type"] for item in payload["events"]] == ["Goal", "Card"]
+    assert payload["match"]["prematch"] == {
+        "home": "2.10",
+        "draw": "3.20",
+        "away": "3.40",
+    }
+    assert "market" not in payload["match"]["prematch"]
+    assert payload["stats"] == {
+        "possession": {"home": "48%", "away": "52%"},
+        "shots_on": {"home": "5", "away": "1"},
+    }
+    assert payload["stats_available"] is True
+    assert payload["events"] == [
+        {"minute": 55, "side": "away"},
+        {"minute": 81, "side": "home", "detail": "Penalty"},
+    ]
+    assert payload["home_strength"] == {"label": "silny", "missing": ["X"]}
+    assert "note" not in payload["home_strength"]
     assert payload["comparison"][0]["label"] == "Forma"
     assert payload["advice"] == "Double chance : Saipa or draw"
+    assert payload["expected_home"] == "1.1"
+    assert payload["expected_away"] == "1.4"
+    assert payload["pct_draw"] == "27%"
+
+
+def test_match_detail_as_llm_dict_stats_available_false_without_whitelist() -> None:
+    detail = replace(
+        _detail(),
+        stats=(DetailStat("Faule", "10", "8", stat_type="Fouls"),),
+    )
+    payload = detail.as_llm_dict()
+    assert "stats" not in payload
+    assert payload["stats_available"] is False
+
+
+def test_match_detail_as_llm_dict_keeps_null_stat_side() -> None:
+    detail = replace(
+        _detail(),
+        stats=(DetailStat("Strzały", "3", None, stat_type="Total Shots"),),
+    )
+    payload = detail.as_llm_dict()
+    assert payload["stats"]["shots"] == {"home": "3", "away": None}
+
+
+def test_match_detail_as_llm_dict_ignores_polish_label_for_whitelist() -> None:
+    detail = replace(
+        _detail(),
+        stats=(DetailStat("Zmieniona etykieta", "48%", "52%", stat_type="Ball Possession"),),
+    )
+    payload = detail.as_llm_dict()
+    assert payload["stats"] == {
+        "possession": {"home": "48%", "away": "52%"},
+    }
+
+
+def test_match_detail_as_llm_dict_includes_et_goals_in_extra_time() -> None:
+    match = replace(
+        _detail().match,
+        status_short="ET",
+        et_home=0,
+        et_away=1,
+    )
+    payload = replace(_detail(), match=match).as_llm_dict()
+    assert payload["match"]["et_home"] == 0
+    assert payload["match"]["et_away"] == 1
+    assert "et_home" not in _detail().as_llm_dict()["match"]
 
 
 def test_read_goal_price_treats_over_line_as_another_goal() -> None:

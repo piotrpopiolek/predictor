@@ -12,9 +12,7 @@ from predictor.constants import (
     IN_PLAY_FIXTURE_STATUSES,
 )
 from predictor.services.lineup_strength import LineupStrength
-from predictor.services.live_board import (
-    LiveMatch,
-)
+from predictor.services.live_board import LiveMatch, PrematchOdds
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +58,7 @@ class DetailStat:
     label: str
     home: str | None
     away: str | None
+    stat_type: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,44 +202,57 @@ class MatchDetail:
         }
 
     def as_llm_dict(self) -> dict[str, Any]:
-        """Compact context for next-goal Over. Drops table, markets, H2H,
-        form lists, XI/bench, logos, and non-goal/card events.
+        """Compact next-goal Over context for the LLM prompt.
+
+        Drops table, markets, H2H, form lists, XI/bench, logos, scorers,
+        clock/status, card events, goal_price, odds metadata, formations,
+        and empty/null values. Stats use an English whitelist. Match-page
+        ``as_dict`` is unchanged.
         """
-        return {
-            "match": _match_llm_dict(self.match),
-            "events": [
-                _event_dict(item)
-                for item in self.events
-                if item.event_type in _LLM_EVENT_TYPES
-            ],
-            "stats": [
-                {"label": item.label, "home": item.home, "away": item.away}
-                for item in self.stats
-            ],
-            "home_strength": _strength_dict(self.home_strength),
-            "away_strength": _strength_dict(self.away_strength),
-            "attack_subs": [
-                {
-                    "clock": item.clock,
-                    "team": item.team,
-                    "summary": item.summary,
-                    "effect": item.effect,
-                }
-                for item in self.attack_subs
-            ],
-            "goal_price": _goal_price_dict(self.goal_price),
-            "advice": self.advice,
-            "expected_home": self.expected_home,
-            "expected_away": self.expected_away,
-            "pct_draw": self.pct_draw,
-            "comparison": [
-                {"label": label, "home": home, "away": away}
-                for label, home, away in self.comparison
-            ],
-        }
+        stats = _llm_stats(self.stats)
+        return _compact(
+            {
+                "match": _compact(_match_llm_dict(self.match)),
+                "events": [
+                    _llm_goal_event(item)
+                    for item in self.events
+                    if item.event_type == "Goal"
+                ],
+                "stats": stats,
+                "stats_available": bool(stats),
+                "home_strength": _compact_optional(
+                    _strength_llm_dict(self.home_strength)
+                ),
+                "away_strength": _compact_optional(
+                    _strength_llm_dict(self.away_strength)
+                ),
+                "attack_subs": [
+                    _attack_sub_llm_dict(item) for item in self.attack_subs
+                ],
+                "advice": self.advice,
+                "expected_home": self.expected_home,
+                "expected_away": self.expected_away,
+                "pct_draw": self.pct_draw,
+                "comparison": [
+                    {"label": label, "home": home, "away": away}
+                    for label, home, away in self.comparison
+                ],
+            },
+            keep=frozenset({"stats_available"}),
+        )
 
 
-_LLM_EVENT_TYPES = frozenset({"Goal", "Card"})
+_LLM_GOAL_DETAILS = frozenset({"Penalty", "Own Goal"})
+_LLM_EXTRA_TIME = frozenset({"ET", "BT"})
+_LLM_STAT_KEYS = {
+    "Shots on Goal": "shots_on",
+    "Total Shots": "shots",
+    "Shots insidebox": "shots_inside_box",
+    "Corner Kicks": "corners",
+    "Ball Possession": "possession",
+    "Goalkeeper Saves": "saves",
+    "expected_goals": "xg",
+}
 
 
 def _event_dict(item: DetailEvent) -> dict[str, Any]:
@@ -252,6 +264,59 @@ def _event_dict(item: DetailEvent) -> dict[str, Any]:
         "player": item.player,
         "assist": item.assist,
     }
+
+
+def _llm_goal_event(item: DetailEvent) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "minute": int(item.minute) + int(item.extra or 0),
+        "side": item.side,
+    }
+    if item.detail in _LLM_GOAL_DETAILS:
+        row["detail"] = item.detail
+    return row
+
+
+def _llm_stats(stats: Sequence[DetailStat]) -> dict[str, dict[str, str | None]]:
+    out: dict[str, dict[str, str | None]] = {}
+    for item in stats:
+        key = _LLM_STAT_KEYS.get(item.stat_type)
+        if key is None:
+            continue
+        out[key] = {"home": item.home, "away": item.away}
+    return out
+
+
+def _attack_sub_llm_dict(item: AttackChange) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "clock": item.clock,
+        "team": item.team,
+        "summary": item.summary,
+    }
+    if item.effect is not None:
+        row["effect"] = item.effect
+    return row
+
+
+def _compact(
+    data: dict[str, Any], *, keep: frozenset[str] = frozenset()
+) -> dict[str, Any]:
+    """Drop None / empty containers at this level. ``keep`` keys always remain."""
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        if key in keep:
+            out[key] = value
+            continue
+        if value is None or value == {} or value == []:
+            continue
+        out[key] = value
+    return out
+
+
+def _compact_optional(data: dict[str, Any] | None) -> dict[str, Any] | None:
+    if data is None:
+        return None
+    cleaned = _compact(data)
+    return cleaned or None
 
 
 def _goal_price_dict(price: GoalPrice | None) -> dict[str, Any] | None:
@@ -268,34 +333,37 @@ def _goal_price_dict(price: GoalPrice | None) -> dict[str, Any] | None:
 
 
 def _match_llm_dict(match: LiveMatch) -> dict[str, Any]:
-    return {
-        "fixture_id": match.fixture_id,
+    row: dict[str, Any] = {
         "country": match.country,
         "league": match.league,
         "home": match.home,
         "away": match.away,
-        "goals_home": match.goals_home,
-        "goals_away": match.goals_away,
-        "status_short": match.status_short,
-        "elapsed": match.elapsed,
-        "extra": match.extra,
-        "clock": match.clock,
-        "ht_home": match.ht_home,
-        "ht_away": match.ht_away,
         "home_reds": match.home_reds,
         "away_reds": match.away_reds,
-        "home_formation": match.home_formation,
-        "away_formation": match.away_formation,
-        "scorers": [item.as_dict() for item in match.scorers],
-        "stats": None if match.stats is None else match.stats.as_dict(),
-        "prematch": None if match.prematch is None else match.prematch.as_dict(),
-        "next_goal": None if match.next_goal is None else match.next_goal.as_dict(),
-        "form_home": None if match.form_home is None else match.form_home.as_dict(),
-        "form_away": None if match.form_away is None else match.form_away.as_dict(),
-        "prediction_winner_team_id": match.prediction_winner_team_id,
-        "prediction_pct_home": match.prediction_pct_home,
-        "prediction_pct_away": match.prediction_pct_away,
+        "form_home": _compact_optional(
+            None if match.form_home is None else match.form_home.as_dict()
+        ),
+        "form_away": _compact_optional(
+            None if match.form_away is None else match.form_away.as_dict()
+        ),
+        "prematch": _prematch_llm_dict(match.prematch),
     }
+    if match.status_short in _LLM_EXTRA_TIME:
+        row["et_home"] = match.et_home if match.et_home is not None else 0
+        row["et_away"] = match.et_away if match.et_away is not None else 0
+    return row
+
+
+def _prematch_llm_dict(odds: PrematchOdds | None) -> dict[str, Any] | None:
+    if odds is None:
+        return None
+    return _compact_optional({"home": odds.home, "draw": odds.draw, "away": odds.away})
+
+
+def _strength_llm_dict(item: LineupStrength | None) -> dict[str, Any] | None:
+    if item is None:
+        return None
+    return {"label": item.label, "missing": list(item.missing)}
 
 
 def _player_dict(item: DetailPlayer) -> dict[str, Any]:
