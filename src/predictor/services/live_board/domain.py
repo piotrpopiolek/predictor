@@ -425,6 +425,23 @@ def goal_clock_minute(minute: int, extra: int | None) -> int:
     return int(minute) + int(extra or 0)
 
 
+def match_minute(
+    status_short: str, elapsed: int | None, extra: int | None
+) -> int | None:
+    """Match minute as the API clock shows it, plus stoppage.
+
+    In extra time ``elapsed`` is already 91–120. ``clock_sort_key`` adds 90
+    only so those matches sort after regulation.
+    """
+    added = extra or 0
+    if status_short == "HT":
+        base = 45 if elapsed is None else elapsed
+        return base + added
+    if elapsed is None:
+        return None
+    return elapsed + added
+
+
 def scoring_team_id(
     event_team_id: int,
     home_id: int,

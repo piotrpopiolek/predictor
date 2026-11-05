@@ -17,13 +17,13 @@ from predictor.services.advisor.domain import (
     Period,
     PlayLimits,
     assess,
-    match_minute,
     over_line_matches,
     over_under_market,
     period_for,
     prompt_gate_misses,
 )
 from predictor.services.advisor.sql import OverUnderRow
+from predictor.services.live_board.domain import match_minute
 
 StateKey = tuple[int, str, int, int, int]
 

@@ -157,6 +157,16 @@ def test_match_detail_as_llm_dict_drops_low_signal_sections() -> None:
     assert payload["expected_home"] == "1.1"
     assert payload["expected_away"] == "1.4"
     assert payload["pct_draw"] == "27%"
+    assert payload["minute"] == 91
+    assert payload["minutes_left"] == 0
+    assert payload["favorite"] == {"side": "home", "prematch_odd": "2.10"}
+    assert payload["last_goal"] == {
+        "minute": 81,
+        "side": "home",
+        "by_favorite": True,
+    }
+    assert payload["minutes_since_last_goal"] == 10
+    assert "next_goal_odds" not in payload
 
 
 def test_match_detail_as_llm_dict_stats_available_false_without_whitelist() -> None:
@@ -202,6 +212,82 @@ def test_match_detail_as_llm_dict_includes_et_goals_in_extra_time() -> None:
     assert payload["match"]["et_home"] == 0
     assert payload["match"]["et_away"] == 1
     assert "et_home" not in _detail().as_llm_dict()["match"]
+
+
+def test_match_detail_as_llm_dict_minutes_left_uses_et_period_end() -> None:
+    match = replace(
+        _detail().match,
+        status_short="ET",
+        elapsed=105,
+        extra=None,
+        et_home=0,
+        et_away=0,
+    )
+    payload = replace(_detail(), match=match, events=()).as_llm_dict()
+    assert payload["minute"] == 105
+    assert payload["minutes_left"] == 15
+    assert "last_goal" not in payload
+    assert "minutes_since_last_goal" not in payload
+
+
+def test_match_detail_as_llm_dict_next_goal_odds_by_favorite() -> None:
+    match = replace(
+        _detail().match,
+        next_goal=NextGoalOdds("1.90", "3.50", "4.20", "Next Goal"),
+    )
+    payload = replace(_detail(), match=match).as_llm_dict()
+    assert payload["favorite"]["side"] == "home"
+    assert payload["next_goal_odds"] == {"favorite": "1.90", "opponent": "4.20"}
+
+
+def test_match_detail_as_llm_dict_next_goal_odds_away_favorite() -> None:
+    match = replace(
+        _detail().match,
+        prematch=PrematchOdds("3.40", "3.20", "1.90", "Match Winner", "Bet365"),
+        next_goal=NextGoalOdds("1.90", "3.50", "4.20", "Next Goal"),
+        prediction_pct_home=None,
+        prediction_pct_away=None,
+    )
+    payload = replace(_detail(), match=match).as_llm_dict()
+    assert payload["favorite"] == {"side": "away", "prematch_odd": "1.90"}
+    assert payload["next_goal_odds"] == {"favorite": "4.20", "opponent": "1.90"}
+
+
+def test_match_detail_as_llm_dict_skips_suspended_next_goal_odds() -> None:
+    match = replace(
+        _detail().match,
+        next_goal=NextGoalOdds("1.90", "3.50", "4.20", "Next Goal", suspended=True),
+    )
+    payload = replace(_detail(), match=match).as_llm_dict()
+    assert "next_goal_odds" not in payload
+
+
+def test_match_detail_as_llm_dict_favorite_omits_prematch_odd_for_live_source() -> None:
+    match = replace(
+        _detail().match,
+        prematch=PrematchOdds("1.80", "3.40", "4.50", "Match Winner", source="live"),
+        prediction_pct_home=None,
+        prediction_pct_away=None,
+        prediction_winner_team_id=None,
+    )
+    payload = replace(_detail(), match=match).as_llm_dict()
+    assert payload["favorite"] == {"side": "home"}
+
+
+def test_match_detail_as_llm_dict_own_goal_uses_benefiting_side() -> None:
+    detail = replace(
+        _detail(),
+        events=(DetailEvent(62, None, "away", "Goal", "Own Goal", "Saipa", None),),
+    )
+    payload = detail.as_llm_dict()
+    assert payload["events"] == [
+        {"minute": 62, "side": "home", "detail": "Own Goal"},
+    ]
+    assert payload["last_goal"] == {
+        "minute": 62,
+        "side": "home",
+        "by_favorite": True,
+    }
 
 
 def test_read_goal_price_treats_over_line_as_another_goal() -> None:

@@ -25,7 +25,6 @@ from predictor.services.advisor.domain import (
     coupon_within_limits,
     live_coupon_progress,
     live_leg_progress,
-    match_minute,
     over_under_market,
     period_for,
     period_score_now,
@@ -35,6 +34,7 @@ from predictor.services.advisor.domain import (
     settled_pnl,
     wait_continues,
 )
+from predictor.services.live_board.domain import match_minute
 
 NOW = datetime(2026, 10, 18, 16, 0, tzinfo=UTC)
 LIMITS = PlayLimits(

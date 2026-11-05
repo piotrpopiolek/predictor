@@ -12,7 +12,12 @@ from predictor.constants import (
     IN_PLAY_FIXTURE_STATUSES,
 )
 from predictor.services.lineup_strength import LineupStrength
-from predictor.services.live_board import LiveMatch, PrematchOdds
+from predictor.services.live_board import (
+    LiveMatch,
+    PrematchOdds,
+    match_favorite_side,
+    match_minute,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,10 +211,23 @@ class MatchDetail:
 
         Drops table, markets, H2H, form lists, XI/bench, logos, scorers,
         clock/status, card events, goal_price, odds metadata, formations,
-        and empty/null values. Stats use an English whitelist. Match-page
-        ``as_dict`` is unchanged.
+        and empty/null values. Stats use an English whitelist. Adds derived
+        clock/favorite/last-goal fields. Match-page ``as_dict`` is unchanged.
         """
         stats = _llm_stats(self.stats)
+        minute = match_minute(
+            self.match.status_short, self.match.elapsed, self.match.extra
+        )
+        favorite_side = match_favorite_side(self.match)
+        last_goal = _llm_last_goal(self.events, favorite_side=favorite_side)
+        derived: dict[str, Any] = {
+            "minute": minute,
+            "minutes_left": _llm_minutes_left(self.match.status_short, minute),
+            "favorite": _llm_favorite(self.match, favorite_side),
+            "next_goal_odds": _llm_next_goal_odds(self.match, favorite_side),
+            "last_goal": last_goal,
+            "minutes_since_last_goal": _llm_minutes_since_last_goal(minute, last_goal),
+        }
         return _compact(
             {
                 "match": _compact(_match_llm_dict(self.match)),
@@ -220,6 +238,7 @@ class MatchDetail:
                 ],
                 "stats": stats,
                 "stats_available": bool(stats),
+                **derived,
                 "home_strength": _compact_optional(
                     _strength_llm_dict(self.home_strength)
                 ),
@@ -244,6 +263,8 @@ class MatchDetail:
 
 _LLM_GOAL_DETAILS = frozenset({"Penalty", "Own Goal"})
 _LLM_EXTRA_TIME = frozenset({"ET", "BT"})
+_LLM_PERIOD_END_REGULATION = 90
+_LLM_PERIOD_END_EXTRA = 120
 _LLM_STAT_KEYS = {
     "Shots on Goal": "shots_on",
     "Total Shots": "shots",
@@ -266,14 +287,88 @@ def _event_dict(item: DetailEvent) -> dict[str, Any]:
     }
 
 
+def _llm_goal_side(item: DetailEvent) -> str:
+    """Side that benefits from the goal (own goal flips API team side)."""
+    if item.detail == "Own Goal":
+        if item.side == "home":
+            return "away"
+        if item.side == "away":
+            return "home"
+    return item.side
+
+
 def _llm_goal_event(item: DetailEvent) -> dict[str, Any]:
     row: dict[str, Any] = {
         "minute": int(item.minute) + int(item.extra or 0),
-        "side": item.side,
+        "side": _llm_goal_side(item),
     }
     if item.detail in _LLM_GOAL_DETAILS:
         row["detail"] = item.detail
     return row
+
+
+def _llm_minutes_left(status_short: str, minute: int | None) -> int | None:
+    if minute is None:
+        return None
+    end = (
+        _LLM_PERIOD_END_EXTRA
+        if status_short in _LLM_EXTRA_TIME
+        else _LLM_PERIOD_END_REGULATION
+    )
+    return max(0, end - minute)
+
+
+def _llm_favorite(match: LiveMatch, side: str | None) -> dict[str, Any] | None:
+    if side is None:
+        return None
+    row: dict[str, Any] = {"side": side}
+    odds = match.prematch
+    if odds is not None and odds.source == "prematch":
+        price = odds.home if side == "home" else odds.away
+        if price is not None:
+            row["prematch_odd"] = price
+    return row
+
+
+def _llm_next_goal_odds(
+    match: LiveMatch, favorite_side: str | None
+) -> dict[str, Any] | None:
+    quote = match.next_goal
+    if quote is None or quote.suspended or favorite_side is None:
+        return None
+    if favorite_side == "home":
+        fav, opp = quote.home, quote.away
+    else:
+        fav, opp = quote.away, quote.home
+    return _compact_optional({"favorite": fav, "opponent": opp})
+
+
+def _llm_last_goal(
+    events: Sequence[DetailEvent], *, favorite_side: str | None
+) -> dict[str, Any] | None:
+    goals = [item for item in events if item.event_type == "Goal"]
+    if not goals:
+        return None
+    last = goals[-1]
+    side = _llm_goal_side(last)
+    row: dict[str, Any] = {
+        "minute": int(last.minute) + int(last.extra or 0),
+        "side": side,
+    }
+    if favorite_side is not None:
+        row["by_favorite"] = side == favorite_side
+    return row
+
+
+def _llm_minutes_since_last_goal(
+    minute: int | None, last_goal: dict[str, Any] | None
+) -> int | None:
+    if minute is None or last_goal is None:
+        return None
+    goal_minute = last_goal.get("minute")
+    if not isinstance(goal_minute, int):
+        return None
+    return minute - goal_minute
 
 
 def _llm_stats(stats: Sequence[DetailStat]) -> dict[str, dict[str, str | None]]:

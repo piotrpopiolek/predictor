@@ -29,7 +29,6 @@ from predictor.services.advisor.domain import (
     LineQuote,
     Period,
     PlayLimits,
-    match_minute,
     over_half_line,
     period_for,
     prompt_gate_misses,
@@ -44,6 +43,7 @@ from predictor.services.advisor.sql import (
 from predictor.services.live_board.domain import (
     LiveMatch,
     favorite_prematch_odd,
+    match_minute,
     next_goal_reasons,
 )
 from predictor.services.live_board.sql import list_next_goal_matches, load_first_legs

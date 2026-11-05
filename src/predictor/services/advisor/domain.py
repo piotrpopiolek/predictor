@@ -207,23 +207,6 @@ def over_under_market(period: Period) -> str | None:
     return EXTRA_TIME_OVER_UNDER
 
 
-def match_minute(
-    status_short: str, elapsed: int | None, extra: int | None
-) -> int | None:
-    """Match minute as the API clock shows it, plus stoppage.
-
-    In extra time ``elapsed`` is already 91–120. ``clock_sort_key`` adds 90
-    only so those matches sort after regulation.
-    """
-    added = extra or 0
-    if status_short == "HT":
-        base = 45 if elapsed is None else elapsed
-        return base + added
-    if elapsed is None:
-        return None
-    return elapsed + added
-
-
 def assess(candidate: CandidateView, limits: PlayLimits, now: datetime) -> Playability:
     if candidate.status_short in _PENALTIES:
         return _blocked(Skip.PENALTIES)
@@ -241,6 +224,9 @@ def assess(candidate: CandidateView, limits: PlayLimits, now: datetime) -> Playa
         goals_away=score[1],
         ordinal=n + 1,
     )
+    # Imported here to avoid a live_board ↔ advisor circular import.
+    from predictor.services.live_board.domain import match_minute
+
     minute = match_minute(candidate.status_short, candidate.elapsed, candidate.extra)
     limit = (
         limits.max_minute_extra
