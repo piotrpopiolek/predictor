@@ -165,7 +165,11 @@ def resolve_auto_outcome(
     elapsed: int | None = None,
     has_goal_events: bool = False,
 ) -> SettleOutcome | None:
-    """Settle 'padnie gol': any next goal → won; FT without → lost."""
+    """Settle 'padnie gol': any next goal → won; FT without → lost.
+
+    Finished paths trust total goals vs snapshot. ``has_goal_events`` only
+    gates mid-match (with ``counting_goal``); it is ignored after FT/AET/PEN.
+    """
     del elapsed
     if counting_goal:
         return "won"
@@ -181,10 +185,10 @@ def resolve_auto_outcome(
 
     score_changed = home_delta > 0 or away_delta > 0
     if short in _FINISHED_NO_GOAL:
-        if has_goal_events or not score_changed:
-            return "lost"
-        # Finished with score change, no event rows — treat as goal scored.
-        return "won"
+        # Trust board totals at full time even when event rows are incomplete.
+        if now_home + now_away > snap_home + snap_away:
+            return "won"
+        return "lost"
 
     if not score_changed:
         return None

@@ -100,6 +100,99 @@ async def test_scheduler_quota_exhausted_does_not_spin_http(valid_env: None) -> 
 
 
 @pytest.mark.asyncio
+async def test_tick_settles_after_drain_and_handlers(valid_env: None) -> None:
+    order: list[str] = []
+
+    async def drain() -> int:
+        order.append("drain")
+        return 0
+
+    async def live() -> None:
+        order.append("handler")
+
+    async def settle() -> int:
+        order.append("settle")
+        return 0
+
+    class _Client:
+        async def get_status(self) -> QuotaSnapshot:
+            return QuotaSnapshot(
+                current=100,
+                limit_day=7500,
+                remaining=2000,
+                fetched_at=datetime(2026, 11, 5, 12, 0, tzinfo=UTC),
+                source="api",
+            )
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        cast(Any, _Client()),
+        _unused_factory(),
+        handlers={2: live},
+        settle_open=settle,
+        drain_odds_refresh=drain,
+        now_fn=lambda: datetime(2026, 11, 5, 12, 0, tzinfo=UTC),
+        live_match_count=lambda: 1,
+        matches_left_today=lambda: 10,
+    )
+
+    async def fake_persist() -> None:
+        return None
+
+    scheduler._persist_cursors = fake_persist  # type: ignore[method-assign]
+    scheduler._persist_quota = fake_persist  # type: ignore[method-assign]
+    await scheduler._tick(asyncio.Event())
+    assert order == ["drain", "handler", "settle"]
+
+
+@pytest.mark.asyncio
+async def test_tick_settles_when_quota_exhausted_after_drain(valid_env: None) -> None:
+    order: list[str] = []
+
+    async def drain() -> int:
+        order.append("drain")
+        return 0
+
+    async def live() -> None:
+        order.append("handler")
+
+    async def settle() -> int:
+        order.append("settle")
+        return 0
+
+    class _Client:
+        async def get_status(self) -> QuotaSnapshot:
+            return QuotaSnapshot(
+                current=100,
+                limit_day=100,
+                remaining=0,
+                fetched_at=datetime(2026, 11, 5, 12, 0, tzinfo=UTC),
+                source="api",
+            )
+
+    settings = load_settings()
+    scheduler = Scheduler(
+        settings,
+        cast(Any, _Client()),
+        _unused_factory(),
+        handlers={2: live},
+        settle_open=settle,
+        drain_odds_refresh=drain,
+        now_fn=lambda: datetime(2026, 11, 5, 12, 0, tzinfo=UTC),
+    )
+
+    async def fake_persist() -> None:
+        return None
+
+    scheduler._persist_cursors = fake_persist  # type: ignore[method-assign]
+    scheduler._persist_quota = fake_persist  # type: ignore[method-assign]
+    await scheduler._tick(asyncio.Event())
+    assert order == ["drain", "settle"]
+    assert order.count("settle") == 1
+
+
+@pytest.mark.asyncio
 async def test_settle_open_runs_when_quota_is_exhausted(valid_env: None) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         del request

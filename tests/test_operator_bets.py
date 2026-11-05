@@ -140,6 +140,44 @@ def test_resolve_auto_goal_will_happen() -> None:
     )
 
 
+def test_ft_trusts_total_goals_vs_snapshot() -> None:
+    """Bet #25 shape: FT advanced past snapshot even if events miss post-snap goal."""
+    assert (
+        resolve_auto_outcome(
+            snap_home=1,
+            snap_away=0,
+            now_home=2,
+            now_away=0,
+            status_short="FT",
+            has_goal_events=True,
+            counting_goal=False,
+        )
+        == "won"
+    )
+    assert (
+        resolve_auto_outcome(
+            snap_home=1,
+            snap_away=0,
+            now_home=1,
+            now_away=1,
+            status_short="FT",
+            has_goal_events=False,
+        )
+        == "won"
+    )
+    assert (
+        resolve_auto_outcome(
+            snap_home=1,
+            snap_away=0,
+            now_home=1,
+            now_away=0,
+            status_short="FT",
+            has_goal_events=True,
+        )
+        == "lost"
+    )
+
+
 def test_stoppage_goal_wins_next_goal_bet() -> None:
     assert goal_counts_for_next_goal(88, None) is True
     assert goal_counts_for_next_goal(90, None) is True

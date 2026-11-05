@@ -424,8 +424,8 @@ class Scheduler:
         self._work_started = False
         if stop.is_set():
             return
+        # Drain may bump fixture scores; settle after work (or early skip).
         await self._run_odds_refresh_drain()
-        await self._settle_open_bets()
         try:
             await self._maybe_daily_report()
             quota = await self._ensure_quota()
@@ -503,6 +503,8 @@ class Scheduler:
                             plan.context_calls_per_tick,
                         )
         finally:
+            # DB-only: after drain + handlers (or early exit), before tick ends.
+            await self._settle_open_bets()
             await self._persist_quota()
 
     async def _persist_quota(self) -> None:
