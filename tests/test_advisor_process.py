@@ -1346,7 +1346,7 @@ async def test_lone_weak_candidate_does_not_call_the_model() -> None:
                         "rationale": "waiting for a second leg",
                     },
                     {
-                        "fixture_id": 880_764,
+                        "fixture_id": 880_784,
                         "decision": "wait",
                         "estimated_probability": "0.60",
                         "confidence": "0.40",
@@ -1377,8 +1377,9 @@ async def test_lone_weak_candidate_does_not_call_the_model() -> None:
             is False
         )
         assert provider.calls == 0
+        # Partner uses 880_781 — keep clear of 880_761 refresh tests.
         async with factory() as session, session.begin():
-            await _seed_live(session, 880_761, odd="1.850")
+            await _seed_live(session, 880_781, odd="1.850")
         assert (
             await run_tick(
                 engine,
@@ -1402,7 +1403,7 @@ async def test_lone_weak_candidate_does_not_call_the_model() -> None:
         assert provider.calls == 1
     finally:
         async with factory() as session, session.begin():
-            await _drop_live(session, 880_761)
+            await _drop_live(session, 880_781)
             await _drop_live(session, 880_751)
         await engine.dispose()
 
