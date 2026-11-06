@@ -43,7 +43,11 @@ from predictor.services.advisor.domain import (
     over_line_matches,
 )
 from predictor.services.advisor.llm.protocol import LlmCompletion
-from predictor.services.advisor.prompts.cycle import _price, render_cycle_prompt
+from predictor.services.advisor.prompts.cycle import (
+    PROMPT_VERSION,
+    _price,
+    render_cycle_prompt,
+)
 from predictor.services.advisor.sql import (
     FirstOver,
     first_period_over,
@@ -612,7 +616,7 @@ def test_lone_candidate_allowed_needs_strong_regulation_single() -> None:
     )
 
 
-def test_cycle_prompt_asks_for_multi_leg_coupons_to_min_combined() -> None:
+def test_cycle_prompt_p5_prices_candidates_and_forbids_padding() -> None:
     candidates = (
         CycleCandidate(
             fixture_id=7,
@@ -668,15 +672,27 @@ def test_cycle_prompt_asks_for_multi_leg_coupons_to_min_combined() -> None:
     assert second["n"] == 0
     assert second["detail"] is None
     assert "first_odd" not in second["price"]
-    assert "Prefer coupons of 2–3 legs" in prompt
-    assert "Use wait, not bet" in prompt
+    assert PROMPT_VERSION == "p5"
+    assert "Prefer coupons" not in prompt
+    assert "risk filter over the baseline rule" in prompt
+    assert f"x {PAYOUT_KEEP:.2f}" in prompt
+    assert "Never add a leg only to reach the floor; use wait instead." in prompt
+    assert "at least 1.60" in prompt
+    assert "coupon of 1 to 3 fixture ids" in prompt
+    assert "odd >= 1.30" in prompt
+    assert "at most 2 goals in the settlement period" in prompt
+    assert "priced under 2.00" in prompt
+    assert "no odd under 1.45 after minute 60" in prompt
+    assert "odd of at least 1.80" in prompt
+    assert "300 seconds old" in prompt
+    assert "For period = regulation only: Inside the regulation gate" in prompt
+    assert "There is no track record for extra time" in prompt
+    assert "stats_available is false" in prompt
+    assert "rise from price.first_odd to price.odd is not a signal" in prompt
+    assert "reject means the state itself is bad" in prompt
+    assert "comparison labels are Polish" in prompt
     assert "matching the response schema" in prompt
-    assert ">= 1.600" in prompt
-    assert "odd >= 1.300" in prompt
-    assert str(PAYOUT_KEEP) in prompt
-    assert "already 2H or extra time" in prompt
-    assert "300 seconds" in prompt
-    assert "candidate.detail is compact match context" in prompt
+    assert prompt.endswith(json.dumps(body, ensure_ascii=True))
 
 
 def test_price_block_uses_payout_keep_break_evens() -> None:
