@@ -439,7 +439,7 @@ async def _below_threshold_open(session: AsyncSession, strategy_id: int) -> bool
             playable.append(
                 PricedCandidate(int(item["fixture_id"]), _candidate_body_odd(item))
             )
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             return False
     if not playable:
         return False

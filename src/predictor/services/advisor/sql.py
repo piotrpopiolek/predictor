@@ -386,7 +386,7 @@ async def last_signature(
                     _candidate_ordinal(item),
                 )
             )
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             continue
     return tuple(sorted(keys))
 

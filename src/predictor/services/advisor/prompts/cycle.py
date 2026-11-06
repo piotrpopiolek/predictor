@@ -13,6 +13,16 @@ from predictor.services.advisor.domain import MIN_ANALYSIS_ODD
 
 PROMPT_VERSION = "p4"
 
+# Regulation-only directions inside the A0 gate (B1). Extra time has no
+# track record yet — B2 states that separately. Exact rates stay out of the
+# prompt; refresh via `.ai/b1_state_priors.sql` on predictor_dev when the
+# finished sample is large enough to revisit.
+_STATE_PRIORS = (
+    "Inside the regulation gate, historical edge leans toward total goals "
+    "already 0–1 with minute at most 60, and toward a pre-match favourite "
+    "priced 1.50–2.00 rather than a very short favourite below 1.50."
+)
+
 _PCT = Decimal("1")
 _HUNDRED = Decimal("100")
 
