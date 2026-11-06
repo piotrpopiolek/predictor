@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,11 +30,22 @@ from predictor.services.advisor.domain import (
 
 
 class _PeriodOverCandidate(Protocol):
-    fixture_id: int
-    period: str
-    goals_home: int
-    goals_away: int
-    n: int
+    """Read-only. Frozen candidates have no setters, so neither does this."""
+
+    @property
+    def fixture_id(self) -> int: ...
+
+    @property
+    def period(self) -> str: ...
+
+    @property
+    def goals_home(self) -> int: ...
+
+    @property
+    def goals_away(self) -> int: ...
+
+    @property
+    def n(self) -> int: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,8 +402,8 @@ async def last_signature(
     return tuple(sorted(keys))
 
 
-def _candidate_ordinal(item: dict[str, object]) -> int:
+def _candidate_ordinal(item: Mapping[str, Any]) -> int:
     """Ordinal from body, or ``n + 1`` for p5 payloads that omit it."""
     if "ordinal" in item:
-        return int(item["ordinal"])  # type: ignore[arg-type]
-    return int(item["n"]) + 1  # type: ignore[arg-type]
+        return int(item["ordinal"])
+    return int(item["n"]) + 1

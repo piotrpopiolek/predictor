@@ -116,7 +116,8 @@ class AdvisorCycle(Base):
             "'ok', 'invalid_output', 'provider_error', "
             "'duplicate_candidate', 'candidate_set', 'duplicate_leg', "
             "'too_many_legs', 'unknown_fixture', 'open_coupon', "
-            "'invalid_odd', 'below_threshold', 'bet_not_in_coupon', 'not_a_bet'"
+            "'invalid_odd', 'below_threshold', 'bet_not_in_coupon', 'not_a_bet', "
+            "'single_with_partners', 'single_negative_ev'"
             ")",
             name="advisor_cycles_validation_check",
         ),

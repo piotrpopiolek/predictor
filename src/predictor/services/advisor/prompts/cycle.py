@@ -39,8 +39,13 @@ _HUNDRED = Decimal("100")
 
 
 class _FirstOdd(Protocol):
-    odd: Decimal
-    minute: int | None
+    """Read-only. Frozen FirstOver has no setters, so neither does this."""
+
+    @property
+    def odd(self) -> Decimal: ...
+
+    @property
+    def minute(self) -> int | None: ...
 
 
 def _odd_text(value: Decimal) -> str:

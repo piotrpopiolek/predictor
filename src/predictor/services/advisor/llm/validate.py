@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
+from predictor.constants import PAYOUT_KEEP
 from predictor.schemas.advisor import LlmDecision
 from predictor.services.advisor.domain import combined_odd
 from predictor.services.advisor.llm.parse import InvalidDecision, parse_decision
@@ -94,6 +95,20 @@ def _semantics(
             return "invalid_odd"
         if total < min_odd:
             return "below_threshold"
+        if len(ids) == 1:
+            sole = ids[0]
+            sole_decision = next(
+                item for item in parsed.candidates if item.fixture_id == sole
+            )
+            # Only judge real singles. A reject/wait leg in a coupon falls
+            # through to not_a_bet below instead of a misleading single status.
+            if sole_decision.decision == "bet":
+                if len(playable) >= 2:
+                    return "single_with_partners"
+                if sole_decision.estimated_probability * priced[
+                    sole
+                ] * PAYOUT_KEEP < Decimal(1):
+                    return "single_negative_ev"
     for candidate in parsed.candidates:
         in_coupon = candidate.fixture_id in used
         if candidate.decision == "bet" and not in_coupon:

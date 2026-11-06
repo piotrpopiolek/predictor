@@ -98,11 +98,11 @@ def test_migrated_schema_has_domain_and_etl_tables() -> None:
     assert "alembic_version" in names
 
 
-def test_alembic_head_is_advisor_odds_refresh() -> None:
+def test_alembic_head_is_cycle_single_rules() -> None:
     with app_connect() as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     assert version is not None
-    assert version[0] == "0025_advisor_odds_refresh"
+    assert version[0] == "0026_cycle_single_rules"
 
 
 def test_fixture_odds_live_pk_is_append_only() -> None:

@@ -112,13 +112,13 @@ def test_nan_timeout_is_rejected_at_startup(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_valid_coupon_uses_database_odds_not_the_reply() -> None:
     raw = _raw(
-        [_row(1, "bet"), _row(2, "reject")],
-        [[1]],
+        [_row(1, "bet", probability="0.40"), _row(2, "bet", probability="0.40")],
+        [[1, 2]],
     )
     verdict = review_model_output(raw, _playable(1, 2), set(), min_odd=MIN, max_legs=3)
     assert verdict.status == "ok"
-    assert verdict.coupons[0].fixture_ids == (1,)
-    assert verdict.coupons[0].combined_odd == ODD
+    assert verdict.coupons[0].fixture_ids == (1, 2)
+    assert verdict.coupons[0].combined_odd == ODD * ODD
 
 
 def test_schema_failures_are_invalid_output_and_place_nothing() -> None:
@@ -195,7 +195,7 @@ def test_coupon_rules_reject_the_whole_cycle() -> None:
     )
     _assert_no_bet(unknown, "unknown_fixture")
     opened = review_model_output(
-        _raw([_row(1, "bet")], [[1]]),
+        _raw([_row(1, "bet", probability="0.80")], [[1]]),
         _playable(1),
         {1},
         min_odd=MIN,
@@ -214,7 +214,7 @@ def test_coupon_rules_reject_the_whole_cycle() -> None:
     )
     _assert_no_bet(twice, "duplicate_leg")
     low = review_model_output(
-        _raw([_row(1, "bet")], [[1]]),
+        _raw([_row(1, "bet", probability="0.80")], [[1]]),
         _playable(1),
         set(),
         min_odd=Decimal("2.0"),
@@ -241,13 +241,58 @@ def test_coupon_rules_reject_the_whole_cycle() -> None:
     )
     _assert_no_bet(orphan, "bet_not_in_coupon")
     smuggled = review_model_output(
-        _raw([_row(1, "reject"), _row(2, "bet")], [[1]]),
+        _raw(
+            [_row(1, "bet", probability="0.40"), _row(2, "reject", probability="0.40")],
+            [[1, 2]],
+        ),
         _playable(1, 2),
         set(),
         min_odd=MIN,
         max_legs=3,
     )
     _assert_no_bet(smuggled, "not_a_bet")
+
+
+def test_single_rules_reject_or_accept_by_partners_and_ev() -> None:
+    with_partners = review_model_output(
+        _raw(
+            [_row(1, "bet", probability="0.80"), _row(2, "reject")],
+            [[1]],
+        ),
+        _playable(1, 2),
+        set(),
+        min_odd=MIN,
+        max_legs=3,
+    )
+    _assert_no_bet(with_partners, "single_with_partners")
+    negative = review_model_output(
+        _raw([_row(1, "bet", probability="0.55")], [[1]]),
+        [PricedCandidate(1, Decimal("1.900"))],
+        set(),
+        min_odd=MIN,
+        max_legs=3,
+    )
+    _assert_no_bet(negative, "single_negative_ev")
+    ok_single = review_model_output(
+        _raw([_row(1, "bet", probability="0.65")], [[1]]),
+        [PricedCandidate(1, Decimal("1.900"))],
+        set(),
+        min_odd=MIN,
+        max_legs=3,
+    )
+    assert ok_single.status == "ok"
+    assert ok_single.coupons[0].fixture_ids == (1,)
+    weak_pair = review_model_output(
+        _raw(
+            [_row(1, "bet", probability="0.40"), _row(2, "bet", probability="0.40")],
+            [[1, 2]],
+        ),
+        _playable(1, 2),
+        set(),
+        min_odd=MIN,
+        max_legs=3,
+    )
+    assert weak_pair.status == "ok"
 
 
 class _Models:
