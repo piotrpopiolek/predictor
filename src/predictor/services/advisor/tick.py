@@ -46,6 +46,7 @@ from predictor.services.advisor.recommend_ops import (
 from predictor.services.advisor.sandbox import place_baseline, release_funded_strategies
 from predictor.services.advisor.sql import (
     OverUnderRow,
+    first_period_over,
     last_signature,
     latest_over_under,
     open_fixture_ids,
@@ -262,11 +263,14 @@ async def run_tick(
             details = await _match_details(
                 engine, [item.fixture_id for item in candidates]
             )
+            async with session.begin():
+                first_odds = await first_period_over(session, candidates)
             prompt, body = render_cycle_prompt(
                 candidates,
                 min_combined_odd=book.min_odd,
                 max_legs=book.max_legs,
                 match_details=details,
+                first_odds=first_odds,
             )
             recommend = book.status == "promoted" and gate is None
             outcome = await run_cycle(
@@ -393,6 +397,14 @@ async def restore_window(session: AsyncSession, strategy_id: int) -> CandidateWi
     return CandidateWindow(signature=signature, fired=not retry)
 
 
+def _candidate_body_odd(item: dict[str, Any]) -> Decimal:
+    """Read odd from p5 ``price.odd`` or legacy flat ``odd``."""
+    price = item.get("price")
+    if isinstance(price, dict) and "odd" in price:
+        return Decimal(str(price["odd"]))
+    return Decimal(str(item["odd"]))
+
+
 async def _below_threshold_open(session: AsyncSession, strategy_id: int) -> bool:
     row = (
         await session.execute(
@@ -425,9 +437,9 @@ async def _below_threshold_open(session: AsyncSession, strategy_id: int) -> bool
             continue
         try:
             playable.append(
-                PricedCandidate(int(item["fixture_id"]), Decimal(str(item["odd"])))
+                PricedCandidate(int(item["fixture_id"]), _candidate_body_odd(item))
             )
-        except KeyError, TypeError, ValueError:
+        except (KeyError, TypeError, ValueError):
             return False
     if not playable:
         return False

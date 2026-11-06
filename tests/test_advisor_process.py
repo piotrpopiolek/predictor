@@ -10,6 +10,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import delete, select
 
+from predictor.constants import PAYOUT_KEEP
 from predictor.models.advisor import (
     AdvisorCounterfactual,
     AdvisorCoupon,
@@ -42,12 +43,17 @@ from predictor.services.advisor.domain import (
     over_line_matches,
 )
 from predictor.services.advisor.llm.protocol import LlmCompletion
-from predictor.services.advisor.prompts.cycle import render_cycle_prompt
-from predictor.services.advisor.sql import latest_over_under
+from predictor.services.advisor.prompts.cycle import _price, render_cycle_prompt
+from predictor.services.advisor.sql import (
+    FirstOver,
+    first_period_over,
+    latest_over_under,
+)
 from predictor.services.advisor.tick import (
     BASELINE_NAME,
     LLM_NAME,
     CandidateWindow,
+    _candidate_body_odd,
     ensure_strategy,
     run_tick,
 )
@@ -607,8 +613,6 @@ def test_lone_candidate_allowed_needs_strong_regulation_single() -> None:
 
 
 def test_cycle_prompt_asks_for_multi_leg_coupons_to_min_combined() -> None:
-    from predictor.services.advisor.cycle import CycleCandidate
-
     candidates = (
         CycleCandidate(
             fixture_id=7,
@@ -622,11 +626,11 @@ def test_cycle_prompt_asks_for_multi_leg_coupons_to_min_combined() -> None:
         ),
         CycleCandidate(
             fixture_id=8,
-            period="regulation",
+            period="extra_time",
             goals_home=1,
             goals_away=1,
-            ordinal=3,
-            n=2,
+            ordinal=1,
+            n=0,
             odd=Decimal("1.400"),
             candidate_rule="tie_deficit",
         ),
@@ -641,20 +645,69 @@ def test_cycle_prompt_asks_for_multi_leg_coupons_to_min_combined() -> None:
                 "events": [],
             }
         },
+        first_odds={7: FirstOver(odd=Decimal("1.550"), minute=46)},
     )
-    assert body["min_analysis_odd"] == "1.300"
+    assert "min_analysis_odd" not in body
     assert body["min_combined_odd"] == "1.600"
     assert body["max_legs"] == 3
-    assert body["candidates"][0]["detail"]["stats"][0]["label"] == "Strzały"
-    assert body["candidates"][1]["detail"] is None
+    first = body["candidates"][0]
+    assert first["period"] == "regulation"
+    assert "ordinal" not in first
+    assert "odd" not in first
+    assert first["price"] == {
+        "odd": "1.300",
+        "implied_pct": "77",
+        "breakeven_single_pct": "87",
+        "breakeven_pair_leg_pct": "82",
+        "first_odd": "1.550",
+        "first_odd_minute": 46,
+    }
+    assert first["detail"]["stats"][0]["label"] == "Strzały"
+    second = body["candidates"][1]
+    assert second["period"] == "extra_time"
+    assert second["n"] == 0
+    assert second["detail"] is None
+    assert "first_odd" not in second["price"]
     assert "Prefer coupons of 2–3 legs" in prompt
     assert "Use wait, not bet" in prompt
     assert "matching the response schema" in prompt
     assert ">= 1.600" in prompt
     assert "odd >= 1.300" in prompt
+    assert str(PAYOUT_KEEP) in prompt
     assert "already 2H or extra time" in prompt
     assert "300 seconds" in prompt
     assert "candidate.detail is compact match context" in prompt
+
+
+def test_price_block_uses_payout_keep_break_evens() -> None:
+    assert _price(Decimal("1.300")) == {
+        "odd": "1.300",
+        "implied_pct": "77",
+        "breakeven_single_pct": "87",
+        "breakeven_pair_leg_pct": "82",
+    }
+    assert _price(Decimal("1.600")) == {
+        "odd": "1.600",
+        "implied_pct": "63",
+        "breakeven_single_pct": "71",
+        "breakeven_pair_leg_pct": "67",
+    }
+    assert _price(Decimal("2.000"), FirstOver(odd=Decimal("1.900"), minute=50)) == {
+        "odd": "2.000",
+        "implied_pct": "50",
+        "breakeven_single_pct": "57",
+        "breakeven_pair_leg_pct": "53",
+        "first_odd": "1.900",
+        "first_odd_minute": 50,
+    }
+    lone = _price(Decimal("1.500"), FirstOver(odd=Decimal("1.450"), minute=None))
+    assert lone["first_odd"] == "1.450"
+    assert "first_odd_minute" not in lone
+
+
+def test_candidate_body_odd_reads_price_with_flat_fallback() -> None:
+    assert _candidate_body_odd({"price": {"odd": "1.75"}}) == Decimal("1.75")
+    assert _candidate_body_odd({"odd": "1.40"}) == Decimal("1.40")
 
 
 @pytest.mark.asyncio
@@ -713,6 +766,273 @@ async def test_latest_over_under_keeps_the_newest_snapshot() -> None:
             await session.execute(delete(Fixture).where(Fixture.id == 880_604))
             await session.execute(delete(Team).where(Team.id.in_((880_602, 880_603))))
             await session.execute(delete(League).where(League.id == 880_601))
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_first_period_over_picks_earliest_second_half_same_score() -> None:
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    league, home, away, fixture = 9_881_701, 9_881_702, 9_881_703, 9_881_704
+    reg_bet, et_bet = 9_881_709, 9_881_710
+    candidate = CycleCandidate(
+        fixture_id=fixture,
+        period="regulation",
+        goals_home=0,
+        goals_away=0,
+        ordinal=1,
+        n=0,
+        odd=Decimal("1.700"),
+        candidate_rule="favorite_losing",
+    )
+    try:
+        async with factory() as session, session.begin():
+            session.add(League(id=league, name="first-over"))
+            session.add(Team(id=home, name="Home"))
+            session.add(Team(id=away, name="Away"))
+            await session.flush()
+            session.add(
+                Fixture(
+                    id=fixture,
+                    league_id=league,
+                    season=2026,
+                    home_team_id=home,
+                    away_team_id=away,
+                )
+            )
+            session.add(OddsLiveBet(id=reg_bet, name="Over/Under Line"))
+            session.add(OddsLiveBet(id=et_bet, name="Over/Under Extra Time"))
+            await session.flush()
+            session.add_all(
+                [
+                    FixtureOddsLive(
+                        fixture_id=fixture,
+                        bet_id=reg_bet,
+                        value_label="Over",
+                        handicap="0.5",
+                        odd=Decimal("1.900"),
+                        home_goals=0,
+                        away_goals=0,
+                        elapsed_minutes=30,
+                        captured_at=NOW - timedelta(minutes=40),
+                    ),
+                    FixtureOddsLive(
+                        fixture_id=fixture,
+                        bet_id=reg_bet,
+                        value_label="Over",
+                        handicap="0.5",
+                        odd=Decimal("1.650"),
+                        home_goals=0,
+                        away_goals=0,
+                        elapsed_minutes=46,
+                        captured_at=NOW - timedelta(minutes=20),
+                    ),
+                    FixtureOddsLive(
+                        fixture_id=fixture,
+                        bet_id=reg_bet,
+                        value_label="Over",
+                        handicap="0.5",
+                        odd=Decimal("1.700"),
+                        home_goals=0,
+                        away_goals=0,
+                        elapsed_minutes=60,
+                        captured_at=NOW - timedelta(minutes=5),
+                    ),
+                    FixtureOddsLive(
+                        fixture_id=fixture,
+                        bet_id=reg_bet,
+                        value_label="Over",
+                        handicap="0.5",
+                        odd=Decimal("1.100"),
+                        home_goals=0,
+                        away_goals=0,
+                        elapsed_minutes=50,
+                        suspended=True,
+                        captured_at=NOW - timedelta(minutes=25),
+                    ),
+                ]
+            )
+        async with factory() as session, session.begin():
+            found = await first_period_over(session, (candidate,))
+        assert found[fixture] == FirstOver(odd=Decimal("1.650"), minute=46)
+    finally:
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(FixtureOddsLive).where(FixtureOddsLive.fixture_id == fixture)
+            )
+            await session.execute(
+                delete(OddsLiveBet).where(OddsLiveBet.id.in_((reg_bet, et_bet)))
+            )
+            await session.execute(delete(Fixture).where(Fixture.id == fixture))
+            await session.execute(delete(Team).where(Team.id.in_((home, away))))
+            await session.execute(delete(League).where(League.id == league))
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_first_period_over_after_goal_and_extra_time_market() -> None:
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    league, home, away = 9_881_721, 9_881_722, 9_881_723
+    fixture_reg, fixture_et = 9_881_724, 9_881_725
+    reg_bet, et_bet = 9_881_729, 9_881_730
+    try:
+        async with factory() as session, session.begin():
+            session.add(League(id=league, name="first-over-et"))
+            session.add(Team(id=home, name="Home"))
+            session.add(Team(id=away, name="Away"))
+            await session.flush()
+            session.add_all(
+                [
+                    Fixture(
+                        id=fixture_reg,
+                        league_id=league,
+                        season=2026,
+                        home_team_id=home,
+                        away_team_id=away,
+                    ),
+                    Fixture(
+                        id=fixture_et,
+                        league_id=league,
+                        season=2026,
+                        home_team_id=home,
+                        away_team_id=away,
+                    ),
+                    OddsLiveBet(id=reg_bet, name="Over/Under Line"),
+                    OddsLiveBet(id=et_bet, name="Over/Under Extra Time"),
+                ]
+            )
+            await session.flush()
+            session.add_all(
+                [
+                    FixtureOddsLive(
+                        fixture_id=fixture_reg,
+                        bet_id=reg_bet,
+                        value_label="Over",
+                        handicap="0.5",
+                        odd=Decimal("1.800"),
+                        home_goals=0,
+                        away_goals=0,
+                        elapsed_minutes=50,
+                        captured_at=NOW - timedelta(minutes=30),
+                    ),
+                    FixtureOddsLive(
+                        fixture_id=fixture_reg,
+                        bet_id=reg_bet,
+                        value_label="Over",
+                        handicap="1.5",
+                        odd=Decimal("1.550"),
+                        home_goals=1,
+                        away_goals=0,
+                        elapsed_minutes=62,
+                        captured_at=NOW - timedelta(minutes=10),
+                    ),
+                    FixtureOddsLive(
+                        fixture_id=fixture_reg,
+                        bet_id=reg_bet,
+                        value_label="Over",
+                        handicap="1.5",
+                        odd=Decimal("1.600"),
+                        home_goals=1,
+                        away_goals=0,
+                        elapsed_minutes=70,
+                        captured_at=NOW - timedelta(minutes=2),
+                    ),
+                    FixtureOddsLive(
+                        fixture_id=fixture_et,
+                        bet_id=reg_bet,
+                        value_label="Over",
+                        handicap="0.5",
+                        odd=Decimal("1.200"),
+                        home_goals=1,
+                        away_goals=1,
+                        elapsed_minutes=100,
+                        captured_at=NOW - timedelta(minutes=8),
+                    ),
+                    FixtureOddsLive(
+                        fixture_id=fixture_et,
+                        bet_id=et_bet,
+                        value_label="Over",
+                        handicap="0.5",
+                        odd=Decimal("1.450"),
+                        home_goals=1,
+                        away_goals=1,
+                        elapsed_minutes=95,
+                        captured_at=NOW - timedelta(minutes=6),
+                    ),
+                    FixtureOddsLive(
+                        fixture_id=fixture_et,
+                        bet_id=et_bet,
+                        value_label="Over",
+                        handicap="0.5",
+                        odd=Decimal("1.500"),
+                        home_goals=1,
+                        away_goals=1,
+                        elapsed_minutes=105,
+                        captured_at=NOW - timedelta(minutes=1),
+                    ),
+                ]
+            )
+        async with factory() as session, session.begin():
+            found = await first_period_over(
+                session,
+                (
+                    CycleCandidate(
+                        fixture_id=fixture_reg,
+                        period="regulation",
+                        goals_home=1,
+                        goals_away=0,
+                        ordinal=2,
+                        n=1,
+                        odd=Decimal("1.600"),
+                        candidate_rule="favorite_losing",
+                    ),
+                    CycleCandidate(
+                        fixture_id=fixture_et,
+                        period="extra_time",
+                        goals_home=1,
+                        goals_away=1,
+                        ordinal=1,
+                        n=0,
+                        odd=Decimal("1.500"),
+                        candidate_rule="tie_deficit",
+                    ),
+                ),
+            )
+        assert found[fixture_reg] == FirstOver(odd=Decimal("1.550"), minute=62)
+        assert found[fixture_et] == FirstOver(odd=Decimal("1.450"), minute=95)
+        async with factory() as session, session.begin():
+            empty = await first_period_over(
+                session,
+                (
+                    CycleCandidate(
+                        fixture_id=fixture_reg,
+                        period="regulation",
+                        goals_home=2,
+                        goals_away=2,
+                        ordinal=5,
+                        n=4,
+                        odd=Decimal("1.900"),
+                        candidate_rule="favorite_losing",
+                    ),
+                ),
+            )
+        assert empty == {}
+    finally:
+        async with factory() as session, session.begin():
+            await session.execute(
+                delete(FixtureOddsLive).where(
+                    FixtureOddsLive.fixture_id.in_((fixture_reg, fixture_et))
+                )
+            )
+            await session.execute(
+                delete(OddsLiveBet).where(OddsLiveBet.id.in_((reg_bet, et_bet)))
+            )
+            await session.execute(
+                delete(Fixture).where(Fixture.id.in_((fixture_reg, fixture_et)))
+            )
+            await session.execute(delete(Team).where(Team.id.in_((home, away))))
+            await session.execute(delete(League).where(League.id == league))
         await engine.dispose()
 
 

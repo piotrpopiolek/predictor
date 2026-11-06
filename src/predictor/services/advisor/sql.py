@@ -6,8 +6,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from predictor.models.advisor import (
@@ -22,7 +23,18 @@ from predictor.models.odds import FixtureOddsLive
 from predictor.services.advisor.domain import (
     EXTRA_TIME_OVER_UNDER,
     REGULATION_OVER_UNDER,
+    Period,
+    over_line_matches,
+    over_under_market,
 )
+
+
+class _PeriodOverCandidate(Protocol):
+    fixture_id: int
+    period: str
+    goals_home: int
+    goals_away: int
+    n: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,9 +50,31 @@ class OverUnderRow:
     away_goals: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class FirstOver:
+    """Earliest same-score Over N+0.5 in the candidate's settlement market."""
+
+    odd: Decimal
+    minute: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _OverHistoryRow:
+    fixture_id: int
+    market: str
+    label: str
+    handicap: str
+    odd: Decimal
+    captured_at: datetime
+    home_goals: int | None
+    away_goals: int | None
+    elapsed_minutes: int | None
+
+
 _OVER_UNDER_MARKETS = frozenset(
     name for name in (REGULATION_OVER_UNDER, EXTRA_TIME_OVER_UNDER) if name is not None
 )
+_REGULATION_FIRST_MINUTE = 45
 
 
 async def latest_over_under(
@@ -119,6 +153,126 @@ async def latest_over_under(
             )
         )
     return {fixture_id: tuple(items) for fixture_id, items in grouped.items()}
+
+
+async def first_period_over(
+    session: AsyncSession, candidates: Sequence[_PeriodOverCandidate]
+) -> dict[int, FirstOver]:
+    """First tradable Over N+0.5 at the candidate board in that period's market.
+
+    Regulation rows need ``elapsed_minutes >= 45``. Extra-time rows have no
+    minute floor. Suspended / stopped / blocked / finished snapshots drop out.
+    """
+    if not candidates:
+        return {}
+    fixture_ids = sorted({item.fixture_id for item in candidates})
+    bets = (
+        await session.execute(
+            select(OddsLiveBet.id, OddsLiveBet.name).where(
+                func.lower(OddsLiveBet.name).in_(_OVER_UNDER_MARKETS)
+            )
+        )
+    ).all()
+    if not bets:
+        return {}
+    market_by_bet = {int(bet_id): str(name).casefold() for bet_id, name in bets}
+    bet_ids = list(market_by_bet)
+    rows = (
+        await session.execute(
+            select(
+                FixtureOddsLive.fixture_id,
+                FixtureOddsLive.bet_id,
+                FixtureOddsLive.value_label,
+                FixtureOddsLive.handicap,
+                FixtureOddsLive.odd,
+                FixtureOddsLive.captured_at,
+                FixtureOddsLive.home_goals,
+                FixtureOddsLive.away_goals,
+                FixtureOddsLive.elapsed_minutes,
+            )
+            .where(FixtureOddsLive.fixture_id.in_(fixture_ids))
+            .where(FixtureOddsLive.bet_id.in_(bet_ids))
+            .where(func.lower(FixtureOddsLive.value_label).like("over%"))
+            .where(
+                or_(
+                    FixtureOddsLive.suspended.is_(None),
+                    FixtureOddsLive.suspended.is_(False),
+                )
+            )
+            .where(
+                or_(
+                    FixtureOddsLive.stopped.is_(None),
+                    FixtureOddsLive.stopped.is_(False),
+                )
+            )
+            .where(
+                or_(
+                    FixtureOddsLive.blocked.is_(None),
+                    FixtureOddsLive.blocked.is_(False),
+                )
+            )
+            .where(
+                or_(
+                    FixtureOddsLive.finished.is_(None),
+                    FixtureOddsLive.finished.is_(False),
+                )
+            )
+        )
+    ).all()
+    history: dict[int, list[_OverHistoryRow]] = {}
+    for row in rows:
+        market = market_by_bet.get(int(row.bet_id))
+        if market is None:
+            continue
+        elapsed = row.elapsed_minutes
+        if market == REGULATION_OVER_UNDER and (
+            elapsed is None or int(elapsed) < _REGULATION_FIRST_MINUTE
+        ):
+            continue
+        fixture_id = int(row.fixture_id)
+        history.setdefault(fixture_id, []).append(
+            _OverHistoryRow(
+                fixture_id=fixture_id,
+                market=market,
+                label=str(row.value_label),
+                handicap=str(row.handicap or ""),
+                odd=row.odd,
+                captured_at=row.captured_at,
+                home_goals=row.home_goals,
+                away_goals=row.away_goals,
+                elapsed_minutes=elapsed if elapsed is None else int(elapsed),
+            )
+        )
+    out: dict[int, FirstOver] = {}
+    for candidate in candidates:
+        first = _first_over_for(candidate, history.get(candidate.fixture_id, ()))
+        if first is not None:
+            out[candidate.fixture_id] = first
+    return out
+
+
+def _first_over_for(
+    candidate: _PeriodOverCandidate, rows: Sequence[_OverHistoryRow]
+) -> FirstOver | None:
+    try:
+        period = Period(candidate.period)
+    except ValueError:
+        return None
+    market = over_under_market(period)
+    if market is None:
+        return None
+    board = (candidate.goals_home, candidate.goals_away)
+    matched = [
+        row
+        for row in rows
+        if row.market == market
+        and (row.home_goals, row.away_goals) == board
+        and over_line_matches(row.label, row.handicap, candidate.n)
+    ]
+    if not matched:
+        return None
+    earliest = min(matched, key=lambda row: row.captured_at)
+    return FirstOver(odd=earliest.odd, minute=earliest.elapsed_minutes)
 
 
 async def open_fixture_ids(session: AsyncSession, strategy_id: int) -> frozenset[int]:
@@ -229,9 +383,16 @@ async def last_signature(
                     str(item["period"]),
                     int(item["goals_home"]),
                     int(item["goals_away"]),
-                    int(item["ordinal"]),
+                    _candidate_ordinal(item),
                 )
             )
-        except KeyError, TypeError, ValueError:
+        except (KeyError, TypeError, ValueError):
             continue
     return tuple(sorted(keys))
+
+
+def _candidate_ordinal(item: dict[str, object]) -> int:
+    """Ordinal from body, or ``n + 1`` for p5 payloads that omit it."""
+    if "ordinal" in item:
+        return int(item["ordinal"])  # type: ignore[arg-type]
+    return int(item["n"]) + 1  # type: ignore[arg-type]
