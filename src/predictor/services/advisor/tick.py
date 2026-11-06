@@ -474,6 +474,7 @@ async def _active_llm(session: AsyncSession) -> list[StrategyBook]:
         )
         if version is None:
             continue
+        version = await _align_llm_prompt_version(session, version)
         books.append(
             StrategyBook(
                 strategy_id=row.id,
@@ -489,6 +490,34 @@ async def _active_llm(session: AsyncSession) -> list[StrategyBook]:
     if books:
         return books
     return [await ensure_strategy(session, LLM_NAME, "llm")]
+
+
+async def _align_llm_prompt_version(
+    session: AsyncSession, version: AdvisorStrategyVersion
+) -> AdvisorStrategyVersion:
+    """Insert a new version row when the live prompt moved past this one.
+
+    Same strategy (e.g. sandbox-llm). Never edits the old row. Summary
+    versions are left alone.
+    """
+    current = version.prompt_version
+    if current == PROMPT_VERSION or current == "summary":
+        return version
+    bumped = AdvisorStrategyVersion(
+        strategy_id=version.strategy_id,
+        version_no=int(version.version_no) + 1,
+        prompt_version=PROMPT_VERSION,
+        min_combined_odd=version.min_combined_odd,
+        max_legs=version.max_legs,
+        max_minute_regulation=version.max_minute_regulation,
+        max_minute_extra=version.max_minute_extra,
+        wait_minutes=version.wait_minutes,
+        candidate_rules=list(version.candidate_rules),
+        notes="prompt p5",
+    )
+    session.add(bumped)
+    await session.flush()
+    return bumped
 
 
 async def ensure_strategy(session: AsyncSession, name: str, kind: str) -> StrategyBook:
@@ -537,6 +566,8 @@ async def ensure_strategy(session: AsyncSession, name: str, kind: str) -> Strate
         )
         session.add(version)
         await session.flush()
+    elif kind == "llm":
+        version = await _align_llm_prompt_version(session, version)
     return StrategyBook(
         strategy_id=row.id,
         version_id=version.id,

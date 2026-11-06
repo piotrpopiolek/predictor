@@ -57,6 +57,7 @@ from predictor.services.advisor.tick import (
     BASELINE_NAME,
     LLM_NAME,
     CandidateWindow,
+    _align_llm_prompt_version,
     _candidate_body_odd,
     ensure_strategy,
     run_tick,
@@ -1049,6 +1050,59 @@ async def test_first_period_over_after_goal_and_extra_time_market() -> None:
             )
             await session.execute(delete(Team).where(Team.id.in_((home, away))))
             await session.execute(delete(League).where(League.id == league))
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_llm_strategy_gains_p5_version_once() -> None:
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    name = "sandbox-llm-p5-bump"
+    try:
+        async with factory() as session, session.begin():
+            strategy = AdvisorStrategy(name=name, kind="llm", status="sandbox")
+            session.add(strategy)
+            await session.flush()
+            strategy_id = strategy.id
+            first = AdvisorStrategyVersion(
+                strategy_id=strategy_id,
+                version_no=1,
+                prompt_version="p4",
+                min_combined_odd=Decimal("1.650"),
+                max_legs=2,
+                max_minute_regulation=75,
+                max_minute_extra=105,
+                wait_minutes=8,
+                candidate_rules=["favorite_losing"],
+                notes="old",
+            )
+            session.add(first)
+            await session.flush()
+            bumped = await _align_llm_prompt_version(session, first)
+            again = await _align_llm_prompt_version(session, bumped)
+            versions = (
+                await session.scalars(
+                    select(AdvisorStrategyVersion)
+                    .where(AdvisorStrategyVersion.strategy_id == strategy_id)
+                    .order_by(AdvisorStrategyVersion.version_no)
+                )
+            ).all()
+        assert len(versions) == 2
+        assert versions[0].prompt_version == "p4"
+        assert versions[0].notes == "old"
+        assert versions[1].id == bumped.id == again.id
+        assert versions[1].prompt_version == PROMPT_VERSION
+        assert versions[1].version_no == 2
+        assert versions[1].min_combined_odd == Decimal("1.650")
+        assert versions[1].max_legs == 2
+        assert versions[1].max_minute_regulation == 75
+        assert versions[1].max_minute_extra == 105
+        assert versions[1].wait_minutes == 8
+        assert versions[1].candidate_rules == ["favorite_losing"]
+        assert versions[1].notes == "prompt p5"
+    finally:
+        async with factory() as session, session.begin():
+            await _drop_strategies(session, (name,))
         await engine.dispose()
 
 

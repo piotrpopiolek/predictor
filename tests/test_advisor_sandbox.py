@@ -102,15 +102,19 @@ def _leg(
 
 
 def _reply(
-    rows: tuple[tuple[int, str], ...], coupons: tuple[tuple[int, ...], ...]
+    rows: tuple[tuple[int, str], ...],
+    coupons: tuple[tuple[int, ...], ...],
+    *,
+    probability: str = "0.75",
 ) -> str:
+    # Default 0.75 clears single EV (odd 1.70 x 0.88).
     return json.dumps(
         {
             "candidates": [
                 {
                     "fixture_id": fixture_id,
                     "decision": decision,
-                    "estimated_probability": "0.60",
+                    "estimated_probability": probability,
                     "confidence": "0.40",
                     "reasons": ["favorite_pressure"],
                     "rationale": "chasing the score",
@@ -530,26 +534,36 @@ async def test_llm_places_until_the_stake_no_longer_fits() -> None:
                     stake=SANDBOX_BANKROLL - stake_after_wins(0),
                     odd=Decimal("1.500"),
                 )
+            # The single rule allows a single only when the cycle has one playable. Place
+            # the first, pause for stake, then confirm a second cycle cannot.
             outcome = await run_cycle(
                 session,
-                _Provider(
-                    _reply(
-                        ((880_445, "bet"), (880_446, "bet")),
-                        ((880_445,), (880_446,)),
-                    )
-                ),
+                _Provider(_reply(((880_445, "bet"),), ((880_445,),))),
                 _settings(),
-                _request(world, (_leg(880_445, "1.70"), _leg(880_446, "1.80"))),
+                _request(world, (_leg(880_445, "1.70"),)),
                 clock=lambda: NOW,
             )
             assert outcome.status == "ok"
             assert len(outcome.coupon_ids) == 1
+            blocked = await run_cycle(
+                session,
+                _Provider(_reply(((880_446, "bet"),), ((880_446,),))),
+                _settings(),
+                _request(world, (_leg(880_446, "1.80"),)),
+                clock=lambda: NOW,
+            )
+            assert blocked.status == "ok"
+            assert blocked.coupon_ids == ()
             async with session.begin():
                 strategy = await session.get(AdvisorStrategy, world.strategy_id)
                 decisions = await session.scalar(
                     select(func.count())
                     .select_from(AdvisorDecision)
-                    .where(AdvisorDecision.cycle_id == outcome.cycle_id)
+                    .where(
+                        AdvisorDecision.cycle_id.in_(
+                            (outcome.cycle_id, blocked.cycle_id)
+                        )
+                    )
                 )
                 played = (
                     await session.scalars(
@@ -633,7 +647,7 @@ async def test_paused_strategy_keeps_the_decision_and_skips_the_coupon() -> None
 
 @pytest.mark.asyncio
 async def test_an_open_match_does_not_block_a_new_one() -> None:
-    """Skip an open leg. Keep a new single. Drop a coupon that mixes both."""
+    """Skip an open leg. Drop a coupon that mixes open+new. Place a new single alone."""
     baseline = _World(0, 0, 880_451, 880_452, 880_453, (880_454, 880_455))
     llm = _World(0, 0, 880_461, 880_462, 880_463, (880_464, 880_465, 880_466))
     engine = make_async_engine(Settings())
@@ -699,16 +713,13 @@ async def test_an_open_match_does_not_block_a_new_one() -> None:
             assert combined.coupon_ids == ()
             async with session.begin():
                 assert await _fixture_ids(session, llm.strategy_id) == [880_464]
+            # Open 880_464 stays out of the candidate set (A7: a single needs
+            # exactly one playable). The new match is placed alone.
             singles = await run_cycle(
                 session,
-                _Provider(
-                    _reply(
-                        ((880_464, "bet"), (880_466, "bet")),
-                        ((880_464,), (880_466,)),
-                    )
-                ),
+                _Provider(_reply(((880_466, "bet"),), ((880_466,),))),
                 _settings(),
-                _request(llm, (_leg(880_464, "1.70"), _leg(880_466, "1.75"))),
+                _request(llm, (_leg(880_466, "1.75"),)),
                 clock=lambda: NOW,
             )
             assert singles.status == "ok"

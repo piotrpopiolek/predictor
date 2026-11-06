@@ -112,13 +112,14 @@ def _request() -> CycleRequest:
 
 
 def _reply(decision: str, fixture_id: int = FIXTURE) -> str:
+    # 0.75 x 1.70 x 0.88 clears the single EV floor from A7.
     return json.dumps(
         {
             "candidates": [
                 {
                     "fixture_id": fixture_id,
                     "decision": decision,
-                    "estimated_probability": "0.60",
+                    "estimated_probability": "0.75",
                     "confidence": "0.40",
                     "reasons": ["favorite_pressure"],
                     "rationale": "chasing the score",
