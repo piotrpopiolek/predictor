@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
 from sqlalchemy import delete, select
@@ -58,8 +58,10 @@ from predictor.services.advisor.tick import (
     LLM_NAME,
     CandidateWindow,
     _align_llm_prompt_version,
+    _below_threshold_open,
     _candidate_body_odd,
     ensure_strategy,
+    restore_window,
     run_tick,
 )
 
@@ -697,34 +699,159 @@ def test_cycle_prompt_p5_prices_candidates_and_forbids_padding() -> None:
 
 
 def test_price_block_uses_payout_keep_break_evens() -> None:
+    unit = Decimal("1")
+    for odd, first in (
+        (Decimal("1.300"), None),
+        (Decimal("1.600"), None),
+        (Decimal("2.000"), FirstOver(odd=Decimal("1.900"), minute=50)),
+    ):
+        block = _price(odd, first)
+        assert block["odd"] == str(odd)
+        assert block["implied_pct"] == str(
+            (Decimal("100") / odd).quantize(unit, rounding=ROUND_HALF_UP)
+        )
+        assert block["breakeven_single_pct"] == str(
+            (Decimal("100") / (odd * PAYOUT_KEEP)).quantize(
+                unit, rounding=ROUND_HALF_UP
+            )
+        )
+        pair_factor = (Decimal(1) / PAYOUT_KEEP).sqrt()
+        assert block["breakeven_pair_leg_pct"] == str(
+            ((Decimal("100") * pair_factor) / odd).quantize(
+                unit, rounding=ROUND_HALF_UP
+            )
+        )
+        if first is None:
+            assert "first_odd" not in block
+        else:
+            assert block["first_odd"] == str(first.odd)
+            assert block["first_odd_minute"] == first.minute
+    lone = _price(Decimal("1.500"), FirstOver(odd=Decimal("1.450"), minute=None))
+    assert lone["first_odd"] == "1.450"
+    assert "first_odd_minute" not in lone
     assert _price(Decimal("1.300")) == {
         "odd": "1.300",
         "implied_pct": "77",
         "breakeven_single_pct": "87",
         "breakeven_pair_leg_pct": "82",
     }
-    assert _price(Decimal("1.600")) == {
-        "odd": "1.600",
-        "implied_pct": "63",
-        "breakeven_single_pct": "71",
-        "breakeven_pair_leg_pct": "67",
-    }
-    assert _price(Decimal("2.000"), FirstOver(odd=Decimal("1.900"), minute=50)) == {
-        "odd": "2.000",
-        "implied_pct": "50",
-        "breakeven_single_pct": "57",
-        "breakeven_pair_leg_pct": "53",
-        "first_odd": "1.900",
-        "first_odd_minute": 50,
-    }
-    lone = _price(Decimal("1.500"), FirstOver(odd=Decimal("1.450"), minute=None))
-    assert lone["first_odd"] == "1.450"
-    assert "first_odd_minute" not in lone
 
 
 def test_candidate_body_odd_reads_price_with_flat_fallback() -> None:
     assert _candidate_body_odd({"price": {"odd": "1.75"}}) == Decimal("1.75")
     assert _candidate_body_odd({"odd": "1.40"}) == Decimal("1.40")
+
+
+@pytest.mark.asyncio
+async def test_below_threshold_open_reads_flat_odd_and_price_odd() -> None:
+    """A5.4: restore_window re-parses legacy flat odd and p5 price.odd."""
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    name = "advisor-restore-odd-formats"
+    raw = json.dumps(
+        {
+            "candidates": [
+                {
+                    "fixture_id": 9_882_001,
+                    "decision": "bet",
+                    "estimated_probability": "0.70",
+                    "confidence": "0.60",
+                    "reasons": ["favorite_pressure"],
+                    "rationale": "chasing",
+                }
+            ],
+            "coupons": [{"fixture_ids": [9_882_001]}],
+        }
+    )
+    try:
+        async with factory() as session, session.begin():
+            strategy = AdvisorStrategy(name=name, kind="llm", status="sandbox")
+            session.add(strategy)
+            await session.flush()
+            strategy_id = strategy.id
+            version = AdvisorStrategyVersion(
+                strategy_id=strategy_id,
+                version_no=1,
+                prompt_version="p5",
+                min_combined_odd=Decimal("1.600"),
+                max_legs=3,
+                max_minute_regulation=80,
+                max_minute_extra=110,
+                wait_minutes=10,
+                candidate_rules=["favorite_losing"],
+                notes="",
+            )
+            session.add(version)
+            await session.flush()
+            version_id = version.id
+            flat_body = {
+                "candidates": [
+                    {
+                        "fixture_id": 9_882_001,
+                        "period": "regulation",
+                        "odd": "1.350",
+                    }
+                ]
+            }
+            session.add(
+                AdvisorCycle(
+                    strategy_version_id=version_id,
+                    mode="sandbox",
+                    provider="google",
+                    model="gemini",
+                    model_version="gemini",
+                    prompt_version="p5",
+                    prompt_text="prompt",
+                    input_json=flat_body,
+                    raw_output=raw,
+                    validation_status="invalid_output",
+                    input_tokens=1,
+                    output_tokens=1,
+                    thoughts_tokens=0,
+                    cost_pln=Decimal("0.0100"),
+                    started_at=NOW,
+                )
+            )
+        async with factory() as session, session.begin():
+            assert await _below_threshold_open(session, strategy_id) is True
+            window = await restore_window(session, strategy_id)
+        assert window.fired is False
+        async with factory() as session, session.begin():
+            session.add(
+                AdvisorCycle(
+                    strategy_version_id=version_id,
+                    mode="sandbox",
+                    provider="google",
+                    model="gemini",
+                    model_version="gemini",
+                    prompt_version="p5",
+                    prompt_text="prompt",
+                    input_json={
+                        "candidates": [
+                            {
+                                "fixture_id": 9_882_001,
+                                "period": "regulation",
+                                "price": {"odd": "1.350"},
+                            }
+                        ]
+                    },
+                    raw_output=raw,
+                    validation_status="invalid_output",
+                    input_tokens=1,
+                    output_tokens=1,
+                    thoughts_tokens=0,
+                    cost_pln=Decimal("0.0100"),
+                    started_at=NOW,
+                )
+            )
+        async with factory() as session, session.begin():
+            assert await _below_threshold_open(session, strategy_id) is True
+            priced = await restore_window(session, strategy_id)
+        assert priced.fired is False
+    finally:
+        async with factory() as session, session.begin():
+            await _drop_strategies(session, (name,))
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -1206,7 +1333,31 @@ async def test_empty_board_does_not_call_the_model() -> None:
 async def test_lone_weak_candidate_does_not_call_the_model() -> None:
     engine = make_async_engine(Settings())
     factory = make_session_factory(engine)
-    provider = _Provider(_wait_reply(880_754))
+    provider = _Provider(
+        json.dumps(
+            {
+                "candidates": [
+                    {
+                        "fixture_id": 880_754,
+                        "decision": "wait",
+                        "estimated_probability": "0.60",
+                        "confidence": "0.40",
+                        "reasons": ["favorite_pressure"],
+                        "rationale": "waiting for a second leg",
+                    },
+                    {
+                        "fixture_id": 880_764,
+                        "decision": "wait",
+                        "estimated_probability": "0.60",
+                        "confidence": "0.40",
+                        "reasons": ["favorite_pressure"],
+                        "rationale": "waiting for a second leg",
+                    },
+                ],
+                "coupons": [],
+            }
+        )
+    )
     window = CandidateWindow()
     try:
         async with factory() as session, session.begin():
@@ -1226,8 +1377,32 @@ async def test_lone_weak_candidate_does_not_call_the_model() -> None:
             is False
         )
         assert provider.calls == 0
+        async with factory() as session, session.begin():
+            await _seed_live(session, 880_761, odd="1.850")
+        assert (
+            await run_tick(
+                engine,
+                factory,
+                provider,
+                _settings(),
+                window,
+                NOW + timedelta(seconds=40),
+            )
+            is False
+        )
+        called = await run_tick(
+            engine,
+            factory,
+            provider,
+            _settings(),
+            window,
+            NOW + timedelta(seconds=60),
+        )
+        assert called is True
+        assert provider.calls == 1
     finally:
         async with factory() as session, session.begin():
+            await _drop_live(session, 880_761)
             await _drop_live(session, 880_751)
         await engine.dispose()
 

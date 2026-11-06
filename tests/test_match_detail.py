@@ -218,16 +218,29 @@ def test_match_detail_as_llm_dict_minutes_left_uses_et_period_end() -> None:
     match = replace(
         _detail().match,
         status_short="ET",
-        elapsed=105,
+        elapsed=100,
         extra=None,
         et_home=0,
         et_away=0,
     )
     payload = replace(_detail(), match=match, events=()).as_llm_dict()
-    assert payload["minute"] == 105
-    assert payload["minutes_left"] == 15
+    assert payload["minute"] == 100
+    assert payload["minutes_left"] == 20
+    assert payload["match"]["et_home"] == 0
+    assert payload["match"]["et_away"] == 0
     assert "last_goal" not in payload
     assert "minutes_since_last_goal" not in payload
+    regulation = replace(
+        _detail().match,
+        status_short="2H",
+        elapsed=70,
+        extra=None,
+    )
+    reg_payload = replace(_detail(), match=regulation, events=()).as_llm_dict()
+    assert reg_payload["minute"] == 70
+    assert reg_payload["minutes_left"] == 20
+    assert "et_home" not in reg_payload["match"]
+    assert "et_away" not in reg_payload["match"]
 
 
 def test_match_detail_as_llm_dict_next_goal_odds_by_favorite() -> None:

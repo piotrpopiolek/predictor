@@ -534,7 +534,7 @@ async def test_llm_places_until_the_stake_no_longer_fits() -> None:
                     stake=SANDBOX_BANKROLL - stake_after_wins(0),
                     odd=Decimal("1.500"),
                 )
-            # The single rule allows a single only when the cycle has one playable. Place
+            # A7 allows a single only when the cycle has one playable. Place
             # the first, pause for stake, then confirm a second cycle cannot.
             outcome = await run_cycle(
                 session,
