@@ -16,15 +16,27 @@ from typing import Protocol
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
-from predictor.constants import PAYOUT_KEEP, SANDBOX_BANKROLL, stake_after_wins
+from predictor.constants import (
+    PAYOUT_KEEP,
+    SANDBOX_BANKROLL,
+    SANDBOX_LLM_NAME,
+    stake_after_wins,
+)
 from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorLeg,
     AdvisorStrategy,
     AdvisorStrategyVersion,
 )
+from predictor.models.fixtures import Fixture, Team
 from predictor.services.advisor.domain import Settlement, combined_odd, settled_pnl
+from predictor.services.advisor.telegram import (
+    KIND_SANDBOX_LLM,
+    enqueue,
+    sandbox_llm_text,
+)
 
 _MONEY = Decimal("0.01")
 _ACTIVE = frozenset({"sandbox", "promoted"})
@@ -218,6 +230,7 @@ async def place_sandbox_coupons(
         return SandboxPlacement((), False)
     balance = portfolio_balance(await _coupon_rows(session, strategy.id))
     stake = stake_after_wins(await _won_count(session, strategy.id))
+    notify = strategy.name == SANDBOX_LLM_NAME and kind == "llm"
     placed: list[int] = []
     for slip in slips:
         if balance < stake:
@@ -235,6 +248,8 @@ async def place_sandbox_coupons(
             continue
         placed.append(coupon_id)
         balance -= stake
+        if notify:
+            await _enqueue_sandbox_llm(session, slip, coupon_id=coupon_id, stake=stake)
     if balance < stake:
         strategy.status = "paused"
     return SandboxPlacement(tuple(placed), strategy.status == "paused")
@@ -346,3 +361,51 @@ def _is_open_leg_conflict(exc: IntegrityError) -> bool:
     orig = getattr(exc, "orig", None)
     diag = getattr(orig, "diag", None)
     return getattr(diag, "constraint_name", None) == _OPEN_LEG
+
+
+async def _enqueue_sandbox_llm(
+    session: AsyncSession,
+    slip: SandboxSlip,
+    *,
+    coupon_id: int,
+    stake: Decimal,
+) -> None:
+    labels = await _fixture_labels(session, tuple(leg.fixture_id for leg in slip.legs))
+    lines = tuple(_leg_line(labels.get(leg.fixture_id), leg) for leg in slip.legs)
+    odd = combined_odd(tuple(leg.odd for leg in slip.legs))
+    enqueue(
+        session,
+        KIND_SANDBOX_LLM,
+        sandbox_llm_text(
+            coupon_id=coupon_id,
+            lines=lines,
+            stake=str(stake),
+            combined=str(odd),
+        ),
+    )
+
+
+async def _fixture_labels(
+    session: AsyncSession, fixture_ids: Sequence[int]
+) -> dict[int, str]:
+    if not fixture_ids:
+        return {}
+    home = aliased(Team)
+    away = aliased(Team)
+    rows = (
+        await session.execute(
+            select(Fixture.id, home.name, away.name)
+            .join(home, home.id == Fixture.home_team_id)
+            .join(away, away.id == Fixture.away_team_id)
+            .where(Fixture.id.in_(fixture_ids))
+        )
+    ).all()
+    return {
+        int(fixture_id): f"{home_name} – {away_name}"
+        for fixture_id, home_name, away_name in rows
+    }
+
+
+def _leg_line(label: str | None, leg: LegSnapshot) -> str:
+    match = label if label else f"mecz {leg.fixture_id}"
+    return f"{match}, {leg.goals_home}:{leg.goals_away}, " f"Over {leg.n}.5 @ {leg.odd}"

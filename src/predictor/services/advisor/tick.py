@@ -13,7 +13,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from predictor.constants import ODDS_REFRESH_POLL_SECONDS, ODDS_REFRESH_WAIT_SECONDS
+from predictor.constants import (
+    ODDS_REFRESH_POLL_SECONDS,
+    ODDS_REFRESH_WAIT_SECONDS,
+    SANDBOX_LLM_NAME,
+)
 from predictor.models.advisor import (
     AdvisorCycle,
     AdvisorStrategy,
@@ -64,7 +68,7 @@ from predictor.services.queue import untracked_league_ids
 
 POLL_SECONDS = 15
 BASELINE_NAME = "baseline"
-LLM_NAME = "sandbox-llm"
+LLM_NAME = SANDBOX_LLM_NAME
 _BOARD_RULES = ["favorite_losing", "tie_deficit"]
 _ACTIVE = frozenset({"sandbox", "promoted"})
 

@@ -23,6 +23,8 @@ LOCK_KEEPALIVES_INTERVAL_SECONDS = 5
 LOCK_KEEPALIVES_COUNT = 3
 LOCK_APPLICATION_NAME = "predictor-worker-lock"
 ADVISOR_LOCK_APPLICATION_NAME = "predictor-advisor-lock"
+# Active LLM sandbox strategy name (insert-only versions share this row).
+SANDBOX_LLM_NAME = "sandbox-llm"
 
 
 def stake_after_wins(wins: int) -> Decimal:

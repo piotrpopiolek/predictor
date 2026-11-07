@@ -33,6 +33,10 @@ from predictor.services.advisor.recommend_ops import expire_due, withdraw_promot
 from predictor.services.advisor.settle import settle_finished
 from predictor.services.advisor.summary import due_summaries, store_summary
 from predictor.services.advisor.telegram import (
+    KIND_SANDBOX_LLM,
+    KIND_SUMMARY,
+    KIND_WITHDRAW,
+    OPERATOR_KINDS,
     deliver_pending,
     enqueue,
     post_telegram,
@@ -126,7 +130,7 @@ async def run_advisor(stop: asyncio.Event) -> None:
                 await expire_due(session, now, recommendation.ttl_seconds)
                 note = await withdraw_promoted(session, recommendation.withdraw_yield)
                 if note:
-                    enqueue(session, "withdraw", note)
+                    enqueue(session, KIND_WITHDRAW, note)
             await run_tick(
                 engine,
                 factory,
@@ -146,6 +150,14 @@ async def run_advisor(stop: asyncio.Event) -> None:
                     token=token,
                     chat_id=advisor_settings.telegram_chat_id,
                     post=post_telegram,
+                    kinds=OPERATOR_KINDS,
+                )
+                await deliver_pending(
+                    session,
+                    token=token,
+                    chat_id=advisor_settings.telegram_llm_chat_id,
+                    post=post_telegram,
+                    kinds=(KIND_SANDBOX_LLM,),
                 )
             await _summarize(
                 factory,
@@ -239,11 +251,15 @@ async def _summarize(
                 if token and chat:
                     enqueue(
                         session,
-                        "summary",
+                        KIND_SUMMARY,
                         f"Nowa propozycja strategii z podsumowania {job.strategy_id}.",
                     )
                     await deliver_pending(
-                        session, token=token, chat_id=chat, post=post_telegram
+                        session,
+                        token=token,
+                        chat_id=chat,
+                        post=post_telegram,
+                        kinds=(KIND_SUMMARY,),
                     )
         except IntegrityError:
             log_json(

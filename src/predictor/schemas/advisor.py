@@ -40,6 +40,7 @@ _ADVISOR_ENV: dict[str, str] = {
     "withdraw_yield": "ADVISOR_WITHDRAW_YIELD",
     "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
     "telegram_chat_id": "TELEGRAM_CHAT_ID",
+    "telegram_llm_chat_id": "TELEGRAM_LLM_CHAT_ID",
     "langfuse_public_key": "LANGFUSE_PUBLIC_KEY",
     "langfuse_secret_key": "LANGFUSE_SECRET_KEY",
     "langfuse_host": "LANGFUSE_HOST",
@@ -176,6 +177,10 @@ class AdvisorSettings(BaseSettings):
     telegram_chat_id: str = Field(
         default="",
         validation_alias=AliasChoices("TELEGRAM_CHAT_ID", "telegram_chat_id"),
+    )
+    telegram_llm_chat_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("TELEGRAM_LLM_CHAT_ID", "telegram_llm_chat_id"),
     )
     langfuse_public_key: SecretStr = SecretStr("")
     langfuse_secret_key: SecretStr = SecretStr("")

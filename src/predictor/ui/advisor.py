@@ -44,6 +44,16 @@ _PROGRESS_LABEL = {
     LiveProgress.UNKNOWN: "Nieznany",
 }
 
+_REASON_LABEL = {
+    "favorite_pressure": "ciśnienie faworyta",
+    "high_shot_volume": "dużo strzałów",
+    "low_tempo": "niskie tempo",
+    "red_card": "czerwona kartka",
+    "odd_too_low": "kurs za niski",
+    "late_minute": "późna minuta",
+    "weak_favorite": "słaby faworyt",
+}
+
 # Tiny extras on top of live-board CSS — same tokens, same card chrome.
 _COUPONS_CSS = """
   .coupon-filters {
@@ -100,6 +110,35 @@ _COUPONS_CSS = """
   }
   .entry-score {
     color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .coupon-arg {
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text);
+    font-size: 0.8rem;
+    line-height: 1.35;
+  }
+  .coupon-arg .arg-reasons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 0 6px;
+  }
+  .coupon-arg .arg-reasons span {
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-size: 0.72rem;
+  }
+  .coupon-arg .arg-meta {
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 0.72rem;
     font-variant-numeric: tabular-nums;
   }
 """
@@ -375,8 +414,32 @@ def _leg_match(leg: PlayedLegView) -> str:
     <span class="ng-team">przy wejściu {escape(score_bet)}</span>
   </p>
   </a>
+  {_leg_argument(leg)}
 </article>
 """
+
+
+def _leg_argument(leg: PlayedLegView) -> str:
+    if not leg.rationale and not leg.reasons:
+        return ""
+    chips = "".join(
+        f"<span>{escape(_REASON_LABEL.get(code, code))}</span>" for code in leg.reasons
+    )
+    reasons = f'<div class="arg-reasons">{chips}</div>' if chips else ""
+    text = ""
+    if leg.rationale:
+        text = f"<div>{escape(leg.rationale)}</div>"
+    meta_parts: list[str] = []
+    if leg.estimated_probability is not None:
+        meta_parts.append(f"p {_pct_share(leg.estimated_probability)}")
+    if leg.confidence is not None:
+        meta_parts.append(f"pewność {_pct_share(leg.confidence)}")
+    meta = f'<p class="arg-meta">{" · ".join(meta_parts)}</p>' if meta_parts else ""
+    return f'<div class="coupon-arg">{reasons}{text}{meta}</div>'
+
+
+def _pct_share(value: Decimal) -> str:
+    return f"{(value * Decimal(100)).quantize(Decimal('0.1'), rounding=ROUND_HALF_UP)}%"
 
 
 def _strategy_charts(chart: StrategyChart) -> str:

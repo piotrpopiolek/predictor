@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
@@ -15,6 +15,7 @@ from sqlalchemy.orm import aliased
 
 from predictor.models.advisor import (
     AdvisorCoupon,
+    AdvisorDecision,
     AdvisorLeg,
     AdvisorStrategy,
     AdvisorStrategyVersion,
@@ -57,6 +58,10 @@ class PlayedLegView:
     status_short: str | None
     elapsed: int | None
     progress: LiveProgress
+    rationale: str | None = None
+    reasons: tuple[str, ...] = ()
+    estimated_probability: Decimal | None = None
+    confidence: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,9 +175,12 @@ async def load_played_coupons(
             )
         )
     ).all()
-    legs_by_coupon: dict[int, list[PlayedLegView]] = defaultdict(list)
+    legs_by_coupon: dict[int, list[tuple[AdvisorCoupon, AdvisorLeg, PlayedLegView]]] = (
+        defaultdict(list)
+    )
     owners: dict[int, tuple[AdvisorCoupon, AdvisorStrategy]] = {}
     order: list[int] = []
+    cycle_ids: set[int] = set()
     for (
         coupon,
         strategy,
@@ -190,6 +198,8 @@ async def load_played_coupons(
         if coupon.id not in owners:
             owners[coupon.id] = (coupon, strategy)
             order.append(coupon.id)
+        if coupon.cycle_id is not None:
+            cycle_ids.add(int(coupon.cycle_id))
         score = LiveScore(
             status_short=str(fixture.status_short or ""),
             goals_home=fixture.goals_home,
@@ -202,28 +212,53 @@ async def load_played_coupons(
         period = Period(leg.period)
         progress = live_leg_progress(period, leg.n, score)
         legs_by_coupon[coupon.id].append(
-            PlayedLegView(
-                fixture_id=leg.fixture_id,
-                home=str(home_name or "?"),
-                away=str(away_name or "?"),
-                home_logo=None if home_logo is None else str(home_logo),
-                away_logo=None if away_logo is None else str(away_logo),
-                league=None if league_name is None else str(league_name),
-                country=None if country_name is None else str(country_name),
-                period=leg.period,
-                n=leg.n,
-                odd=leg.odd,
-                score_at_bet=(leg.goals_home, leg.goals_away),
-                score_now=period_score_now(period, score),
-                status_short=fixture.status_short,
-                elapsed=fixture.elapsed_minutes,
-                progress=progress,
+            (
+                coupon,
+                leg,
+                PlayedLegView(
+                    fixture_id=leg.fixture_id,
+                    home=str(home_name or "?"),
+                    away=str(away_name or "?"),
+                    home_logo=None if home_logo is None else str(home_logo),
+                    away_logo=None if away_logo is None else str(away_logo),
+                    league=None if league_name is None else str(league_name),
+                    country=None if country_name is None else str(country_name),
+                    period=leg.period,
+                    n=leg.n,
+                    odd=leg.odd,
+                    score_at_bet=(leg.goals_home, leg.goals_away),
+                    score_now=period_score_now(period, score),
+                    status_short=fixture.status_short,
+                    elapsed=fixture.elapsed_minutes,
+                    progress=progress,
+                ),
             )
         )
+    notes = await _decision_notes(session, tuple(cycle_ids))
+    legs_by_coupon_views: dict[int, list[PlayedLegView]] = defaultdict(list)
+    for coupon_id, items in legs_by_coupon.items():
+        for coupon, leg, view in items:
+            note = (
+                None
+                if coupon.cycle_id is None
+                else notes.get((int(coupon.cycle_id), int(leg.fixture_id)))
+            )
+            if note is None:
+                legs_by_coupon_views[coupon_id].append(view)
+                continue
+            legs_by_coupon_views[coupon_id].append(
+                replace(
+                    view,
+                    rationale=note.rationale or None,
+                    reasons=note.reasons,
+                    estimated_probability=note.estimated_probability,
+                    confidence=note.confidence,
+                )
+            )
     views: list[PlayedCouponView] = []
     for coupon_id in order:
         coupon, strategy = owners[coupon_id]
-        legs = tuple(legs_by_coupon.get(coupon_id, ()))
+        legs = tuple(legs_by_coupon_views.get(coupon_id, ()))
         if not legs:
             continue
         views.append(
@@ -241,6 +276,53 @@ async def load_played_coupons(
             )
         )
     return tuple(views)
+
+
+@dataclass(frozen=True, slots=True)
+class _DecisionNote:
+    rationale: str
+    reasons: tuple[str, ...]
+    estimated_probability: Decimal | None
+    confidence: Decimal | None
+
+
+async def _decision_notes(
+    session: AsyncSession, cycle_ids: Sequence[int]
+) -> dict[tuple[int, int], _DecisionNote]:
+    """Bet decisions for coupon legs, keyed by (cycle_id, fixture_id)."""
+    if not cycle_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                AdvisorDecision.cycle_id,
+                AdvisorDecision.fixture_id,
+                AdvisorDecision.rationale,
+                AdvisorDecision.reasons,
+                AdvisorDecision.estimated_probability,
+                AdvisorDecision.confidence,
+            )
+            .where(AdvisorDecision.cycle_id.in_(tuple(cycle_ids)))
+            .where(AdvisorDecision.decision == "bet")
+            .order_by(AdvisorDecision.id)
+        )
+    ).all()
+    notes: dict[tuple[int, int], _DecisionNote] = {}
+    for cycle_id, fixture_id, rationale, reasons, probability, confidence in rows:
+        if cycle_id is None:
+            continue
+        key = (int(cycle_id), int(fixture_id))
+        if key in notes:
+            continue
+        codes = tuple(str(code) for code in (reasons or ()))
+        text = " ".join(str(rationale or "").split())
+        notes[key] = _DecisionNote(
+            rationale=text,
+            reasons=codes,
+            estimated_probability=probability,
+            confidence=confidence,
+        )
+    return notes
 
 
 def played_coupons_as_dict(
@@ -267,7 +349,7 @@ def _coupon_dict(coupon: PlayedCouponView) -> dict[str, Any]:
 
 
 def _leg_dict(leg: PlayedLegView) -> dict[str, Any]:
-    return {
+    body: dict[str, Any] = {
         "fixture_id": leg.fixture_id,
         "home": leg.home,
         "away": leg.away,
@@ -281,6 +363,12 @@ def _leg_dict(leg: PlayedLegView) -> dict[str, Any]:
         "elapsed": leg.elapsed,
         "progress": leg.progress.value,
     }
+    if leg.rationale or leg.reasons:
+        body["rationale"] = leg.rationale
+        body["reasons"] = list(leg.reasons)
+        body["estimated_probability"] = _text(leg.estimated_probability)
+        body["confidence"] = _text(leg.confidence)
+    return body
 
 
 def _score_text(score: tuple[int, int]) -> str:

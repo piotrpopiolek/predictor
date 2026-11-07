@@ -13,6 +13,8 @@ from predictor.api.main import create_app
 from predictor.constants import PAYOUT_KEEP
 from predictor.models.advisor import (
     AdvisorCoupon,
+    AdvisorCycle,
+    AdvisorDecision,
     AdvisorLeg,
     AdvisorStrategy,
     AdvisorStrategyVersion,
@@ -74,11 +76,23 @@ async def test_load_played_coupons_newest_first_mixed_kinds() -> None:
         assert ours[0].placed_at > ours[1].placed_at
         assert ours[0].progress is LiveProgress.HIT
         assert ours[1].progress is LiveProgress.OPEN
+        assert ours[0].legs[0].rationale == "Away favourite pressing late."
+        assert ours[0].legs[0].reasons == ("favorite_pressure", "high_shot_volume")
+        assert ours[0].legs[0].estimated_probability == Decimal("0.80000")
+        assert ours[0].legs[0].confidence == Decimal("0.75000")
+        assert ours[1].legs[0].rationale is None
         our_ids = {item.id for item in ours}
         assert {status for cid, status in statuses if cid in our_ids} >= {"open"}
         payload = played_coupons_as_dict(ours)
         assert payload["coupons"][0]["kind"] == "llm"
         assert payload["coupons"][0]["stake"] == "21.00"
+        assert payload["coupons"][0]["legs"][0]["rationale"] == (
+            "Away favourite pressing late."
+        )
+        assert payload["coupons"][0]["legs"][0]["reasons"] == [
+            "favorite_pressure",
+            "high_shot_volume",
+        ]
         html = render_played_coupons(ours, kind="all", limit=50)
         assert "Spełniony" in html
         assert "Jeszcze nie" in html
@@ -87,6 +101,11 @@ async def test_load_played_coupons_newest_first_mixed_kinds() -> None:
         assert 'class="league"' in html
         assert 'class="match"' in html
         assert 'class="headline"' in html
+        assert "Away favourite pressing late." in html
+        assert "ciśnienie faworyta" in html
+        assert "dużo strzałów" in html
+        assert "p 80.0%" in html
+        assert "pewność 75.0%" in html
     finally:
         async with factory() as session, session.begin():
             await _wipe(session)
@@ -255,9 +274,29 @@ async def _seed(session) -> None:
         payout_keep=KEEP,
         placed_at=now - timedelta(minutes=3),
     )
+    cycle = AdvisorCycle(
+        strategy_version_id=llm_version.id,
+        mode="sandbox",
+        provider="google",
+        model="gemini",
+        model_version="gemini",
+        prompt_version="p4",
+        prompt_text="prompt",
+        input_json={"candidates": []},
+        raw_output="{}",
+        validation_status="ok",
+        input_tokens=1,
+        output_tokens=1,
+        thoughts_tokens=0,
+        cost_pln=Decimal("0.0100"),
+        started_at=now,
+    )
+    session.add(cycle)
+    await session.flush()
     newer = AdvisorCoupon(
         mode="sandbox",
         strategy_version_id=llm_version.id,
+        cycle_id=cycle.id,
         status="open",
         stake=Decimal("21.00"),
         combined_odd=Decimal("1.800"),
@@ -321,6 +360,24 @@ async def _seed(session) -> None:
         )
     )
     session.add(
+        AdvisorDecision(
+            cycle_id=cycle.id,
+            strategy_id=llm.id,
+            fixture_id=BASE_IDS["fixture_new"],
+            period="regulation",
+            goals_home=1,
+            goals_away=0,
+            ordinal=1,
+            candidate_rule="favorite_losing",
+            decision="bet",
+            reasons=["favorite_pressure", "high_shot_volume"],
+            rationale="Away favourite pressing late.",
+            estimated_probability=Decimal("0.80000"),
+            confidence=Decimal("0.75000"),
+            n=1,
+        )
+    )
+    session.add(
         AdvisorLeg(
             coupon_id=placed.id,
             strategy_id=llm.id,
@@ -362,10 +419,17 @@ async def _wipe(session) -> None:
     coupon_ids = select(AdvisorCoupon.id).where(
         AdvisorCoupon.strategy_version_id.in_(version_ids)
     )
+    cycle_ids = select(AdvisorCycle.id).where(
+        AdvisorCycle.strategy_version_id.in_(version_ids)
+    )
+    await session.execute(
+        delete(AdvisorDecision).where(AdvisorDecision.strategy_id.in_(strategy_ids))
+    )
     await session.execute(
         delete(AdvisorLeg).where(AdvisorLeg.strategy_id.in_(strategy_ids))
     )
     await session.execute(delete(AdvisorCoupon).where(AdvisorCoupon.id.in_(coupon_ids)))
+    await session.execute(delete(AdvisorCycle).where(AdvisorCycle.id.in_(cycle_ids)))
     await session.execute(
         delete(AdvisorStrategyVersion).where(AdvisorStrategyVersion.id.in_(version_ids))
     )

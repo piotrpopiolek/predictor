@@ -35,7 +35,11 @@ from predictor.services.advisor.recommend import (
     withdraw_due,
 )
 from predictor.services.advisor.sandbox import SandboxSlip
-from predictor.services.advisor.telegram import enqueue, recommendation_text
+from predictor.services.advisor.telegram import (
+    KIND_RECOMMENDATION,
+    enqueue,
+    recommendation_text,
+)
 
 _LIVE = frozenset({"proposed", "accepted", "modified"})
 _CONFIRM = frozenset({"accepted", "modified"})
@@ -254,7 +258,7 @@ async def place_proposed(
         )
         enqueue(
             session,
-            "recommendation",
+            KIND_RECOMMENDATION,
             recommendation_text(
                 coupon_id=coupon.id,
                 lines=lines,

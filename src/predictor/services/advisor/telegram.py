@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection, Sequence
 
 import httpx
 from sqlalchemy import select
@@ -11,6 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from predictor.models.advisor import AdvisorTelegramOutbox
 
 _MAX = 5
+KIND_RECOMMENDATION = "recommendation"
+KIND_WITHDRAW = "withdraw"
+KIND_SUMMARY = "summary"
+KIND_SANDBOX_LLM = "sandbox_llm"
+OPERATOR_KINDS = (KIND_RECOMMENDATION, KIND_WITHDRAW, KIND_SUMMARY)
 
 
 class TelegramError(Exception):
@@ -39,6 +44,22 @@ def recommendation_text(
     )
 
 
+def sandbox_llm_text(
+    *,
+    coupon_id: int,
+    lines: Sequence[str],
+    stake: str,
+    combined: str,
+) -> str:
+    body = "\n".join(lines)
+    return (
+        f"Sandbox-llm gra kupon {coupon_id}\n"
+        f"{body}\n"
+        f"Kurs łączny {combined}\n"
+        f"Stawka {stake}"
+    )
+
+
 def enqueue(session: AsyncSession, kind: str, text: str) -> None:
     session.add(
         AdvisorTelegramOutbox(
@@ -56,8 +77,9 @@ async def deliver_pending(
     token: str,
     chat_id: str,
     post: Callable[[str, str, str], Awaitable[None]],
+    kinds: Collection[str] = OPERATOR_KINDS,
 ) -> int:
-    """Send pending notices. Empty credentials skip the send and leave the rows."""
+    """Send pending notices for the given kinds. Empty credentials skip the send."""
     if not token or not chat_id:
         return 0
     rows = list(
@@ -66,6 +88,7 @@ async def deliver_pending(
                 select(AdvisorTelegramOutbox)
                 .where(AdvisorTelegramOutbox.status == "pending")
                 .where(AdvisorTelegramOutbox.attempts < _MAX)
+                .where(AdvisorTelegramOutbox.kind.in_(tuple(kinds)))
                 .order_by(AdvisorTelegramOutbox.id)
                 .limit(5)
             )

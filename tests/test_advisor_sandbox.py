@@ -19,6 +19,7 @@ from predictor.models.advisor import (
     AdvisorLeg,
     AdvisorStrategy,
     AdvisorStrategyVersion,
+    AdvisorTelegramOutbox,
 )
 from predictor.models.catalog import League
 from predictor.models.fixtures import Fixture, Team
@@ -28,14 +29,23 @@ from predictor.schemas.settings import Settings
 from predictor.services.advisor.cycle import CycleCandidate, CycleRequest, run_cycle
 from predictor.services.advisor.llm.protocol import LlmCompletion
 from predictor.services.advisor.sandbox import (
+    LegSnapshot,
+    SandboxSlip,
     baseline_slips,
     place_baseline,
+    place_sandbox_coupons,
     portfolio_balance,
     release_funded_strategies,
     reply_slips,
 )
+from predictor.services.advisor.telegram import (
+    deliver_pending,
+    sandbox_llm_text,
+)
 
 NOW = datetime(2026, 10, 18, 15, 0, tzinfo=UTC)
+
+_TELEGRAM_TEST_KIND = "sandbox_llm_telegram_test"
 
 
 @dataclass(frozen=True, slots=True)
@@ -739,6 +749,232 @@ async def test_an_open_match_does_not_block_a_new_one() -> None:
         async with factory() as session, session.begin():
             await _wipe(session, (baseline, llm))
         await engine.dispose()
+
+
+def test_sandbox_llm_text_has_legs_and_no_secret() -> None:
+    text = sandbox_llm_text(
+        coupon_id=124,
+        lines=(
+            "Mes Kerman – Saipa, 0:1, Over 1.5 @ 1.700",
+            "Legia – Raków, 1:2, Over 3.5 @ 1.550",
+        ),
+        stake="21.00",
+        combined="2.635",
+    )
+    assert "Sandbox-llm gra kupon 124" in text
+    assert "Mes Kerman – Saipa, 0:1, Over 1.5 @ 1.700" in text
+    assert "Legia – Raków, 1:2, Over 3.5 @ 1.550" in text
+    assert "Kurs łączny 2.635" in text
+    assert "Stawka 21.00" in text
+    assert "bot" not in text.casefold()
+    assert "token" not in text.casefold()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_llm_coupon_enqueues_telegram_and_baseline_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Avoid clashing with the live sandbox-llm row and outbox on predictor_dev.
+    name = "sandbox-llm-telegram-test"
+    monkeypatch.setattr(
+        "predictor.services.advisor.sandbox.SANDBOX_LLM_NAME",
+        name,
+    )
+    monkeypatch.setattr(
+        "predictor.services.advisor.sandbox.KIND_SANDBOX_LLM",
+        _TELEGRAM_TEST_KIND,
+    )
+    llm = _World(0, 0, 9_889_001, 9_889_002, 9_889_003, (9_889_004, 9_889_005))
+    baseline = _World(0, 0, 9_889_011, 9_889_012, 9_889_013, (9_889_014,))
+    other = _World(0, 0, 9_889_021, 9_889_022, 9_889_023, (9_889_024,))
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    posts: list[tuple[str, str]] = []
+
+    async def _post(token: str, chat_id: str, text: str) -> None:
+        assert token == "secret-token"
+        assert "bot" not in text.casefold()
+        posts.append((chat_id, text))
+
+    try:
+        async with factory() as session, session.begin():
+            await _wipe_telegram_sandbox_rows(session)
+        async with factory() as session, session.begin():
+            llm = await _seed(session, llm, name=name, kind="llm")
+            baseline = await _seed(
+                session, baseline, name="baseline-telegram", kind="baseline"
+            )
+            other = await _seed(session, other, name="other-llm-telegram", kind="llm")
+            home = await session.get(Team, llm.home)
+            away = await session.get(Team, llm.away)
+            assert home is not None and away is not None
+            home.name = "Mes Kerman"
+            away.name = "Saipa"
+            session.add(Team(id=9_889_007, name="Legia"))
+            session.add(Team(id=9_889_006, name="Raków"))
+            await session.flush()
+            second = await session.get(Fixture, 9_889_005)
+            assert second is not None
+            second.home_team_id = 9_889_007
+            second.away_team_id = 9_889_006
+        async with factory() as session, session.begin():
+            placed = await place_sandbox_coupons(
+                session,
+                strategy_id=llm.strategy_id,
+                strategy_version_id=llm.version_id,
+                slips=(
+                    SandboxSlip(
+                        (
+                            LegSnapshot(
+                                fixture_id=9_889_004,
+                                period="regulation",
+                                goals_home=0,
+                                goals_away=1,
+                                odd=Decimal("1.700"),
+                                n=1,
+                            ),
+                            LegSnapshot(
+                                fixture_id=9_889_005,
+                                period="regulation",
+                                goals_home=1,
+                                goals_away=2,
+                                odd=Decimal("1.550"),
+                                n=3,
+                            ),
+                        )
+                    ),
+                ),
+                cycle_id=None,
+                placed_at=NOW,
+                kind="llm",
+            )
+            assert len(placed.coupon_ids) == 1
+            other_placed = await place_sandbox_coupons(
+                session,
+                strategy_id=other.strategy_id,
+                strategy_version_id=other.version_id,
+                slips=(
+                    SandboxSlip(
+                        (
+                            LegSnapshot(
+                                fixture_id=9_889_024,
+                                period="regulation",
+                                goals_home=0,
+                                goals_away=1,
+                                odd=Decimal("1.700"),
+                                n=1,
+                            ),
+                        )
+                    ),
+                ),
+                cycle_id=None,
+                placed_at=NOW,
+                kind="llm",
+            )
+            assert len(other_placed.coupon_ids) == 1
+        async with factory() as session:
+            baseline_placed = await place_baseline(
+                session,
+                strategy_id=baseline.strategy_id,
+                strategy_version_id=baseline.version_id,
+                candidates=(_leg(9_889_014, "1.70"),),
+                clock=lambda: NOW,
+            )
+        assert len(baseline_placed.coupon_ids) == 1
+        async with factory() as session, session.begin():
+            notices = (
+                await session.scalars(
+                    select(AdvisorTelegramOutbox).where(
+                        AdvisorTelegramOutbox.kind == _TELEGRAM_TEST_KIND
+                    )
+                )
+            ).all()
+            assert len(notices) == 1
+            text = str(notices[0].payload["text"])
+            assert f"Sandbox-llm gra kupon {placed.coupon_ids[0]}" in text
+            assert name not in text  # body still says Sandbox-llm, not the DB name
+            assert "Mes Kerman – Saipa, 0:1, Over 1.5 @ 1.700" in text
+            assert "Legia – Raków, 1:2, Over 3.5 @ 1.550" in text
+            assert "Kurs łączny 2.635" in text
+            assert f"Stawka {stake_after_wins(0)}" in text
+            empty = await deliver_pending(
+                session,
+                token="secret-token",
+                chat_id="",
+                post=_post,
+                kinds=(_TELEGRAM_TEST_KIND,),
+            )
+            assert empty == 0
+            assert notices[0].status == "pending"
+            sent = await deliver_pending(
+                session,
+                token="secret-token",
+                chat_id="llm-chat",
+                post=_post,
+                kinds=(_TELEGRAM_TEST_KIND,),
+            )
+            assert sent == 1
+            assert posts == [("llm-chat", text)]
+            assert notices[0].status == "sent"
+    finally:
+        async with factory() as session, session.begin():
+            await _wipe_telegram_sandbox_rows(session)
+        await engine.dispose()
+
+
+async def _wipe_telegram_sandbox_rows(session) -> None:
+    names = (
+        "sandbox-llm-telegram-test",
+        "baseline-telegram",
+        "other-llm-telegram",
+    )
+    strategy_ids = select(AdvisorStrategy.id).where(AdvisorStrategy.name.in_(names))
+    version_ids = select(AdvisorStrategyVersion.id).where(
+        AdvisorStrategyVersion.strategy_id.in_(strategy_ids)
+    )
+    await session.execute(
+        delete(AdvisorTelegramOutbox).where(
+            AdvisorTelegramOutbox.kind == _TELEGRAM_TEST_KIND
+        )
+    )
+    await session.execute(
+        delete(AdvisorLeg).where(AdvisorLeg.strategy_id.in_(strategy_ids))
+    )
+    await session.execute(
+        delete(AdvisorCoupon).where(AdvisorCoupon.strategy_version_id.in_(version_ids))
+    )
+    await session.execute(
+        delete(AdvisorStrategyVersion).where(
+            AdvisorStrategyVersion.strategy_id.in_(strategy_ids)
+        )
+    )
+    await session.execute(
+        delete(AdvisorStrategy).where(AdvisorStrategy.name.in_(names))
+    )
+    await session.execute(
+        delete(Fixture).where(
+            Fixture.id.in_((9_889_004, 9_889_005, 9_889_014, 9_889_024))
+        )
+    )
+    await session.execute(
+        delete(Team).where(
+            Team.id.in_(
+                (
+                    9_889_002,
+                    9_889_003,
+                    9_889_006,
+                    9_889_007,
+                    9_889_012,
+                    9_889_013,
+                    9_889_022,
+                    9_889_023,
+                )
+            )
+        )
+    )
+    await session.execute(
+        delete(League).where(League.id.in_((9_889_001, 9_889_011, 9_889_021)))
+    )
 
 
 def _request(world: _World, candidates: tuple[CycleCandidate, ...]) -> CycleRequest:
