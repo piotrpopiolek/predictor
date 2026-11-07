@@ -498,6 +498,73 @@ def test_playable_candidate_starts_analysis_from_min_analysis_odd() -> None:
     )
 
 
+def test_baseline_playable_uses_strategy_min_combined_odd() -> None:
+    from predictor.services.advisor.sql import OverUnderRow
+
+    early = _match(elapsed=60, status_short="1H")
+    floor = Decimal("1.600")
+    short = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="1.5",
+        odd=Decimal("1.500"),
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=10),
+        home_goals=0,
+        away_goals=1,
+    )
+    priced = OverUnderRow(
+        fixture_id=7,
+        label="Over",
+        handicap="1.5",
+        odd=floor,
+        tradable=True,
+        captured_at=NOW - timedelta(seconds=10),
+        home_goals=0,
+        away_goals=1,
+    )
+    assert (
+        playable_candidate(
+            early,
+            (short,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=False,
+            min_odd=floor,
+        )
+        is None
+    )
+    assert (
+        playable_candidate(
+            early,
+            (priced,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=False,
+            min_odd=floor,
+        )
+        is not None
+    )
+    # LLM analysis may still see 1.50 in 2H; partners cover the coupon floor.
+    late = _match(elapsed=60)
+    assert (
+        playable_candidate(
+            late,
+            (short,),
+            limits=_limits(),
+            now=NOW,
+            open_fixtures=frozenset(),
+            rejected=frozenset(),
+            for_llm=True,
+        )
+        is not None
+    )
+
+
 def test_prompt_gate_blocks_llm_but_not_baseline() -> None:
     from predictor.services.advisor.sql import OverUnderRow
 

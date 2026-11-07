@@ -69,13 +69,15 @@ def playable_candidate(
     open_fixtures: frozenset[int],
     rejected: frozenset[StateKey],
     for_llm: bool = False,
+    min_odd: Decimal = MIN_ANALYSIS_ODD,
 ) -> CycleCandidate | None:
     """Build a priced Over N+0.5 leg, or None when the match is not playable.
 
     Always requires a playable Over N+0.5 (period line, minute limits,
-    ``MIN_ANALYSIS_ODD``, quote age). ``for_llm`` also requires status in
-    ``LLM_STATUSES`` and an empty ``prompt_gate_misses`` (period goals,
-    favourite odd, short late).
+    ``min_odd``, quote age). LLM analysis keeps ``MIN_ANALYSIS_ODD`` so
+    partners can combine; baseline passes strategy ``min_combined_odd``.
+    ``for_llm`` also requires status in ``LLM_STATUSES`` and an empty
+    ``prompt_gate_misses`` (period goals, favourite odd, short late).
     """
     if for_llm and match.status_short not in LLM_STATUSES:
         return None
@@ -105,6 +107,7 @@ def playable_candidate(
         state_rejected=False,
     )
     play = assess(view, limits, now)
+    floor = max(MIN_ANALYSIS_ODD, min_odd)
     if (
         not play.playable
         or play.period is None
@@ -112,7 +115,7 @@ def playable_candidate(
         or play.state is None
         or quote is None
         or quote.odd is None
-        or quote.odd < MIN_ANALYSIS_ODD
+        or quote.odd < floor
     ):
         return None
     if for_llm and prompt_gate_misses(

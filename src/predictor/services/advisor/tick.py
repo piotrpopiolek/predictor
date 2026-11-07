@@ -32,7 +32,11 @@ from predictor.services.advisor.candidates import (
     playable_candidate,
 )
 from predictor.services.advisor.cycle import CycleCandidate, CycleRequest, run_cycle
-from predictor.services.advisor.domain import QUOTE_MAX_AGE, PlayLimits
+from predictor.services.advisor.domain import (
+    MIN_ANALYSIS_ODD,
+    QUOTE_MAX_AGE,
+    PlayLimits,
+)
 from predictor.services.advisor.langfuse import TraceSink
 from predictor.services.advisor.llm.protocol import LlmProvider
 from predictor.services.advisor.llm.validate import PricedCandidate, review_model_output
@@ -617,6 +621,9 @@ async def _playable(
     opened = await open_fixture_ids(session, book.strategy_id)
     rejected = await rejected_states(session, book.strategy_id)
     chosen: list[CycleCandidate] = []
+    # Baseline is always one leg, so strategy min_combined_odd is the leg floor.
+    # LLM keeps MIN_ANALYSIS_ODD so short legs can still enter a combined coupon.
+    floor = MIN_ANALYSIS_ODD if for_llm else book.min_odd
     for match in matches:
         candidate = playable_candidate(
             match,
@@ -626,6 +633,7 @@ async def _playable(
             open_fixtures=opened,
             rejected=rejected,
             for_llm=for_llm,
+            min_odd=floor,
         )
         if candidate is not None:
             chosen.append(candidate)
