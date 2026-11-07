@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from html import escape
 
+from predictor.services.advisor.domain import (
+    LLM_SHORT_ODD,
+    LLM_SHORT_ODD_AFTER_MINUTE,
+    MIN_ANALYSIS_ODD,
+)
 from predictor.services.advisor.llm_note import LlmGap, LlmNote
+
+_ANALYSIS = str(MIN_ANALYSIS_ODD).replace(".", ",")
+_SHORT = str(LLM_SHORT_ODD).replace(".", ",")
 
 _GAPS = {
     LlmGap.NOT_CANDIDATE: "faworyt nie przegrywa i nie odrabia dwumeczu",
@@ -13,10 +21,12 @@ _GAPS = {
     LlmGap.NO_LINE: "brak Over N+0.5",
     LlmGap.SUSPENDED: "Over N+0.5 zawieszony",
     LlmGap.STALE: "Over N+0.5 starszy niż 5 min",
-    LlmGap.ODD_LOW: "Over N+0.5 poniżej 1,30",
+    LlmGap.ODD_LOW: f"Over N+0.5 poniżej {_ANALYSIS}",
     LlmGap.PERIOD_GOALS: "3 lub więcej goli w okresie",
     LlmGap.FAVORITE_ODD: "faworyt bez kursu prematch albo z kursem od 2,00",
-    LlmGap.SHORT_LATE: "kurs poniżej 1,45 po 60. minucie",
+    LlmGap.SHORT_LATE: (
+        f"kurs poniżej {_SHORT} po {LLM_SHORT_ODD_AFTER_MINUTE}. minucie"
+    ),
     LlmGap.LONE_WEAK: "jedyny kandydat za słaby na singiel",
     LlmGap.OPEN_COUPON: "mecz już na otwartym kuponie",
     LlmGap.REJECTED: "ten wynik został odrzucony",

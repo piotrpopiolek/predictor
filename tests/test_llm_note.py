@@ -181,7 +181,7 @@ def test_note_renders_gaps_or_the_decision() -> None:
     )
     assert "3 lub więcej goli w okresie" in gates
     assert "faworyt bez kursu prematch albo z kursem od 2,00" in gates
-    assert "kurs poniżej 1,45 po 60. minucie" in gates
+    assert "kurs poniżej 1,200 po 60. minucie" in gates
     assert "jedyny kandydat za słaby na singiel" in gates
     ready = render_llm_note(
         LlmNote(
@@ -245,7 +245,7 @@ def test_prompt_gate_gaps_mirror_domain() -> None:
     )
     assert LlmGap.FAVORITE_ODD in _gaps(_match(favorite_odd=None), (_row(),))
     assert LlmGap.FAVORITE_ODD in _gaps(_match(favorite_odd=Decimal("2.00")), (_row(),))
-    assert LlmGap.SHORT_LATE in _gaps(_match(elapsed=61), (_row(odd="1.400"),))
+    assert LlmGap.SHORT_LATE in _gaps(_match(elapsed=61), (_row(odd="1.190"),))
     assert LlmGap.SHORT_LATE not in _gaps(_match(elapsed=60), (_row(odd="1.400"),))
 
 

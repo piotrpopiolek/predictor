@@ -514,7 +514,7 @@ def test_prompt_gate_misses_period_goals_favorite_and_short_late() -> None:
             period=Period.REGULATION,
             n=1,
             minute=60,
-            odd=Decimal("1.40"),
+            odd=Decimal("1.19"),
             favorite_odd=Decimal("1.50"),
         )
         == ()
@@ -523,7 +523,7 @@ def test_prompt_gate_misses_period_goals_favorite_and_short_late() -> None:
         period=Period.REGULATION,
         n=1,
         minute=61,
-        odd=Decimal("1.40"),
+        odd=Decimal("1.19"),
         favorite_odd=Decimal("1.50"),
     ) == (PromptGate.SHORT_LATE,)
     assert (
@@ -531,7 +531,7 @@ def test_prompt_gate_misses_period_goals_favorite_and_short_late() -> None:
             period=Period.REGULATION,
             n=1,
             minute=61,
-            odd=Decimal("1.45"),
+            odd=Decimal("1.20"),
             favorite_odd=Decimal("1.50"),
         )
         == ()
@@ -541,7 +541,7 @@ def test_prompt_gate_misses_period_goals_favorite_and_short_late() -> None:
             period=Period.EXTRA_TIME,
             n=1,
             minute=100,
-            odd=Decimal("1.40"),
+            odd=Decimal("1.19"),
             favorite_odd=Decimal("1.50"),
         )
         == ()

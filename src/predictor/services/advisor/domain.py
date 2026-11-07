@@ -25,7 +25,7 @@ _ONE = Decimal(1)
 # Single-leg floor to enter LLM analysis. Coupon profitability stays on
 # strategy min_combined_odd (typically 1.600) across 1–3 legs. Baseline
 # singles use that strategy floor directly (see playable_candidate min_odd).
-MIN_ANALYSIS_ODD = Decimal("1.300")
+MIN_ANALYSIS_ODD = Decimal("1.200")
 # Freshness of the Over N+0.5 snapshot for every strategy (baseline and LLM).
 QUOTE_MAX_AGE = timedelta(seconds=300)
 # LLM prompt: 2H or extra time, Over N+0.5 open, odd >= MIN_ANALYSIS_ODD,
@@ -33,13 +33,13 @@ QUOTE_MAX_AGE = timedelta(seconds=300)
 # above strategy min_combined_odd.
 LLM_STATUS = "2H"
 LLM_STATUSES = frozenset({"2H", "ET", "BT"})
-# Prompt gate (for_llm only). Source: sandbox p4 / baseline yield on
-# predictor_dev — period goals 3+ lose; favourite prematch from 2.00
-# underperforms; short odds after minute 60 lose even in a pair; a lone
-# leg needs ~1.80 to clear the single break-even after tax.
+# Prompt gate (for_llm only). Short-late floor matches MIN_ANALYSIS_ODD so
+# the model sees more late candidates; coupon floor stays min_combined_odd
+# and lone singles still need LLM_SINGLE_MIN_ODD. Favourite / period-goals
+# gates unchanged from sandbox p4.
 LLM_MAX_PERIOD_GOALS = 2
 LLM_MAX_FAVORITE_ODD = Decimal("2.000")  # must be strictly below
-LLM_SHORT_ODD = Decimal("1.450")
+LLM_SHORT_ODD = Decimal("1.200")
 LLM_SHORT_ODD_AFTER_MINUTE = 60
 LLM_SINGLE_MIN_ODD = Decimal("1.800")
 

@@ -450,7 +450,7 @@ def test_llm_playable_requires_second_half_open_line_and_min_odd() -> None:
 def test_playable_candidate_starts_analysis_from_min_analysis_odd() -> None:
     from predictor.services.advisor.sql import OverUnderRow
 
-    # Minute 60 keeps G3 (short_late) off so the 1.30 floor stays visible.
+    # Minute 60 keeps G3 (short_late) off so the analysis floor stays visible.
     early = _match(elapsed=60)
     priced = OverUnderRow(
         fixture_id=7,
@@ -607,7 +607,7 @@ def test_prompt_gate_blocks_llm_but_not_baseline() -> None:
         fixture_id=7,
         label="Over",
         handicap="1.5",
-        odd=Decimal("1.40"),
+        odd=Decimal("1.190"),
         tradable=True,
         captured_at=NOW - timedelta(seconds=10),
         home_goals=0,
@@ -749,10 +749,10 @@ def test_cycle_prompt_p5_prices_candidates_and_forbids_padding() -> None:
     assert "Never add a leg only to reach the floor; use wait instead." in prompt
     assert "at least 1.60" in prompt
     assert "coupon of 1 to 3 fixture ids" in prompt
-    assert "odd >= 1.30" in prompt
+    assert "odd >= 1.20" in prompt
     assert "at most 2 goals in the settlement period" in prompt
     assert "priced under 2.00" in prompt
-    assert "no odd under 1.45 after minute 60" in prompt
+    assert "no odd under 1.20 after minute 60" in prompt
     assert "odd of at least 1.80" in prompt
     assert "300 seconds old" in prompt
     assert "For period = regulation only: Inside the regulation gate" in prompt
