@@ -138,7 +138,7 @@ def test_extra_time_uses_et_goals_and_et_market() -> None:
 def test_missing_gates_are_listed_together() -> None:
     gaps = llm_prompt_gaps(
         _match(status_short="1H", elapsed=30),
-        (_row(odd="1.200", age=400),),
+        (_row(odd="1.190", age=400),),
         is_candidate=False,
         limits=LIMITS,
         now=NOW,
