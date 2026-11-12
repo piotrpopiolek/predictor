@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tenacity import RetryCallState
 from tenacity.wait import wait_base
 
+from predictor.client.errors import FootballHttpError, RetryableHttpError
 from predictor.client.football import FootballClient
 from predictor.constants import (
     GLOBAL_ENDPOINT_ORDER,
@@ -32,7 +33,6 @@ from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.catalog import CountryItem
 from predictor.schemas.fixtures import FixtureItem
 from predictor.schemas.settings import Settings, load_settings
-from predictor.client.errors import FootballHttpError, RetryableHttpError
 from predictor.services.ingest.global_entities import (
     GlobalIngest,
     _http_error_label,
