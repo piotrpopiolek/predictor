@@ -236,7 +236,7 @@ class GlobalIngest:
             await self._fail(task_id, "retryable_error", "quota_exhausted")
             return True
         except (RetryableHttpError, FootballHttpError) as exc:
-            await self._fail(task_id, "retryable_error", type(exc).__name__)
+            await self._fail(task_id, "retryable_error", _http_error_label(exc))
             return True
         if not items:
             if retry_empty:
@@ -462,6 +462,22 @@ def _as_of_date(params: dict[str, Any]) -> date:
     return sentinel_date()
 
 
+def _http_error_label(exc: FootballHttpError | RetryableHttpError) -> str:
+    """Compact last_error for HTTP failures: class name plus status when known."""
+    status = exc.status_code
+    name = type(exc).__name__
+    if status is None:
+        return name
+    return f"{name}: {status}"
+
+
+def _positive_id(raw: object | None) -> int | None:
+    value = as_int(raw)
+    if value is None or value <= 0:
+        return None
+    return value
+
+
 def _http_params(endpoint: str, params: dict[str, Any]) -> dict[str, str | int] | None:
     if endpoint in {"/standings", "/players", *TOP_PLAYER_ENDPOINTS}:
         league = as_int(params.get("league"))
@@ -470,7 +486,7 @@ def _http_params(endpoint: str, params: dict[str, Any]) -> dict[str, str | int] 
             return None
         return {"league": league, "season": season}
     if endpoint == "/teams/statistics":
-        team = as_int(params.get("team"))
+        team = _positive_id(params.get("team"))
         league = as_int(params.get("league"))
         season = as_int(params.get("season"))
         if team is None or league is None or season is None:
@@ -489,23 +505,23 @@ def _http_params(endpoint: str, params: dict[str, Any]) -> dict[str, str | int] 
             query["date"] = raw_date
         return query
     if endpoint in {"/teams", "/venues", "/coachs"}:
-        ident = as_int(params.get("id"))
+        ident = _positive_id(params.get("id"))
         if ident is None:
             return None
         return {"id": ident}
     if endpoint in {"/players/profiles", "/players/teams", "/transfers"}:
-        player = as_int(params.get("player"))
+        player = _positive_id(params.get("player"))
         if player is None:
             return None
         return {"player": player}
     if endpoint == "/players/squads":
-        team = as_int(params.get("team"))
+        team = _positive_id(params.get("team"))
         if team is None:
             return None
         return {"team": team}
     if endpoint in {"/trophies", "/sidelined"}:
-        player = as_int(params.get("player"))
-        coach = as_int(params.get("coach"))
+        player = _positive_id(params.get("player"))
+        coach = _positive_id(params.get("coach"))
         if player is not None and coach is None:
             return {"player": player}
         if coach is not None and player is None:

@@ -32,7 +32,12 @@ from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.catalog import CountryItem
 from predictor.schemas.fixtures import FixtureItem
 from predictor.schemas.settings import Settings, load_settings
-from predictor.services.ingest.global_entities import GlobalIngest
+from predictor.client.errors import FootballHttpError, RetryableHttpError
+from predictor.services.ingest.global_entities import (
+    GlobalIngest,
+    _http_error_label,
+    _http_params,
+)
 from predictor.services.ingest.persist import upsert_countries
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.queue import (
@@ -1360,3 +1365,19 @@ async def test_stale_global_stays_complete_while_draining() -> None:
 def test_enqueue_global_helper_exports() -> None:
     assert callable(enqueue_global_for_match)
     assert TEAM_STATS_SENTINEL_DATE == "1970-01-01"
+
+
+def test_http_params_rejects_non_positive_player_id() -> None:
+    assert _http_params("/players/profiles", {"player": 0}) is None
+    assert _http_params("/players/profiles", {"player": -1}) is None
+    assert _http_params("/players/profiles", {"player": 42}) == {"player": 42}
+    assert _http_params("/transfers", {"player": "0"}) is None
+    assert _http_params("/trophies", {"player": 0, "coach": 9}) == {"coach": 9}
+
+
+def test_http_error_label_includes_status() -> None:
+    assert _http_error_label(FootballHttpError(404, "/players")) == (
+        "FootballHttpError: 404"
+    )
+    assert _http_error_label(RetryableHttpError(None)) == "RetryableHttpError"
+    assert _http_error_label(RetryableHttpError(503)) == "RetryableHttpError: 503"
