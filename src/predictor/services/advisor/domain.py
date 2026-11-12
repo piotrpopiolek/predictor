@@ -39,6 +39,8 @@ LLM_STATUSES = frozenset({"2H", "ET", "BT"})
 # gates unchanged from sandbox p4.
 LLM_MAX_PERIOD_GOALS = 2
 LLM_MAX_FAVORITE_ODD = Decimal("2.000")  # must be strictly below
+LLM_SHORT_FAVORITE_ODD = Decimal("1.500")  # below: short_favorite
+LLM_WEAK_FAVORITE_ODD = Decimal("1.800")  # at or above: weak_favorite
 LLM_SHORT_ODD = Decimal("1.200")
 LLM_SHORT_ODD_AFTER_MINUTE = 60
 LLM_SINGLE_MIN_ODD = Decimal("1.800")

@@ -686,7 +686,7 @@ def test_lone_candidate_allowed_needs_strong_regulation_single() -> None:
     )
 
 
-def test_cycle_prompt_p5_prices_candidates_and_forbids_padding() -> None:
+def test_cycle_prompt_p6_prices_candidates_and_forbids_padding() -> None:
     candidates = (
         CycleCandidate(
             fixture_id=7,
@@ -742,7 +742,12 @@ def test_cycle_prompt_p5_prices_candidates_and_forbids_padding() -> None:
     assert second["n"] == 0
     assert second["detail"] is None
     assert "first_odd" not in second["price"]
-    assert PROMPT_VERSION == "p5"
+    assert PROMPT_VERSION == "p6"
+    assert "below 1.50" in prompt
+    assert "1.80 or higher" in prompt
+    assert "never a favourite code" in prompt
+    assert "rather than a very short favourite" not in prompt
+    assert "already 0–1 with minute at most 60" in prompt
     assert "Prefer coupons" not in prompt
     assert "risk filter over the baseline rule" in prompt
     assert f"x {PAYOUT_KEEP:.2f}" in prompt
@@ -1248,7 +1253,7 @@ async def test_first_period_over_after_goal_and_extra_time_market() -> None:
 
 
 @pytest.mark.asyncio
-async def test_llm_strategy_gains_p5_version_once() -> None:
+async def test_llm_strategy_gains_prompt_version_once() -> None:
     engine = make_async_engine(Settings())
     factory = make_session_factory(engine)
     name = "sandbox-llm-p5-bump"
@@ -1293,7 +1298,7 @@ async def test_llm_strategy_gains_p5_version_once() -> None:
         assert versions[1].max_minute_extra == 105
         assert versions[1].wait_minutes == 8
         assert versions[1].candidate_rules == ["favorite_losing"]
-        assert versions[1].notes == "prompt p5"
+        assert versions[1].notes == f"prompt {PROMPT_VERSION}"
     finally:
         async with factory() as session, session.begin():
             await _drop_strategies(session, (name,))

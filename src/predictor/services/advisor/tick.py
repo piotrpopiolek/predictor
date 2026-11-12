@@ -521,7 +521,7 @@ async def _align_llm_prompt_version(
         max_minute_extra=version.max_minute_extra,
         wait_minutes=version.wait_minutes,
         candidate_rules=list(version.candidate_rules),
-        notes="prompt p5",
+        notes=f"prompt {PROMPT_VERSION}",
     )
     session.add(bumped)
     await session.flush()

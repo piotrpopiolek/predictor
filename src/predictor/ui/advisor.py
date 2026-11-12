@@ -51,6 +51,7 @@ _REASON_LABEL = {
     "red_card": "czerwona kartka",
     "odd_too_low": "kurs za niski",
     "late_minute": "późna minuta",
+    "short_favorite": "bardzo krótki faworyt",
     "weak_favorite": "słaby faworyt",
 }
 

@@ -13,15 +13,18 @@ import pytest
 from predictor.schemas.advisor import (
     AdvisorSettings,
     LlmDecision,
+    ReasonCode,
     load_advisor_settings,
 )
 from predictor.schemas.settings import Settings, SettingsError
 from predictor.services.advisor.llm import review_model_output
 from predictor.services.advisor.llm.gemini import GeminiProvider
+from predictor.services.advisor.llm.parse import parse_decision
 from predictor.services.advisor.llm.protocol import ProviderError
 from predictor.services.advisor.llm.schema import response_json_schema
 from predictor.services.advisor.llm.validate import PricedCandidate, Verdict
 from predictor.services.advisor.summary import StrategyProposal
+from predictor.ui.advisor import _REASON_LABEL
 
 MIN = Decimal("1.6")
 ODD = Decimal("1.70")
@@ -351,7 +354,24 @@ def test_decision_schema_forces_the_numeric_contract() -> None:
     reasons = candidate["properties"]["reasons"]["items"]["enum"]
     assert "favorite_pressure" in reasons
     assert "odd_too_low" in reasons
+    assert "short_favorite" in reasons
     assert "0 to 1" in confidence["description"]
+
+
+def test_short_favorite_parses_as_a_reason_code() -> None:
+    raw = _raw(
+        [{**_row(1, "reject"), "reasons": ["short_favorite", "odd_too_low"]}],
+        [],
+    )
+    decision = parse_decision(raw)
+    assert decision.candidates[0].reasons == [
+        ReasonCode.SHORT_FAVORITE,
+        ReasonCode.ODD_TOO_LOW,
+    ]
+
+
+def test_reason_labels_cover_every_reason_code() -> None:
+    assert set(_REASON_LABEL) == {code.value for code in ReasonCode}
 
 
 def test_summary_schema_rejects_extra_fields_and_string_decimals() -> None:

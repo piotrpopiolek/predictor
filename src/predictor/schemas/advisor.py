@@ -55,6 +55,7 @@ class ReasonCode(StrEnum):
     RED_CARD = "red_card"
     ODD_TOO_LOW = "odd_too_low"
     LATE_MINUTE = "late_minute"
+    SHORT_FAVORITE = "short_favorite"
     WEAK_FAVORITE = "weak_favorite"
 
 

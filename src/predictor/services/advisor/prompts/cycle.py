@@ -1,4 +1,4 @@
-"""Prompt for one sandbox cycle. Version p5: risk filter over baseline.
+"""Prompt for one sandbox cycle. Version p6: favourite codes name the band.
 
 Odds are context, not an output.
 """
@@ -15,14 +15,16 @@ from predictor.services.advisor.cycle import CycleCandidate
 from predictor.services.advisor.domain import (
     LLM_MAX_FAVORITE_ODD,
     LLM_MAX_PERIOD_GOALS,
+    LLM_SHORT_FAVORITE_ODD,
     LLM_SHORT_ODD,
     LLM_SHORT_ODD_AFTER_MINUTE,
     LLM_SINGLE_MIN_ODD,
+    LLM_WEAK_FAVORITE_ODD,
     MIN_ANALYSIS_ODD,
     QUOTE_MAX_AGE,
 )
 
-PROMPT_VERSION = "p5"
+PROMPT_VERSION = "p6"
 
 # Regulation-only directions inside the A0 gate (B1). Extra time has no
 # track record yet — the prompt states that separately. Exact rates stay out
@@ -30,8 +32,7 @@ PROMPT_VERSION = "p5"
 # the finished sample is large enough to revisit.
 _STATE_PRIORS = (
     "Inside the regulation gate, historical edge leans toward total goals "
-    "already 0–1 with minute at most 60, and toward a pre-match favourite "
-    "priced 1.50–2.00 rather than a very short favourite below 1.50."
+    "already 0–1 with minute at most 60."
 )
 
 _PCT = Decimal("1")
@@ -136,10 +137,16 @@ def _instructions(*, min_combined_odd: Decimal, max_legs: int) -> str:
             "that stayed flat or fell despite time passing, or next_goal_odds "
             "clearly favouring the favourite, is.",
             "Every reason code must follow from a field present in the input: "
-            "high_shot_volume and low_tempo need stats, red_card needs "
-            "home_reds or away_reds above 0, and weak_favorite means a "
-            "favourite priced near the "
-            f"{_odd_text(LLM_MAX_FAVORITE_ODD)} limit, not a missing one.",
+            "high_shot_volume and low_tempo need stats, and red_card needs "
+            "home_reds or away_reds above 0. short_favorite and weak_favorite "
+            "read only detail.favorite.prematch_odd: short_favorite when it is "
+            f"below {_odd_text(LLM_SHORT_FAVORITE_ODD)}, weak_favorite when it "
+            f"is {_odd_text(LLM_WEAK_FAVORITE_ODD)} or higher. Between those "
+            "bounds, and when prematch_odd is absent, use neither. Attach the "
+            "matching code on bet, reject, and wait alike. Do not move "
+            "estimated_probability because of it, and do not bet, reject, or "
+            "wait because of it. The Over price is odd_too_low, never a "
+            "favourite code.",
             "reject means the state itself is bad and stays rejected for this "
             "score and period. wait means the state is fine but this cycle "
             "has no valid coupon for it. A wait in regulation does not carry "
