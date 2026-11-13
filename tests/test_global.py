@@ -1140,7 +1140,10 @@ async def test_coachs_career_and_xor_catalog() -> None:
             await ensure_param_task(session, "/players/squads", {"team": 33})
             await ensure_param_task(session, "/players/teams", {"player": PLAYER_ID})
         ingest = GlobalIngest(client, factory, now_fn=lambda: NOW, per_tick=10)
-        await ingest.refresh_pending()
+        # One tick claims a single endpoint. Squads, profiles, and coach facts
+        # each need their own turn before /coachs is reached.
+        for _ in range(12):
+            await ingest.refresh_pending()
         async with factory() as session:
             coach = await session.get(Coach, COACH_ID)
             career = await session.get(CoachCareer, (COACH_ID, 33, date(2018, 1, 1)))
