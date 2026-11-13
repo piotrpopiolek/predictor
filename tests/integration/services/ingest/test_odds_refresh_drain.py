@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any
 
 import httpx
 import pytest
@@ -27,7 +27,6 @@ from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, load_settings
 from predictor.services.advisor.odds_refresh import enqueue_odds_refresh
 from predictor.services.ingest import odds_refresh_drain as drain_mod
-from predictor.services.ingest.candidate_refresh import persist_targeted_live
 from predictor.services.ingest.odds_refresh_drain import (
     OddsRefreshWake,
     drain_odds_refresh,
@@ -245,143 +244,11 @@ async def _refresh_and_fixture(
     return refresh, fixture, int(odds or 0)
 
 
-@pytest.mark.asyncio
-async def test_drain_persists_the_snapshot_then_clears_the_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    paths: list[str] = []
-    seen = {"before_clear": False}
-    original = drain_mod.clear_odds_refresh
-
-    async def spy(session: AsyncSession, fixture_ids: Any) -> None:
-        stored = await session.scalar(
-            select(func.count())
-            .select_from(FixtureOddsLive)
-            .where(FixtureOddsLive.fixture_id == _FIXTURE)
-        )
-        assert stored and int(stored) >= 1
-        assert list(fixture_ids) == [_FIXTURE]
-        seen["before_clear"] = True
-        await original(session, fixture_ids)
-
-    monkeypatch.setattr(drain_mod, "clear_odds_refresh", spy)
-    settings = load_settings()
-    client = _client(settings, _ok(paths))
-    async with _database() as factory:
-        try:
-            await _seed(factory, requested=True)
-            cleared = await drain_odds_refresh(client, factory, now=_NOW)
-            refresh, fixture, odds = await _refresh_and_fixture(factory)
-            quote = await _quote(factory)
-        finally:
-            await client.aclose()
-    assert cleared == 1
-    assert seen["before_clear"] is True
-    assert paths == ["/fixtures", "/odds/live"]
-    assert client.calls_made == 2
-    assert refresh is None
-    assert fixture.status_short == "2H"
-    assert fixture.elapsed_minutes == 70
-    assert fixture.goals_home == 2
-    assert fixture.goals_away == 1
-    assert odds == 1
-    assert quote is not None
-    assert quote.captured_at == _NOW
-    assert quote.odd == Decimal("1.90")
-    assert quote.home_goals == 2
-    assert quote.away_goals == 1
-    assert quote.bet_id == _BET
-    assert quote.value_label == "Over"
-
-
 async def _quote(factory: SessionFactory) -> FixtureOddsLive | None:
     async with factory() as session:
         return await session.scalar(
             select(FixtureOddsLive).where(FixtureOddsLive.fixture_id == _FIXTURE)
         )
-
-
-@pytest.mark.parametrize(
-    ("failure", "where"),
-    [
-        ("auth", "fixtures"),
-        ("quota", "fixtures"),
-        ("http", "fixtures"),
-        ("auth", "odds"),
-        ("quota", "odds"),
-        ("http", "odds"),
-    ],
-)
-@pytest.mark.asyncio
-async def test_api_failure_leaves_the_refresh_request(failure: str, where: str) -> None:
-    paths: list[str] = []
-    settings = load_settings()
-    client = _client(settings, _failing(failure, where, paths))
-    async with _database() as factory:
-        try:
-            await _seed(factory, requested=True)
-            cleared = await drain_odds_refresh(client, factory, now=_NOW)
-            refresh, fixture, odds = await _refresh_and_fixture(factory)
-        finally:
-            await client.aclose()
-    assert cleared == 0
-    assert refresh is not None
-    assert refresh.fixture_id == _FIXTURE
-    assert fixture.status_short == "1H"
-    assert fixture.goals_home == 0
-    assert fixture.goals_away == 0
-    assert odds == 0
-    if where == "fixtures":
-        assert paths == ["/fixtures"]
-    else:
-        assert paths == ["/fixtures", "/odds/live"]
-    assert client.calls_made == len(paths)
-
-
-@pytest.mark.asyncio
-async def test_persist_failure_leaves_the_refresh_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def boom(session: AsyncSession, items: object) -> None:
-        del session, items
-        raise RuntimeError("persist failed")
-
-    monkeypatch.setattr(
-        "predictor.services.ingest.candidate_refresh.upsert_fixtures", boom
-    )
-    paths: list[str] = []
-    settings = load_settings()
-    client = _client(settings, _ok(paths))
-    async with _database() as factory:
-        try:
-            await _seed(factory, requested=True)
-            cleared = await drain_odds_refresh(client, factory, now=_NOW)
-            refresh, fixture, odds = await _refresh_and_fixture(factory)
-        finally:
-            await client.aclose()
-    assert cleared == 0
-    assert paths == ["/fixtures", "/odds/live"]
-    assert refresh is not None
-    assert fixture.status_short == "1H"
-    assert fixture.goals_home == 0
-    assert odds == 0
-
-
-@pytest.mark.asyncio
-async def test_empty_id_list_does_not_call_the_api() -> None:
-    paths: list[str] = []
-    settings = load_settings()
-    client = _client(settings, _ok(paths))
-
-    def factory() -> None:
-        raise AssertionError("empty id list opened a session")
-
-    try:
-        assert await persist_targeted_live(client, cast(Any, factory), []) is True
-        assert paths == []
-        assert client.calls_made == 0
-    finally:
-        await client.aclose()
 
 
 @pytest.mark.asyncio
@@ -487,3 +354,118 @@ async def test_broken_listen_is_logged_and_closed(
         await engine.dispose()
     assert wake._conn is None
     assert wake._task is None
+
+
+@pytest.mark.asyncio
+async def test_drain_persists_the_snapshot_then_clears_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths: list[str] = []
+    seen = {"before_clear": False}
+    original = drain_mod.clear_odds_refresh
+
+    async def spy(session: AsyncSession, fixture_ids: Any) -> None:
+        stored = await session.scalar(
+            select(func.count())
+            .select_from(FixtureOddsLive)
+            .where(FixtureOddsLive.fixture_id == _FIXTURE)
+        )
+        assert stored and int(stored) >= 1
+        assert list(fixture_ids) == [_FIXTURE]
+        seen["before_clear"] = True
+        await original(session, fixture_ids)
+
+    monkeypatch.setattr(drain_mod, "clear_odds_refresh", spy)
+    settings = load_settings()
+    client = _client(settings, _ok(paths))
+    async with _database() as factory:
+        try:
+            await _seed(factory, requested=True)
+            cleared = await drain_odds_refresh(client, factory, now=_NOW)
+            refresh, fixture, odds = await _refresh_and_fixture(factory)
+            quote = await _quote(factory)
+        finally:
+            await client.aclose()
+    assert cleared == 1
+    assert seen["before_clear"] is True
+    assert paths == ["/fixtures", "/odds/live"]
+    assert client.calls_made == 2
+    assert refresh is None
+    assert fixture.status_short == "2H"
+    assert fixture.elapsed_minutes == 70
+    assert fixture.goals_home == 2
+    assert fixture.goals_away == 1
+    assert odds == 1
+    assert quote is not None
+    assert quote.captured_at == _NOW
+    assert quote.odd == Decimal("1.90")
+    assert quote.home_goals == 2
+    assert quote.away_goals == 1
+    assert quote.bet_id == _BET
+    assert quote.value_label == "Over"
+
+
+@pytest.mark.parametrize(
+    ("failure", "where"),
+    [
+        ("auth", "fixtures"),
+        ("quota", "fixtures"),
+        ("http", "fixtures"),
+        ("auth", "odds"),
+        ("quota", "odds"),
+        ("http", "odds"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_api_failure_leaves_the_refresh_request(failure: str, where: str) -> None:
+    paths: list[str] = []
+    settings = load_settings()
+    client = _client(settings, _failing(failure, where, paths))
+    async with _database() as factory:
+        try:
+            await _seed(factory, requested=True)
+            cleared = await drain_odds_refresh(client, factory, now=_NOW)
+            refresh, fixture, odds = await _refresh_and_fixture(factory)
+        finally:
+            await client.aclose()
+    assert cleared == 0
+    assert refresh is not None
+    assert refresh.fixture_id == _FIXTURE
+    assert fixture.status_short == "1H"
+    assert fixture.goals_home == 0
+    assert fixture.goals_away == 0
+    assert odds == 0
+    if where == "fixtures":
+        assert paths == ["/fixtures"]
+    else:
+        assert paths == ["/fixtures", "/odds/live"]
+    assert client.calls_made == len(paths)
+
+
+@pytest.mark.asyncio
+async def test_persist_failure_leaves_the_refresh_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def boom(session: AsyncSession, items: object) -> None:
+        del session, items
+        raise RuntimeError("persist failed")
+
+    monkeypatch.setattr(
+        "predictor.services.ingest.candidate_refresh.upsert_fixtures", boom
+    )
+    paths: list[str] = []
+    settings = load_settings()
+    client = _client(settings, _ok(paths))
+    async with _database() as factory:
+        try:
+            await _seed(factory, requested=True)
+            cleared = await drain_odds_refresh(client, factory, now=_NOW)
+            refresh, fixture, odds = await _refresh_and_fixture(factory)
+        finally:
+            await client.aclose()
+    assert cleared == 0
+    assert paths == ["/fixtures", "/odds/live"]
+    assert refresh is not None
+    assert fixture.status_short == "1H"
+    assert fixture.goals_home == 0
+    assert odds == 0

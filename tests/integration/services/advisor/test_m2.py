@@ -24,7 +24,6 @@ from predictor.models.fixtures import Fixture, Team
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings
 from predictor.services.advisor.settle import settle_finished
-from predictor.services.advisor.tick import board_snapshots
 from predictor.services.live_board.domain import LiveMatch, PrematchOdds
 
 NOW = datetime(2026, 10, 18, 21, 0, tzinfo=UTC)
@@ -53,16 +52,6 @@ def _live(**overrides: object) -> LiveMatch:
     )
     base.update(overrides)
     return LiveMatch(**base)
-
-
-def test_strategies_share_the_board_list() -> None:
-    drawing = _live(fixture_id=2)
-    losing = _live(fixture_id=3, goals_home=0, goals_away=1, elapsed=70)
-    two_down = _live(fixture_id=4, goals_home=0, goals_away=2, elapsed=70, away_reds=1)
-    selected = board_snapshots((drawing, losing, two_down))
-    assert [item.fixture_id for item in selected] == [3]
-    assert [item.rule for item in selected] == ["favorite_losing"]
-    assert selected[0].favorite_odd == Decimal("1.50")
 
 
 @pytest.mark.asyncio

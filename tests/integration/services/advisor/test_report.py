@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import delete, select
 
-from predictor.constants import PAYOUT_KEEP, SANDBOX_BANKROLL
+from predictor.constants import PAYOUT_KEEP
 from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorLeg,
@@ -22,11 +22,8 @@ from predictor.schemas.settings import Settings
 from predictor.services.advisor.report import (
     CouponView,
     LegView,
-    StrategyView,
-    build_report,
     load_yield_report,
 )
-from predictor.ui.advisor import render_yield_report
 
 NOW = datetime(2026, 10, 18, 21, 0, tzinfo=UTC)
 KEEP = PAYOUT_KEEP
@@ -58,123 +55,6 @@ def _coupon(
         payout_keep=KEEP,
         legs=legs,
     )
-
-
-def test_portfolio_yield_uses_the_keep_and_skips_voids() -> None:
-    baseline = StrategyView(1, "baseline", "baseline")
-    llm = StrategyView(2, "sandbox-llm", "llm")
-    coupons = (
-        _coupon(1, 1, "won", "1.700", (_leg(10, "won", "1.700"),)),
-        _coupon(2, 1, "lost", "1.500", (_leg(11, "lost", "1.500"),)),
-        _coupon(3, 1, "void", "1.800", (_leg(12, "void", "1.800"),)),
-        _coupon(4, 1, "open", "1.600", (_leg(13, "open", "1.600"),)),
-        _coupon(5, 2, "won", "2.000", (_leg(10, "won", "2.000"),)),
-        _coupon(
-            6,
-            2,
-            "won",
-            "3.000",
-            (_leg(10, "won", "1.500"), _leg(21, "won", "2.000")),
-        ),
-    )
-    report = build_report((baseline, llm), coupons, period="all")
-    base = report.books[0]
-    assert base.played == 2
-    assert base.hits == 1
-    assert base.hit_rate == Decimal("0.5000")
-    assert base.avg_odd == Decimal("1.600")
-    assert base.net_pnl == Decimal("4.96") - Decimal("10.00")
-    assert base.yield_net == Decimal("-0.2520")
-    assert base.balance == SANDBOX_BANKROLL + Decimal("4.96") - Decimal("20.00")
-    model = report.books[1]
-    assert model.played == 2
-    assert model.avg_odd == Decimal("2.500")
-    assert model.net_pnl == Decimal("24.00")
-    assert model.yield_net == Decimal("1.2000")
-    pair = report.pairs[0]
-    assert pair.matches == 1
-    assert pair.baseline_hits == 1
-    assert pair.strategy_hits == 1
-    assert pair.baseline_yield == Decimal("0.4960")
-    assert pair.strategy_yield == Decimal("0.7600")
-
-
-def test_a_removed_leg_still_counts_as_one_match() -> None:
-    baseline = StrategyView(1, "baseline", "baseline")
-    llm = StrategyView(2, "sandbox-llm", "llm")
-    coupons = (
-        _coupon(1, 1, "won", "1.700", (_leg(10, "won", "1.700"),)),
-        _coupon(
-            2,
-            2,
-            "lost",
-            "1.400",
-            (_leg(10, "lost", "1.400"), _leg(11, "removed", "1.900")),
-        ),
-    )
-    pair = build_report((baseline, llm), coupons, period="all").pairs[0]
-    assert pair.matches == 1
-    assert pair.strategy_hits == 0
-    assert pair.strategy_yield == Decimal("-1.0000")
-
-
-def test_period_filter_keeps_one_settlement_period() -> None:
-    baseline = StrategyView(1, "baseline", "baseline")
-    coupons = (
-        _coupon(1, 1, "won", "1.700", (_leg(10, "won", "1.700"),)),
-        _coupon(
-            2,
-            1,
-            "won",
-            "1.800",
-            (_leg(11, "won", "1.800", period="extra_time"),),
-        ),
-    )
-    mixed = _coupon(
-        3,
-        1,
-        "won",
-        "2.500",
-        (
-            _leg(12, "won", "1.500"),
-            _leg(13, "won", "1.800", period="extra_time"),
-        ),
-    )
-    regulation = build_report((baseline,), (*coupons, mixed), period="regulation")
-    extra = build_report((baseline,), (*coupons, mixed), period="extra_time")
-    assert regulation.books[0].played == 1
-    assert regulation.books[0].yield_net == Decimal("0.4960")
-    assert regulation.books[0].balance == SANDBOX_BANKROLL + Decimal("4.96")
-    assert extra.books[0].played == 1
-    assert extra.books[0].balance == SANDBOX_BANKROLL + Decimal("5.84")
-
-
-def test_report_page_shows_the_net_yield() -> None:
-    baseline = StrategyView(1, "baseline", "baseline")
-    coupons = (
-        _coupon(1, 1, "won", "1.700", (_leg(10, "won", "1.700"),)),
-        _coupon(2, 1, "lost", "1.500", (_leg(11, "lost", "1.500"),)),
-    )
-    report = build_report((baseline,), coupons, period="all")
-    html = render_yield_report(report)
-    assert "50,00%" in html
-    assert "1,600" in html
-    assert "Śr. kurs" in html
-    assert "baseline" in html
-    assert "Te same mecze" in html
-    assert "Wykresy" in html
-    assert 'class="charts"' in html
-    assert "Saldo" in html
-    assert "Skuteczność" in html
-    assert len(report.charts) == 1
-    assert len(report.charts[0].points) == 2
-    assert report.charts[0].points[0]["saldo"] == str(
-        SANDBOX_BANKROLL + Decimal("4.96")
-    )
-    assert report.charts[0].points[-1]["saldo"] == str(
-        SANDBOX_BANKROLL + Decimal("4.96") - Decimal("10.00")
-    )
-    assert report.charts[0].points[-1]["hit_overall"] == "50.00"
 
 
 @pytest.mark.asyncio

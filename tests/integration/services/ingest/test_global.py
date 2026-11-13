@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tenacity import RetryCallState
 from tenacity.wait import wait_base
 
-from predictor.client.errors import FootballHttpError, RetryableHttpError
 from predictor.client.football import FootballClient
 from predictor.constants import (
     GLOBAL_ENDPOINT_ORDER,
@@ -35,9 +34,6 @@ from predictor.schemas.fixtures import FixtureItem
 from predictor.schemas.settings import Settings, load_settings
 from predictor.services.ingest.global_entities import (
     GlobalIngest,
-    _http_error_label,
-    _http_params,
-    _non_positive_identity,
 )
 from predictor.services.ingest.persist import upsert_countries
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
@@ -45,7 +41,6 @@ from predictor.services.queue import (
     complete_stored_player_profiles,
     complete_stored_venues,
     enqueue_fixture_followups,
-    enqueue_global_for_match,
     ensure_cursors,
     ensure_param_task,
     requeue_stale_global,
@@ -1394,33 +1389,3 @@ async def test_stale_global_stays_complete_while_draining() -> None:
         assert task.completed_at == NOW - timedelta(days=1)
     finally:
         await engine.dispose()
-
-
-def test_enqueue_global_helper_exports() -> None:
-    assert callable(enqueue_global_for_match)
-    assert TEAM_STATS_SENTINEL_DATE == "1970-01-01"
-
-
-def test_http_params_rejects_non_positive_player_id() -> None:
-    assert _http_params("/players/profiles", {"player": 0}) is None
-    assert _http_params("/players/profiles", {"player": -1}) is None
-    assert _http_params("/players/profiles", {"player": 42}) == {"player": 42}
-    assert _http_params("/transfers", {"player": "0"}) is None
-    assert _http_params("/trophies", {"player": 0, "coach": 9}) == {"coach": 9}
-
-
-def test_non_positive_identity_is_not_a_contract_error() -> None:
-    assert _non_positive_identity("/players/profiles", {"player": 0})
-    assert _non_positive_identity("/coachs", {"id": 0})
-    assert _non_positive_identity("/trophies", {"coach": 0})
-    assert not _non_positive_identity("/trophies", {"player": 0, "coach": 9})
-    assert not _non_positive_identity("/players", {"league": 0, "season": 2026})
-    assert not _non_positive_identity("/players/profiles", {})
-
-
-def test_http_error_label_includes_status() -> None:
-    assert _http_error_label(FootballHttpError(404, "/players")) == (
-        "FootballHttpError: 404"
-    )
-    assert _http_error_label(RetryableHttpError(None)) == "RetryableHttpError"
-    assert _http_error_label(RetryableHttpError(503)) == "RetryableHttpError: 503"

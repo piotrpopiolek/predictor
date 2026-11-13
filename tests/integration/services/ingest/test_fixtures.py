@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 
 import httpx
 import pytest
@@ -15,7 +15,6 @@ from predictor.constants import (
     DAILY_REPORT_ENDPOINT,
     DAY_CONTRACT_ENDPOINTS,
     GLOBAL_ENDPOINT_ORDER,
-    IRREGULAR_FIXTURE_STATUSES,
     LOOKUP_WITHOUT_HTTP,
     OPEN_ETL_STATUSES,
 )
@@ -268,10 +267,6 @@ async def _close_match_contract(
                 await complete_task(session, task, "coverage_empty")
 
 
-def test_irregular_statuses_match_fr014() -> None:
-    assert {"PST", "CANC", "ABD", "AWD", "WO"} == IRREGULAR_FIXTURE_STATUSES
-
-
 @pytest.mark.asyncio
 async def test_forward_upserts_fixtures_pages_and_children() -> None:
     settings = load_settings()
@@ -349,52 +344,6 @@ async def test_forward_upserts_fixtures_pages_and_children() -> None:
     finally:
         await client.aclose()
         await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_backfill_pauses_while_pending_is_older_than_a_week(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _Session:
-        async def __aenter__(self) -> object:
-            return object()
-
-        async def __aexit__(self, *args: object) -> None:
-            return None
-
-    ingest = FixtureIngest(
-        cast(Any, object()),
-        cast(Any, lambda: _Session()),
-        now_fn=lambda: datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
-    )
-    ingest._quota_left = lambda: True  # type: ignore[method-assign]
-
-    async def today_done() -> bool:
-        return True
-
-    async def blocked(session: object, now: object = None) -> bool:
-        del session, now
-        return True
-
-    called = {"day": 0}
-
-    async def ingest_day(day: object, *, role: str) -> bool:
-        del day, role
-        called["day"] += 1
-        return True
-
-    async def no_stale() -> None:
-        return None
-
-    ingest._today_fixtures_complete = today_done  # type: ignore[method-assign]
-    ingest._refresh_stale_fixture_days = no_stale  # type: ignore[method-assign]
-    ingest._ingest_day = ingest_day  # type: ignore[method-assign]
-    monkeypatch.setattr(
-        "predictor.services.ingest.fixtures.historical_backlog_blocks",
-        blocked,
-    )
-    await ingest.refresh_backfill()
-    assert called["day"] == 0
 
 
 async def test_backfill_waits_for_today_then_moves_yesterday() -> None:

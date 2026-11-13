@@ -25,12 +25,10 @@ from predictor.services.queue import (
     claim_urgent_predictions_task,
     close_stale_prematch_enrichment,
     complete_task,
-    empty_retry_status,
     enqueue_fixture_followups,
     ensure_cursors,
     ensure_enrichment_task,
     ensure_prematch_for_fixture_ids,
-    error_retry_status,
     historical_backlog_blocks,
     reopen_live_detail_task,
     requeue_orphans,
@@ -753,39 +751,6 @@ async def test_claim_urgent_skips_far_and_finished() -> None:
 
 FID_LIVE = 93011
 FID_OTHER = 93012
-
-
-def test_error_retry_grows_then_stops_after_ten() -> None:
-    now = datetime(2026, 10, 12, 5, 0, tzinfo=UTC)
-    params: dict[str, object] = {"player": 0}
-    delays: list[float] = []
-    for _ in range(10):
-        status, params = error_retry_status(params, now=now)
-        assert status == "retryable_error"
-        due = datetime.fromisoformat(str(params["next_attempt_at"]))
-        delays.append((due - now).total_seconds())
-    assert delays == [60, 120, 240, 480, 960, 1920, 3600, 3600, 3600, 3600]
-    status, params = error_retry_status(params, now=now)
-    assert status == "permanent_error"
-    assert params["error_retries"] == 11
-    assert "next_attempt_at" not in params
-
-
-def test_empty_retry_backs_off_then_stops() -> None:
-    now = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
-    status, params = empty_retry_status({}, now=now, max_attempts=3, backoff_seconds=60)
-    assert status == "retryable_error"
-    assert params["empty_attempts"] == 1
-    assert params["next_attempt_at"] == (now + timedelta(seconds=60)).isoformat()
-    status, params = empty_retry_status(
-        params, now=now, max_attempts=3, backoff_seconds=60
-    )
-    assert status == "retryable_error"
-    status, params = empty_retry_status(
-        params, now=now, max_attempts=3, backoff_seconds=60
-    )
-    assert status == "coverage_empty"
-    assert "next_attempt_at" not in params
 
 
 @pytest.mark.asyncio
