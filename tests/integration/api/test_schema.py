@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 from psycopg.errors import CheckViolation
-
 from tests.db import app_connect
 
 EXPECTED_TABLES = frozenset(

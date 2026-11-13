@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import delete, or_, select
 from tenacity import RetryCallState
 from tenacity.wait import wait_base
+from tests.integration.services.queue.test_queue import _fixture_payload
 
 from predictor.client.football import FootballClient
 from predictor.models.etl import EtlTask
@@ -28,7 +29,6 @@ from predictor.services.ingest.live_context import (
 )
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
 from predictor.services.ingest.prematch import PrematchIngest
-from tests.test_queue import _fixture_payload
 
 NOW = datetime(2026, 9, 22, 15, 0, tzinfo=UTC)
 FID_LIVE = 93021

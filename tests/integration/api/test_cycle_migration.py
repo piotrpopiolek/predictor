@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 from alembic import command
 from alembic.config import Config
-
 from tests.db import app_connect
 
 

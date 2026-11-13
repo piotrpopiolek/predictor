@@ -13,7 +13,7 @@ COMPOSE_OBS := docker compose -f docker-compose.yml -f docker-compose.observabil
 COMPOSE_PROD := docker compose -f docker-compose.prod.yml -f docker-compose.observability.yml
 WORKER := $(COMPOSE) run --rm --no-deps worker
 
-.PHONY: up down logs migrate pytest test-ci up-obs up-prod down-prod build-prod promtool backup-restore-test
+.PHONY: up down logs migrate pytest pytest-unit test-ci up-obs up-prod down-prod build-prod promtool backup-restore-test
 
 up:
 	$(COMPOSE) up -d --build
@@ -33,6 +33,9 @@ migrate:
 
 pytest: migrate
 	$(WORKER) python -m pytest
+
+pytest-unit:
+	$(WORKER) python -m pytest -m unit -n auto --no-cov
 
 promtool:
 	docker run --rm -w /work --volume "$(CURDIR)/deploy/prometheus:/work:ro" --entrypoint /bin/promtool $(PROMTOOL_IMAGE) check rules /work/recording_rules.yml /work/alerts.yml

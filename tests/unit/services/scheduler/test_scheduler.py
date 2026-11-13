@@ -1110,7 +1110,7 @@ def test_lane_split_shares_one_pool_and_the_vendor_minute() -> None:
     assert busy.live_concurrency > quiet.live_concurrency
 
 
-def test_score_clock_is_measured_from_the_tick_start(valid_env: None) -> None:
+def test_score_clock_is_one_interval_after_the_tick_start(valid_env: None) -> None:
     now = datetime(2026, 10, 11, 16, 0, tzinfo=UTC)
     scheduler = Scheduler(
         load_settings(),
@@ -1118,10 +1118,9 @@ def test_score_clock_is_measured_from_the_tick_start(valid_env: None) -> None:
         _unused_factory(),
         now_fn=lambda: now,
     )
-    scheduler._sleep_seconds = lambda: 0.01  # type: ignore[method-assign]
-    started = time.monotonic()
-    time.sleep(0.03)
-    assert scheduler._arm_score_clock(started) < time.monotonic()
+    scheduler._sleep_seconds = lambda: 15.0  # type: ignore[method-assign]
+    started = 1_000.0
+    assert scheduler._arm_score_clock(started) == started + 15.0
 
 
 @pytest.mark.asyncio

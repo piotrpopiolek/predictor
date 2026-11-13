@@ -4,7 +4,11 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = next(
+    parent
+    for parent in Path(__file__).resolve().parents
+    if (parent / "pyproject.toml").is_file()
+)
 ALERTS = ROOT / "deploy" / "prometheus" / "alerts.yml"
 ALERT_TESTS = ROOT / "deploy" / "prometheus" / "tests" / "alerts.test.yml"
 RECORDING = ROOT / "deploy" / "prometheus" / "recording_rules.yml"

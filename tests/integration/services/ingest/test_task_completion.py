@@ -28,6 +28,7 @@ from predictor.services.queue import complete_task
 
 _ENDPOINT = "/minute-rate-test"
 _LEAGUE = {"league": 9889013, "season": 2099}
+_NOW = datetime(2026, 11, 13, 16, 0, tzinfo=UTC)
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -49,13 +50,14 @@ async def test_minute_rate_limit_defers_without_counting_retries() -> None:
             session.add(task)
             await session.flush()
             task_id = int(task.id)
-        for _ in range(ERROR_RETRY_LIMIT + 1):
+        for _ in range(ERROR_RETRY_LIMIT + 2):
             await fail_task(
-                factory, task_id, "retryable_error", "MinuteRateLimited: 429"
+                factory,
+                task_id,
+                "retryable_error",
+                "MinuteRateLimited: 429",
+                now=_NOW,
             )
-        started = datetime.now(UTC)
-        await fail_task(factory, task_id, "retryable_error", "MinuteRateLimited: 429")
-        finished = datetime.now(UTC)
         async with factory() as session:
             stored = await session.get(EtlTask, task_id)
         assert stored is not None
@@ -63,11 +65,8 @@ async def test_minute_rate_limit_defers_without_counting_retries() -> None:
         assert stored.last_error == "MinuteRateLimited: 429"
         assert "error_retries" not in stored.params
         assert stored.params["league"] == 9889013
-        due = datetime.fromisoformat(str(stored.params["next_attempt_at"]))
-        if due.tzinfo is None:
-            due = due.replace(tzinfo=UTC)
         wait = timedelta(seconds=MINUTE_RATE_LIMIT_RETRY_SECONDS)
-        assert started + wait <= due <= finished + wait
+        assert _due(stored.params) == _NOW + wait
     finally:
         async with factory() as session, session.begin():
             await session.execute(delete(EtlTask).where(EtlTask.endpoint == _ENDPOINT))
@@ -162,19 +161,27 @@ async def test_retryable_error_counts_then_becomes_permanent() -> None:
     engine, factory = _open()
     try:
         task_id = await _insert(factory, endpoint)
-        started = datetime.now(UTC)
-        await fail_task(factory, task_id, "retryable_error", "FootballHttpError: 400")
-        finished = datetime.now(UTC)
+        await fail_task(
+            factory,
+            task_id,
+            "retryable_error",
+            "FootballHttpError: 400",
+            now=_NOW,
+        )
         stored = await _load(factory, task_id)
         wait = timedelta(seconds=ERROR_RETRY_BASE_BACKOFF_SECONDS)
         assert stored.status == "retryable_error"
         assert stored.last_error == "FootballHttpError: 400"
         assert stored.params["error_retries"] == 1
         assert stored.params["league"] == 9889013
-        assert started + wait <= _due(stored.params) <= finished + wait
+        assert _due(stored.params) == _NOW + wait
         for _ in range(ERROR_RETRY_LIMIT):
             await fail_task(
-                factory, task_id, "retryable_error", "FootballHttpError: 400"
+                factory,
+                task_id,
+                "retryable_error",
+                "FootballHttpError: 400",
+                now=_NOW,
             )
         stored = await _load(factory, task_id)
         assert stored.status == "permanent_error"

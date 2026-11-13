@@ -36,7 +36,10 @@ async def fail_task(
     task_id: int,
     status: str,
     error: str,
+    *,
+    now: datetime | None = None,
 ) -> None:
+    moment = now if now is not None else datetime.now(UTC)
     async with session_factory() as session, session.begin():
         task = await session.get(EtlTask, task_id)
         if task is None:
@@ -44,12 +47,10 @@ async def fail_task(
         params = None
         if status == "retryable_error" and _minute_rate_limit_error(error):
             params = dict(task.params)
-            due = datetime.now(UTC) + timedelta(seconds=MINUTE_RATE_LIMIT_RETRY_SECONDS)
+            due = moment + timedelta(seconds=MINUTE_RATE_LIMIT_RETRY_SECONDS)
             params["next_attempt_at"] = due.isoformat()
         elif status == "retryable_error" and error != "quota_exhausted":
-            status, params = error_retry_status(
-                dict(task.params), now=datetime.now(UTC)
-            )
+            status, params = error_retry_status(dict(task.params), now=moment)
         await complete_task(session, task, status, error=error, params=params)
 
 

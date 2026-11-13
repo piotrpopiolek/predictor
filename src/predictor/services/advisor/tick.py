@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -324,6 +324,8 @@ async def _refresh_before_llm(
     now: datetime,
     *,
     candidates: tuple[CycleCandidate, ...],
+    monotonic: Callable[[], float] | None = None,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> (
     tuple[
         tuple[MatchSnapshot, ...],
@@ -344,7 +346,12 @@ async def _refresh_before_llm(
         async with factory() as session, session.begin():
             await enqueue_odds_refresh(session, need, now=now)
         waited = await _wait_for_matching_quotes(
-            engine, factory, selected, llm_ids=llm_ids
+            engine,
+            factory,
+            selected,
+            llm_ids=llm_ids,
+            monotonic=monotonic,
+            sleep=sleep,
         )
         if waited is None:
             return None
@@ -369,12 +376,16 @@ async def _wait_for_matching_quotes(
     selected: tuple[MatchSnapshot, ...],
     *,
     llm_ids: frozenset[int],
+    monotonic: Callable[[], float] | None = None,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> tuple[tuple[MatchSnapshot, ...], dict[int, tuple[OverUnderRow, ...]]] | None:
     """Poll until gated fixtures have score-matched quotes, or time out."""
+    clock = monotonic or time.monotonic
+    pause = sleep or asyncio.sleep
     originals = {
         item.fixture_id: item for item in selected if item.fixture_id in llm_ids
     }
-    deadline = time.monotonic() + ODDS_REFRESH_WAIT_SECONDS
+    deadline = clock() + ODDS_REFRESH_WAIT_SECONDS
     while True:
         matches = await list_live_matches(engine)
         legs = await load_first_legs(engine, matches)
@@ -392,10 +403,10 @@ async def _wait_for_matching_quotes(
             )
         if tracked and not fixtures_needing_odds_refresh(tracked, quotes, only=llm_ids):
             return (board if board else tracked), quotes
-        remaining = deadline - time.monotonic()
+        remaining = deadline - clock()
         if remaining <= 0:
             return None
-        await asyncio.sleep(min(ODDS_REFRESH_POLL_SECONDS, remaining))
+        await pause(min(ODDS_REFRESH_POLL_SECONDS, remaining))
 
 
 async def restore_window(session: AsyncSession, strategy_id: int) -> CandidateWindow:

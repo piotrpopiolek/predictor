@@ -27,6 +27,18 @@ VALID_ENV: dict[str, str] = {
 SETTING_ENV_NAMES = tuple(VALID_ENV.keys())
 
 
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Mark tests from their directory: unit, integration, or e2e."""
+    for item in items:
+        parts = set(item.path.parts)
+        if "e2e" in parts:
+            item.add_marker(pytest.mark.e2e)
+        elif "integration" in parts:
+            item.add_marker(pytest.mark.integration)
+        elif "unit" in parts:
+            item.add_marker(pytest.mark.unit)
+
+
 @pytest.fixture(scope="session")
 def event_loop_policy() -> asyncio.AbstractEventLoopPolicy:
     if sys.platform == "win32":

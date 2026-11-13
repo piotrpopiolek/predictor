@@ -229,69 +229,158 @@ def test_coupon_threshold_and_leg_count() -> None:
         combined_odd((Decimal("0.9"),))
 
 
-def test_regulation_goal_in_stoppage_wins_and_extra_time_goal_does_not() -> None:
-    # N was 1 (0-1). Full time 1-1, including a stoppage-time goal, wins.
-    assert settle_leg(Period.REGULATION, 1, _final()) is Settlement.WON
-    # Same full-time score, goal only after 90 minutes: regulation stays 0-1.
-    only_extra = _final(
-        status_short="AET",
-        fulltime_home=0,
-        fulltime_away=1,
-        extratime_home=1,
-        extratime_away=0,
-    )
-    assert settle_leg(Period.REGULATION, 1, only_extra) is Settlement.LOST
+@pytest.mark.parametrize(
+    ("period", "n", "score", "expected"),
+    [
+        pytest.param(
+            Period.REGULATION,
+            1,
+            _final(),
+            Settlement.WON,
+            id="regulation_stoppage_goal_wins",
+        ),
+        pytest.param(
+            Period.REGULATION,
+            1,
+            _final(
+                status_short="AET",
+                fulltime_home=0,
+                fulltime_away=1,
+                extratime_home=1,
+                extratime_away=0,
+            ),
+            Settlement.LOST,
+            id="extra_time_goal_does_not_win_regulation",
+        ),
+        pytest.param(
+            Period.EXTRA_TIME,
+            0,
+            _final(
+                status_short="AET",
+                fulltime_home=1,
+                fulltime_away=1,
+                extratime_home=0,
+                extratime_away=1,
+            ),
+            Settlement.WON,
+            id="extra_time_stoppage_goal_wins",
+        ),
+        pytest.param(
+            Period.EXTRA_TIME,
+            0,
+            _final(
+                status_short="AET",
+                fulltime_home=1,
+                fulltime_away=1,
+                extratime_home=0,
+                extratime_away=0,
+            ),
+            Settlement.LOST,
+            id="extra_time_without_a_goal_loses",
+        ),
+        pytest.param(
+            Period.EXTRA_TIME,
+            0,
+            _final(
+                status_short="PEN",
+                fulltime_home=1,
+                fulltime_away=1,
+                extratime_home=0,
+                extratime_away=0,
+            ),
+            Settlement.LOST,
+            id="penalties_do_not_win_extra_time",
+        ),
+        pytest.param(
+            Period.REGULATION,
+            1,
+            _final(status_short="2H", final_refreshed=False),
+            Settlement.PENDING,
+            id="live_match_stays_pending",
+        ),
+        pytest.param(
+            Period.REGULATION,
+            1,
+            _final(final_refreshed=False),
+            Settlement.PENDING,
+            id="full_time_without_refresh_stays_pending",
+        ),
+        pytest.param(
+            Period.REGULATION,
+            1,
+            _final(status_short="ABD"),
+            Settlement.VOID,
+            id="abandoned_regulation_is_void",
+        ),
+        pytest.param(
+            Period.EXTRA_TIME,
+            0,
+            _final(status_short="ABD"),
+            Settlement.VOID,
+            id="abandoned_extra_time_is_void",
+        ),
+        pytest.param(
+            Period.REGULATION,
+            1,
+            _final(status_short="2H", awaiting_manual=True),
+            Settlement.MANUAL,
+            id="stuck_live_match_needs_a_person",
+        ),
+        pytest.param(
+            Period.REGULATION,
+            1,
+            _final(fulltime_home=None),
+            Settlement.MANUAL,
+            id="missing_full_time_score_needs_a_person",
+        ),
+        pytest.param(
+            Period.EXTRA_TIME,
+            0,
+            _final(status_short="AET", extratime_home=None, extratime_away=None),
+            Settlement.MANUAL,
+            id="missing_extra_time_score_needs_a_person",
+        ),
+    ],
+)
+def test_settle_leg(
+    period: Period, n: int, score: FinalScore, expected: Settlement
+) -> None:
+    assert settle_leg(period, n, score) is expected
 
 
-def test_extra_time_leg_uses_extra_time_goals_including_its_stoppage() -> None:
-    score = _final(
-        status_short="AET",
-        fulltime_home=1,
-        fulltime_away=1,
-        extratime_home=0,
-        extratime_away=1,
-    )
-    assert settle_leg(Period.EXTRA_TIME, 0, score) is Settlement.WON
-    no_extra_goal = replace(score, extratime_home=0, extratime_away=0)
-    assert settle_leg(Period.EXTRA_TIME, 0, no_extra_goal) is Settlement.LOST
-    # Penalties are not in the extra-time columns, so they cannot win the leg.
-    after_penalties = replace(score, status_short="PEN", extratime_away=0)
-    assert settle_leg(Period.EXTRA_TIME, 0, after_penalties) is Settlement.LOST
+@pytest.mark.parametrize(
+    ("outcomes", "expected"),
+    [
+        ((Settlement.WON, Settlement.WON), Settlement.WON),
+        ((Settlement.WON, Settlement.VOID), Settlement.WON),
+        ((Settlement.LOST, Settlement.VOID), Settlement.LOST),
+        ((Settlement.VOID, Settlement.VOID), Settlement.VOID),
+        ((Settlement.WON, Settlement.PENDING), Settlement.PENDING),
+        ((Settlement.WON, Settlement.MANUAL), Settlement.MANUAL),
+        ((Settlement.LOST, Settlement.PENDING), Settlement.LOST),
+        ((Settlement.LOST, Settlement.MANUAL), Settlement.LOST),
+    ],
+    ids=[
+        "both_won",
+        "void_leg_drops_out_of_a_win",
+        "one_loss_loses_the_coupon",
+        "all_void",
+        "pending_holds_a_winning_coupon",
+        "manual_holds_a_winning_coupon",
+        "loss_closes_before_a_pending_leg",
+        "loss_closes_before_a_manual_leg",
+    ],
+)
+def test_settle_coupon(outcomes: tuple[Settlement, ...], expected: Settlement) -> None:
+    assert settle_coupon(outcomes) is expected
 
 
-def test_settlement_waits_for_full_time_and_the_post_match_refresh() -> None:
-    live = _final(status_short="2H", final_refreshed=False)
-    assert settle_leg(Period.REGULATION, 1, live) is Settlement.PENDING
-    stale = _final(final_refreshed=False)
-    assert settle_leg(Period.REGULATION, 1, stale) is Settlement.PENDING
-    abandoned = _final(status_short="ABD")
-    assert settle_leg(Period.REGULATION, 1, abandoned) is Settlement.VOID
-    assert settle_leg(Period.EXTRA_TIME, 0, abandoned) is Settlement.VOID
-
-
-def test_missing_score_or_a_day_without_full_time_needs_a_person() -> None:
-    stuck = _final(status_short="2H", awaiting_manual=True)
-    assert settle_leg(Period.REGULATION, 1, stuck) is Settlement.MANUAL
-    blank = _final(fulltime_home=None)
-    assert settle_leg(Period.REGULATION, 1, blank) is Settlement.MANUAL
-    no_extra = _final(status_short="AET", extratime_home=None, extratime_away=None)
-    assert settle_leg(Period.EXTRA_TIME, 0, no_extra) is Settlement.MANUAL
-
-
-def test_coupon_settlement_voids_and_losses() -> None:
-    assert settle_coupon((Settlement.WON, Settlement.WON)) is Settlement.WON
-    assert settle_coupon((Settlement.WON, Settlement.VOID)) is Settlement.WON
-    assert settle_coupon((Settlement.LOST, Settlement.VOID)) is Settlement.LOST
-    assert settle_coupon((Settlement.VOID, Settlement.VOID)) is Settlement.VOID
-    assert settle_coupon((Settlement.WON, Settlement.PENDING)) is Settlement.PENDING
-    assert settle_coupon((Settlement.WON, Settlement.MANUAL)) is Settlement.MANUAL
-    assert settle_coupon((Settlement.LOST, Settlement.PENDING)) is Settlement.LOST
-    assert settle_coupon((Settlement.LOST, Settlement.MANUAL)) is Settlement.LOST
+def test_empty_coupon_cannot_settle() -> None:
     with pytest.raises(ValueError):
         settle_coupon(())
 
 
-def test_active_odd_drops_void_legs_and_pnl_keeps_the_twelve_percent() -> None:
+def test_active_odd_drops_void_and_pending_legs() -> None:
     legs = (
         (Decimal("1.50"), Settlement.WON),
         (Decimal("1.40"), Settlement.VOID),
@@ -299,12 +388,24 @@ def test_active_odd_drops_void_legs_and_pnl_keeps_the_twelve_percent() -> None:
     assert active_combined_odd(legs) == Decimal("1.500")
     assert active_combined_odd(((Decimal("1.50"), Settlement.VOID),)) is None
     assert active_combined_odd(((Decimal("1.50"), Settlement.PENDING),)) is None
-    stake = Decimal("10.00")
-    assert settled_pnl(stake, Decimal("1.500"), Settlement.WON) == Decimal("3.20")
-    assert settled_pnl(stake, Decimal("1.500"), Settlement.LOST) == Decimal("-10.00")
-    assert settled_pnl(stake, Decimal("1.500"), Settlement.VOID) == Decimal("0.00")
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        (Settlement.WON, Decimal("3.20")),
+        (Settlement.LOST, Decimal("-10.00")),
+        (Settlement.VOID, Decimal("0.00")),
+    ],
+    ids=["won_keeps_twelve_percent", "lost", "void_returns_the_stake"],
+)
+def test_settled_pnl(outcome: Settlement, expected: Decimal) -> None:
+    assert settled_pnl(Decimal("10.00"), Decimal("1.500"), outcome) == expected
+
+
+def test_unsettled_pnl_is_rejected() -> None:
     with pytest.raises(ValueError):
-        settled_pnl(stake, Decimal("1.500"), Settlement.PENDING)
+        settled_pnl(Decimal("10.00"), Decimal("1.500"), Settlement.PENDING)
 
 
 def test_same_final_score_settles_the_same_way_twice() -> None:

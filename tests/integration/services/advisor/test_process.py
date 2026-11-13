@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -1617,8 +1616,19 @@ async def test_refresh_wait_timeout_enqueues_and_skips(
     from predictor.services.advisor.sql import OverUnderRow
     from predictor.services.advisor.tick import _refresh_before_llm
 
-    monkeypatch.setattr(tick_mod, "ODDS_REFRESH_WAIT_SECONDS", 0.25)
-    monkeypatch.setattr(tick_mod, "ODDS_REFRESH_POLL_SECONDS", 0.05)
+    clock = {"t": 0.0}
+    enqueued: list[tuple[int, ...]] = []
+    real_enqueue = tick_mod.enqueue_odds_refresh
+
+    async def spy(session, fixture_ids, *, now):
+        ids = await real_enqueue(session, fixture_ids, now=now)
+        enqueued.append(ids)
+        return ids
+
+    monkeypatch.setattr(tick_mod, "enqueue_odds_refresh", spy)
+
+    async def jump(seconds: float) -> None:
+        clock["t"] += seconds + 20.0
 
     engine = make_async_engine(Settings())
     factory = make_session_factory(engine)
@@ -1670,11 +1680,11 @@ async def test_refresh_wait_timeout_enqueues_and_skips(
             {880_764: (stale,)},
             NOW,
             candidates=(gated,),
+            monotonic=lambda: clock["t"],
+            sleep=jump,
         )
         assert result is None
-        async with factory() as session:
-            pending = set(await session.scalars(select(AdvisorOddsRefresh.fixture_id)))
-        assert pending == {880_764}
+        assert enqueued == [(880_764,)]
     finally:
         async with factory() as session, session.begin():
             await session.execute(delete(AdvisorOddsRefresh))
@@ -1683,16 +1693,12 @@ async def test_refresh_wait_timeout_enqueues_and_skips(
 
 
 @pytest.mark.asyncio
-async def test_refresh_unblocks_after_worker_write(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_refresh_unblocks_after_worker_write() -> None:
     from predictor.models.advisor import AdvisorOddsRefresh
-    from predictor.services.advisor import tick as tick_mod
     from predictor.services.advisor.sql import OverUnderRow
     from predictor.services.advisor.tick import _refresh_before_llm
 
-    monkeypatch.setattr(tick_mod, "ODDS_REFRESH_WAIT_SECONDS", 2.0)
-    monkeypatch.setattr(tick_mod, "ODDS_REFRESH_POLL_SECONDS", 0.05)
+    clock = {"t": 0.0}
 
     engine = make_async_engine(Settings())
     factory = make_session_factory(engine)
@@ -1716,8 +1722,8 @@ async def test_refresh_unblocks_after_worker_write(
             )
             book = await ensure_strategy(session, LLM_NAME, "llm")
 
-        async def worker_write() -> None:
-            await asyncio.sleep(0.1)
+        async def write_on_poll(seconds: float) -> None:
+            clock["t"] += seconds
             async with factory() as session, session.begin():
                 session.add(
                     FixtureOddsLive(
@@ -1758,7 +1764,6 @@ async def test_refresh_unblocks_after_worker_write(
             odd=Decimal("1.850"),
             n=1,
         )
-        task = asyncio.create_task(worker_write())
         result = await _refresh_before_llm(
             engine,
             factory,
@@ -1767,8 +1772,9 @@ async def test_refresh_unblocks_after_worker_write(
             {880_764: (stale,)},
             NOW,
             candidates=(gated,),
+            monotonic=lambda: clock["t"],
+            sleep=write_on_poll,
         )
-        await task
         assert result is not None
         _selected, _quotes, candidates, _opened = result
         assert len(candidates) == 1

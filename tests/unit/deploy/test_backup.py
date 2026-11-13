@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = next(
+    parent
+    for parent in Path(__file__).resolve().parents
+    if (parent / "pyproject.toml").is_file()
+)
 ONCE = ROOT / "scripts" / "backup" / "backup-once.sh"
 LOOP = ROOT / "scripts" / "backup" / "backup-loop.sh"
 RESTORE = ROOT / "scripts" / "backup" / "test-restore.sh"
