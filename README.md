@@ -13,7 +13,7 @@ A private operator console for live football. One process mirrors an upstream da
 | Database | PostgreSQL 17, SQLAlchemy 2.0.52, Alembic 1.20.0, psycopg 3.3.5 |
 | External HTTP | httpx 0.28.1, tenacity 9.1.4 |
 | LLM | `google-genai` 2.31.0, model `gemini-2.5-flash` |
-| Telemetry | OpenTelemetry 1.45.1 (API, SDK, OTLP exporter; FastAPI, httpx, logging, SQLAlchemy) |
+| Telemetry | OpenTelemetry 1.45.2 (API, SDK, OTLP exporter; FastAPI, httpx, logging, SQLAlchemy) |
 | Dashboards | Prometheus 3.4, Alertmanager 0.28, Loki 3.5, Tempo 2.8, Grafana 11.6 |
 | Quality | ruff 0.16, black 26.10, **mypy strict**, pytest 9.1 (80% branch coverage gate) |
 | Packaging | Docker (`python:3.14-slim-bookworm`), Compose, GitHub Actions |
