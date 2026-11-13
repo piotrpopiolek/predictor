@@ -19,6 +19,7 @@ from predictor.schemas.fixtures import FixtureItem
 from predictor.schemas.odds import OddsMappingItem
 from predictor.schemas.settings import load_settings
 from predictor.services.ingest.drift import warn_model_extra
+from predictor.services.ingest.global_entities import _parse_many, _parse_player_items
 from predictor.services.ingest.next_goal import is_next_goal_market, next_goal_matches
 from predictor.services.ingest.paging import fetch_all_pages
 from predictor.services.queue import mapping_needs_refresh, needs_refresh
@@ -194,6 +195,188 @@ async def test_envelope_errors_are_not_empty_success(valid_env: None) -> None:
         await client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_unsupported_page_keeps_the_rows_already_fetched(
+    valid_env: None,
+) -> None:
+    calls: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = request.url.params.get("page")
+        calls.append(page)
+        if page is None:
+            return httpx.Response(
+                200,
+                json=_envelope([{"name": "Poland"}], current=1, total=3),
+            )
+        return httpx.Response(
+            200,
+            json=_envelope(
+                [],
+                errors={"page": "The Page field do not exist."},
+            ),
+        )
+
+    client = _client(httpx.MockTransport(handler))
+    try:
+        items, current, total = await fetch_all_pages(client, "/countries")
+    finally:
+        await client.aclose()
+    assert calls == [None, "2"]
+    assert items == [{"name": "Poland"}]
+    assert current == 1
+    assert total == 3
+
+
+@pytest.mark.asyncio
+async def test_resume_stops_when_the_vendor_rejects_the_page_field(
+    valid_env: None,
+) -> None:
+    calls: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.params.get("page"))
+        assert request.url.params.get("league") == "39"
+        return httpx.Response(
+            200,
+            json=_envelope([], errors={"page": "The Page field DO NOT EXIST."}),
+        )
+
+    client = _client(httpx.MockTransport(handler))
+    try:
+        items, current, total = await fetch_all_pages(
+            client,
+            "/players",
+            params={"league": 39, "season": 2026},
+            start_page=4,
+        )
+    finally:
+        await client.aclose()
+    assert calls == ["4"]
+    assert items == []
+    assert current == 1
+    assert total == 1
+
+
+@pytest.mark.asyncio
+async def test_page_phrase_on_the_first_request_is_still_an_error(
+    valid_env: None,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "page" not in request.url.params
+        return httpx.Response(
+            200,
+            json=_envelope([], errors={"page": "The Page field do not exist."}),
+        )
+
+    client = _client(httpx.MockTransport(handler))
+    try:
+        with pytest.raises(FootballHttpError) as raised:
+            await fetch_all_pages(client, "/countries")
+    finally:
+        await client.aclose()
+    assert raised.value.status_code == 200
+    assert raised.value.path == "/countries"
+
+
+@pytest.mark.asyncio
+async def test_dictionary_error_is_not_an_empty_page(valid_env: None) -> None:
+    calls: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = request.url.params.get("page")
+        calls.append(page)
+        if page is None:
+            return httpx.Response(
+                200,
+                json=_envelope([{"name": "Poland"}], current=1, total=2),
+            )
+        return httpx.Response(
+            200,
+            json=_envelope([], errors={"league": "The League field is required."}),
+        )
+
+    client = _client(httpx.MockTransport(handler))
+    try:
+        with pytest.raises(FootballHttpError) as raised:
+            await fetch_all_pages(client, "/countries")
+    finally:
+        await client.aclose()
+    assert calls == [None, "2"]
+    assert raised.value.path == "/countries"
+
+
+@pytest.mark.asyncio
+async def test_other_page_message_is_an_error(valid_env: None) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_envelope([], errors={"page": ["do not exist"]}),
+        )
+
+    client = _client(httpx.MockTransport(handler))
+    try:
+        with pytest.raises(FootballHttpError):
+            await fetch_all_pages(client, "/players", start_page=2)
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_invalid_json_and_envelope_are_football_errors(valid_env: None) -> None:
+    def html(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, content=b"<html>no</html>")
+
+    client = _client(httpx.MockTransport(html))
+    try:
+        with pytest.raises(FootballHttpError) as bad_json:
+            await fetch_all_pages(client, "/countries")
+    finally:
+        await client.aclose()
+    assert bad_json.value.status_code == 200
+    assert bad_json.value.path == "/countries"
+
+    def broken(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, json={"paging": "no", "response": []})
+
+    client = _client(httpx.MockTransport(broken))
+    try:
+        with pytest.raises(FootballHttpError) as bad_envelope:
+            await fetch_all_pages(client, "/leagues")
+    finally:
+        await client.aclose()
+    assert bad_envelope.value.path == "/leagues"
+
+
+@pytest.mark.asyncio
+async def test_object_response_is_one_row_and_null_is_empty(valid_env: None) -> None:
+    bodies = iter(
+        (
+            _envelope({"id": 39, "name": "Premier League"}),
+            _envelope(None),
+        )
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, json=next(bodies))
+
+    client = _client(httpx.MockTransport(handler))
+    try:
+        items, current, total = await fetch_all_pages(client, "/leagues")
+        empty, empty_current, empty_total = await fetch_all_pages(client, "/venues")
+    finally:
+        await client.aclose()
+    assert items == [{"id": 39, "name": "Premier League"}]
+    assert current == 1
+    assert total == 1
+    assert empty == []
+    assert empty_current == 1
+    assert empty_total == 1
+
+
 def test_needs_refresh_is_daily_for_complete_dictionaries() -> None:
     now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
     task = EtlTask(endpoint="/countries", params={}, status="complete")
@@ -306,3 +489,39 @@ def test_fixture_detail_still_parses_event_list() -> None:
     assert len(detail.events) == 1
     assert detail.events[0].type == "Goal"
     assert detail.league.events is True
+
+
+def test_invalid_catalog_row_is_skipped(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging()
+    parsed = _parse_many(
+        [
+            {"name": "Poland", "code": "PL"},
+            {"code": "ES"},
+            "not-a-row",
+            {"name": "Spain", "code": "ES"},
+        ],
+        CountryItem,
+        "/countries",
+    )
+    text = capsys.readouterr().out
+    assert [item.name for item in parsed] == ["Poland", "Spain"]
+    assert text.count("catalog_row_invalid") == 2
+    assert text.count('"/countries"') == 2
+
+
+def test_invalid_player_row_is_skipped(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging()
+    parsed = _parse_player_items(
+        [
+            {"player": {"id": 1, "name": "Bundle"}},
+            {"id": 2, "name": "Bare"},
+            {"player": {"name": "missing id"}},
+            {"name": "also missing id"},
+        ],
+        "/players",
+    )
+    text = capsys.readouterr().out
+    assert [item.player.id for item in parsed] == [1, 2]
+    assert [item.player.name for item in parsed] == ["Bundle", "Bare"]
+    assert text.count("catalog_row_invalid") == 2
+    assert text.count('"/players"') == 2
