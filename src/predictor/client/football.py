@@ -12,7 +12,7 @@ import httpx
 from pydantic import ValidationError
 from tenacity import (
     AsyncRetrying,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
 )
 from tenacity.wait import wait_base
@@ -20,6 +20,7 @@ from tenacity.wait import wait_base
 from predictor.client.errors import (
     AuthBlockedError,
     FootballHttpError,
+    MinuteRateLimited,
     QuotaExhaustedError,
     RetryableHttpError,
     SpendWindowClosed,
@@ -27,6 +28,7 @@ from predictor.client.errors import (
 )
 from predictor.client.quota import (
     QuotaSnapshot,
+    minute_rate_limit_reached,
     quota_from_http,
     requests_limit_reached,
 )
@@ -46,6 +48,13 @@ from predictor.constants import (
 from predictor.schemas.api_football import ApiEnvelope
 from predictor.schemas.settings import Settings
 from predictor.telemetry import start_span
+
+
+def _retry_http(exc: BaseException) -> bool:
+    """Retry transport and HTTP 429/5xx. A spent minute is deferred on the task."""
+    if isinstance(exc, MinuteRateLimited):
+        return False
+    return isinstance(exc, (RetryableHttpError, httpx.TransportError))
 
 
 class FootballClient:
@@ -217,7 +226,7 @@ class FootballClient:
 
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(HTTP_RETRY_ATTEMPTS),
-            retry=retry_if_exception_type((RetryableHttpError, httpx.TransportError)),
+            retry=retry_if_exception(_retry_http),
             wait=self._wait,
             reraise=True,
         ):
@@ -249,6 +258,8 @@ class FootballClient:
         if response.status_code == 200 and self._body_says_daily_limit(response):
             self._exhaust_daily_quota()
             raise QuotaExhaustedError(path)
+        if response.status_code == 200 and self._body_says_minute_limit(response):
+            raise MinuteRateLimited()
         if response.status_code in {401, 403}:
             self._auth_blocked = True
             raise AuthBlockedError(
@@ -310,14 +321,20 @@ class FootballClient:
             reading="header",
         )
 
-    def _body_says_daily_limit(self, response: httpx.Response) -> bool:
+    def _errors_payload(self, response: httpx.Response) -> Any:
         try:
             payload: Any = response.json()
         except ValueError:
-            return False
+            return None
         if not isinstance(payload, dict):
-            return False
-        return requests_limit_reached(payload.get("errors"))
+            return None
+        return payload.get("errors")
+
+    def _body_says_daily_limit(self, response: httpx.Response) -> bool:
+        return requests_limit_reached(self._errors_payload(response))
+
+    def _body_says_minute_limit(self, response: httpx.Response) -> bool:
+        return minute_rate_limit_reached(self._errors_payload(response))
 
     def _exhaust_daily_quota(self) -> None:
         limit = 0

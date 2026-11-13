@@ -33,13 +33,20 @@ async def fetch_all_pages(
     path: str,
     *,
     params: Mapping[str, str | int] | None = None,
+    start_page: int = 1,
+    max_pages: int | None = None,
 ) -> tuple[list[Any], int, int]:
+    """Fetch pages until the vendor total, or until ``max_pages`` is reached.
+
+    ``start_page`` above 1 resumes a list that was stored page by page.
+    """
     collected: list[Any] = []
-    page = 1
+    page = max(1, start_page)
+    fetched = 0
     last_current = 0
     total = 1
     current = 1
-    send_page = False
+    send_page = page > 1
     while True:
         quota = client.quota
         if quota is not None and quota.remaining <= 0 and page > 1:
@@ -67,7 +74,10 @@ async def fetch_all_pages(
         paging = envelope.paging
         current = paging.current if paging and paging.current is not None else 1
         total = paging.total if paging and paging.total is not None else 1
+        fetched += 1
         if current >= total or current == last_current:
+            break
+        if max_pages is not None and fetched >= max_pages:
             break
         last_current = current
         page = current + 1

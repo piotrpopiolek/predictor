@@ -64,6 +64,8 @@ _PLAYER_FACT_ENDPOINTS = (
 
 async def enqueue_player_facts(session: AsyncSession, player_id: int) -> None:
     """Queue career, transfers, trophies, and injuries. Not the profile."""
+    if player_id <= 0:
+        return
     _require_transaction(session, "enqueue player facts")
     params = {"player": player_id}
     for endpoint in _PLAYER_FACT_ENDPOINTS:
@@ -74,6 +76,8 @@ async def enqueue_player_profile_if_needed(
     session: AsyncSession, player_id: int
 ) -> None:
     """Queue /players/profiles only when the row is missing or still a stub."""
+    if player_id <= 0:
+        return
     _require_transaction(session, "enqueue player profile")
     nationality = await session.scalar(
         select(Player.nationality).where(Player.id == player_id)
@@ -159,6 +163,8 @@ async def complete_stored_venues(session: AsyncSession) -> int:
 
 
 async def enqueue_coach_catalog(session: AsyncSession, coach_id: int) -> None:
+    if coach_id <= 0:
+        return
     _require_transaction(session, "enqueue coach catalog")
     await ensure_param_task(session, "/coachs", {"id": coach_id})
     await ensure_param_task(session, "/trophies", {"coach": coach_id})

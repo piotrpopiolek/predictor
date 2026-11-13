@@ -32,6 +32,18 @@ def _header_int(response: httpx.Response, name: str) -> int | None:
         return None
 
 
+def minute_rate_limit_reached(errors: Any) -> bool:
+    """True when the body says the per-minute subscription cap is spent.
+
+    API-Football keeps HTTP 200 for this. The key is ``rateLimit``, not the
+    daily ``requests`` message handled by :func:`requests_limit_reached`.
+    """
+    if not isinstance(errors, dict):
+        return False
+    message = errors.get("rateLimit")
+    return isinstance(message, str) and bool(message.strip())
+
+
 def requests_limit_reached(errors: Any) -> bool:
     """True when the body says the daily request cap is already spent.
 

@@ -268,6 +268,8 @@ async def complete_task(
         task.updated_at = now
         if error is not None:
             task.last_error = error
+        elif status in {"pending", "complete"}:
+            task.last_error = None
         if paging_current is not None:
             task.paging_current = paging_current
         if paging_total is not None:

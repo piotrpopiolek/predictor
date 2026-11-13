@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from predictor.constants import MINUTE_RATE_LIMIT_RETRY_SECONDS
 from predictor.models.etl import EtlTask
 from predictor.services.queue import (
     complete_task,
@@ -41,7 +42,11 @@ async def fail_task(
         if task is None:
             return
         params = None
-        if status == "retryable_error" and error != "quota_exhausted":
+        if status == "retryable_error" and _minute_rate_limit_error(error):
+            params = dict(task.params)
+            due = datetime.now(UTC) + timedelta(seconds=MINUTE_RATE_LIMIT_RETRY_SECONDS)
+            params["next_attempt_at"] = due.isoformat()
+        elif status == "retryable_error" and error != "quota_exhausted":
             status, params = error_retry_status(
                 dict(task.params), now=datetime.now(UTC)
             )
@@ -100,3 +105,7 @@ async def retry_or_empty_task(
             paging_current=paging_current,
             paging_total=paging_total,
         )
+
+
+def _minute_rate_limit_error(error: str) -> bool:
+    return error == "MinuteRateLimited" or error.startswith("MinuteRateLimited:")

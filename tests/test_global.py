@@ -37,6 +37,7 @@ from predictor.services.ingest.global_entities import (
     GlobalIngest,
     _http_error_label,
     _http_params,
+    _non_positive_identity,
 )
 from predictor.services.ingest.persist import upsert_countries
 from predictor.services.ingest.persist_fixtures import upsert_fixtures
@@ -848,6 +849,29 @@ async def test_players_pages_and_catalog_followups() -> None:
         await ingest.refresh_pending()
         async with factory() as session:
             first = await session.get(Player, PLAYER_ID)
+            first_stat = await session.scalar(
+                select(PlayerStatistic).where(PlayerStatistic.player_id == PLAYER_ID)
+            )
+            second_stat = await session.scalar(
+                select(PlayerStatistic).where(PlayerStatistic.player_id == PLAYER_B)
+            )
+            players_task = await session.scalar(
+                select(EtlTask).where(
+                    EtlTask.endpoint == "/players",
+                    EtlTask.params["league"].as_integer() == LEAGUE_ID,
+                )
+            )
+        assert first is not None and first.nationality == "England"
+        assert first_stat is not None
+        assert second_stat is None
+        assert players_task is not None
+        assert players_task.status == "pending"
+        assert players_task.params["page"] == 2
+        player_gets = [p for p in paths if p.startswith("/players?")]
+        assert player_gets
+        assert "page=" not in player_gets[0]
+        await ingest.refresh_pending()
+        async with factory() as session:
             second = await session.get(Player, PLAYER_B)
             stats = list(
                 await session.scalars(
@@ -871,7 +895,12 @@ async def test_players_pages_and_catalog_followups() -> None:
                     )
                 )
             )
-        assert first is not None and first.nationality == "England"
+            players_task = await session.scalar(
+                select(EtlTask).where(
+                    EtlTask.endpoint == "/players",
+                    EtlTask.params["league"].as_integer() == LEAGUE_ID,
+                )
+            )
         assert second is not None
         assert len(stats) == 2
         assert stats[0].appearences == 4
@@ -882,8 +911,10 @@ async def test_players_pages_and_catalog_followups() -> None:
             "/trophies",
             "/sidelined",
         }
+        assert players_task is not None
+        assert players_task.status == "complete"
+        assert "page" not in players_task.params
         player_gets = [p for p in paths if p.startswith("/players?")]
-        assert player_gets
         assert "page=" not in player_gets[0]
         assert any("page=2" in p for p in player_gets)
     finally:
@@ -1373,6 +1404,15 @@ def test_http_params_rejects_non_positive_player_id() -> None:
     assert _http_params("/players/profiles", {"player": 42}) == {"player": 42}
     assert _http_params("/transfers", {"player": "0"}) is None
     assert _http_params("/trophies", {"player": 0, "coach": 9}) == {"coach": 9}
+
+
+def test_non_positive_identity_is_not_a_contract_error() -> None:
+    assert _non_positive_identity("/players/profiles", {"player": 0})
+    assert _non_positive_identity("/coachs", {"id": 0})
+    assert _non_positive_identity("/trophies", {"coach": 0})
+    assert not _non_positive_identity("/trophies", {"player": 0, "coach": 9})
+    assert not _non_positive_identity("/players", {"league": 0, "season": 2026})
+    assert not _non_positive_identity("/players/profiles", {})
 
 
 def test_http_error_label_includes_status() -> None:

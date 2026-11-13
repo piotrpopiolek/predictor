@@ -113,6 +113,32 @@ async def test_fetch_all_pages(valid_env: None) -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetch_all_pages_stops_after_max_pages(valid_env: None) -> None:
+    calls: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = request.url.params.get("page")
+        calls.append(page)
+        current = int(page or "1")
+        return httpx.Response(
+            200,
+            json=_envelope([{"id": current}], current=current, total=5),
+        )
+
+    client = _client(httpx.MockTransport(handler))
+    try:
+        items, current, total = await fetch_all_pages(
+            client, "/players", start_page=3, max_pages=1
+        )
+    finally:
+        await client.aclose()
+    assert calls == ["3"]
+    assert items == [{"id": 3}]
+    assert current == 3
+    assert total == 5
+
+
+@pytest.mark.asyncio
 async def test_fetch_all_pages_omits_page_on_single_page(valid_env: None) -> None:
     seen_page: list[bool] = []
 

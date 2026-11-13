@@ -90,6 +90,8 @@ _COVERAGE_BY_ENDPOINT: dict[str, str] = {
 }
 
 _PLAYER_ENDPOINTS = frozenset({"/players", "/players/profiles", *TOP_PLAYER_ENDPOINTS})
+# /players is dozens of pages. One page per turn lets the live poll run between them.
+_PLAYERS_PAGES_PER_TURN = 1
 
 
 class GlobalIngest:
@@ -113,22 +115,24 @@ class GlobalIngest:
         return snapshot.remaining > 0
 
     async def refresh_pending(self) -> None:
+        """One batch per tick for every global endpoint, not only /players.
+
+        The scheduler returns to the live poll before the next history batch.
+        /players also stores a single page per task (see _PLAYERS_PAGES_PER_TURN).
+        """
         if not self._quota_left():
             return
         await self._requeue_stale()
         await self._skip_lookups()
-        left = self._fetch_limit()
-        while left > 0:
-            if not self._quota_left():
-                return
-            room = min(left, self._fetch_limit(), self._concurrency())
-            if room <= 0:
-                return
-            task_ids = await self._claim_ids(room)
-            if not task_ids:
-                return
-            await self._run_batch(task_ids)
-            left -= len(task_ids)
+        if not self._quota_left():
+            return
+        room = min(self._fetch_limit(), self._concurrency())
+        if room <= 0:
+            return
+        task_ids = await self._claim_ids(room)
+        if not task_ids:
+            return
+        await self._run_batch(task_ids)
 
     def _concurrency(self) -> int:
         if self._per_tick is not None:
@@ -220,12 +224,26 @@ class GlobalIngest:
                 )
             return True
         query = _http_params(endpoint, params)
+        start_page = _resume_page(endpoint, params)
         if query is None:
-            await self._fail(task_id, "permanent_error", "bad_params")
+            if _non_positive_identity(endpoint, params):
+                await self._finish(
+                    task_id,
+                    "not_supported",
+                    params={**params, "reason": "non_positive_id"},
+                )
+            else:
+                await self._fail(task_id, "permanent_error", "bad_params")
             return True
         try:
             items, current, total = await fetch_all_pages(
-                self._client, endpoint, params=query
+                self._client,
+                endpoint,
+                params=query,
+                start_page=start_page,
+                max_pages=(
+                    _PLAYERS_PAGES_PER_TURN if endpoint == "/players" else None
+                ),
             )
         except AuthBlockedError:
             raise
@@ -239,6 +257,11 @@ class GlobalIngest:
             await self._fail(task_id, "retryable_error", _http_error_label(exc))
             return True
         if not items:
+            if start_page > 1 and endpoint == "/players":
+                await self._release_player_page(
+                    task_id, params, current=current, total=total
+                )
+                return True
             if retry_empty:
                 await self._retry_or_empty(
                     task_id,
@@ -263,10 +286,19 @@ class GlobalIngest:
                 extra = await self._persist(session, endpoint, params, items)
                 merged = dict(task.params)
                 merged.update(extra)
+                more_players = (
+                    endpoint == "/players" and current < total and total > 0
+                )
+                if more_players:
+                    merged["page"] = current + 1
+                    status = "pending"
+                else:
+                    merged.pop("page", None)
+                    status = "complete"
                 await complete_task(
                     session,
                     task,
-                    "complete",
+                    status,
                     params=merged,
                     paging_current=current,
                     paging_total=total,
@@ -451,6 +483,33 @@ class GlobalIngest:
     async def _fail(self, task_id: int, status: str, error: str) -> None:
         await fail_task(self._session_factory, task_id, status, error)
 
+    async def _release_player_page(
+        self,
+        task_id: int,
+        params: dict[str, Any],
+        *,
+        current: int,
+        total: int,
+    ) -> None:
+        """Keep a resumed /players list pending when this page had no rows."""
+        if current < total:
+            await self._finish(
+                task_id,
+                "pending",
+                params={**params, "page": current + 1},
+                paging_current=current,
+                paging_total=total,
+            )
+            return
+        done = {key: value for key, value in params.items() if key != "page"}
+        await self._finish(
+            task_id,
+            "complete",
+            params=done,
+            paging_current=current,
+            paging_total=total,
+        )
+
 
 def _as_of_date(params: dict[str, Any]) -> date:
     raw_date = params.get("date")
@@ -476,6 +535,45 @@ def _positive_id(raw: object | None) -> int | None:
     if value is None or value <= 0:
         return None
     return value
+
+
+def _non_positive_identity(endpoint: str, params: dict[str, Any]) -> bool:
+    """True when the task names an id the vendor cannot look up."""
+    if endpoint in {"/trophies", "/sidelined"}:
+        present = [params[key] for key in ("player", "coach") if key in params]
+        if not present:
+            return False
+        non_positive = False
+        for raw in present:
+            if _positive_id(raw) is not None:
+                return False
+            parsed = as_int(raw)
+            if parsed is not None and parsed <= 0:
+                non_positive = True
+        return non_positive
+    key = {
+        "/players/profiles": "player",
+        "/players/teams": "player",
+        "/transfers": "player",
+        "/players/squads": "team",
+        "/teams/statistics": "team",
+        "/teams": "id",
+        "/venues": "id",
+        "/coachs": "id",
+    }.get(endpoint)
+    if key is None:
+        return False
+    parsed = as_int(params.get(key))
+    return parsed is not None and parsed <= 0
+
+
+def _resume_page(endpoint: str, params: dict[str, Any]) -> int:
+    if endpoint != "/players":
+        return 1
+    page = as_int(params.get("page"))
+    if page is None or page < 1:
+        return 1
+    return page
 
 
 def _http_params(endpoint: str, params: dict[str, Any]) -> dict[str, str | int] | None:

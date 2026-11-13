@@ -28,6 +28,17 @@ class RetryableHttpError(RuntimeError):
         super().__init__(f"retryable {label}")
 
 
+class MinuteRateLimited(RetryableHttpError):
+    """HTTP 200 whose body says the per-minute subscription cap is spent.
+
+    The client raises this once. Task deferral lives in ``fail_task``, so the
+    writer does not sleep inside the HTTP retry loop.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(429)
+
+
 class QuotaExhaustedError(RuntimeError):
     """Stop paging when remaining quota hits zero; do not mark the task complete."""
 

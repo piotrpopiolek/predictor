@@ -11,12 +11,17 @@ from tenacity.wait import wait_base
 from predictor.client.errors import (
     AuthBlockedError,
     FootballHttpError,
+    MinuteRateLimited,
     QuotaExhaustedError,
     RetryableHttpError,
     WriterLockRequiredError,
 )
 from predictor.client.football import FootballClient
-from predictor.client.quota import quota_from_http, requests_limit_reached
+from predictor.client.quota import (
+    minute_rate_limit_reached,
+    quota_from_http,
+    requests_limit_reached,
+)
 from predictor.client.retry import WaitRetryAfterOrJitter, parse_retry_after
 from predictor.schemas.api_football import ApiEnvelope
 from predictor.schemas.settings import load_settings
@@ -120,6 +125,45 @@ def test_requests_limit_reached_ignores_other_errors() -> None:
     assert requests_limit_reached([]) is False
     assert requests_limit_reached({"token": "missing"}) is False
     assert requests_limit_reached({"requests": "plan does not include this"}) is False
+
+
+MINUTE_LIMIT_BODY = {
+    "get": "players",
+    "errors": {
+        "rateLimit": (
+            "Too many requests. You have exceeded the limit of requests "
+            "per minute of your subscription."
+        )
+    },
+    "results": 0,
+    "paging": {"current": 1, "total": 1},
+    "response": [],
+}
+
+
+def test_minute_rate_limit_reached_is_only_the_rate_limit_key() -> None:
+    assert minute_rate_limit_reached(MINUTE_LIMIT_BODY["errors"]) is True
+    assert minute_rate_limit_reached(LIMIT_BODY["errors"]) is False
+    assert minute_rate_limit_reached([]) is False
+    assert minute_rate_limit_reached({"rateLimit": "  "}) is False
+
+
+@pytest.mark.asyncio
+async def test_minute_rate_limit_is_not_retried_in_the_client(valid_env: None) -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json=MINUTE_LIMIT_BODY)
+
+    client = _client(True, httpx.MockTransport(handler))
+    try:
+        with pytest.raises(MinuteRateLimited) as raised:
+            await client.get("/players", params={"league": 5, "season": 2026})
+    finally:
+        await client.aclose()
+    assert calls["n"] == 1
+    assert raised.value.retry_after is None
 
 
 def test_quota_from_http_trusts_daily_limit_body_over_header() -> None:

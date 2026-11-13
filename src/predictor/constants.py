@@ -41,6 +41,8 @@ HTTP_POOL_TIMEOUT_SECONDS = 10.0
 HTTP_MAX_CONNECTIONS = 10
 HTTP_MAX_KEEPALIVE_CONNECTIONS = 5
 HTTP_RETRY_ATTEMPTS = 5
+# API-Football answers a spent minute with HTTP 200 and errors.rateLimit.
+MINUTE_RATE_LIMIT_RETRY_SECONDS = 60.0
 
 # Last calls kept for the next /fixtures?live=all poll. Context and odds
 # stop before this. History stops earlier, once the live reserve is touched.
