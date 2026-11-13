@@ -241,9 +241,7 @@ class GlobalIngest:
                 endpoint,
                 params=query,
                 start_page=start_page,
-                max_pages=(
-                    _PLAYERS_PAGES_PER_TURN if endpoint == "/players" else None
-                ),
+                max_pages=(_PLAYERS_PAGES_PER_TURN if endpoint == "/players" else None),
             )
         except AuthBlockedError:
             raise
@@ -286,9 +284,7 @@ class GlobalIngest:
                 extra = await self._persist(session, endpoint, params, items)
                 merged = dict(task.params)
                 merged.update(extra)
-                more_players = (
-                    endpoint == "/players" and current < total and total > 0
-                )
+                more_players = endpoint == "/players" and current < total and total > 0
                 if more_players:
                     merged["page"] = current + 1
                     status = "pending"
