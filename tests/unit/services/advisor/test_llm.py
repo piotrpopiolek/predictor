@@ -65,6 +65,10 @@ def _assert_no_bet(verdict: Verdict, detail: str) -> None:
     assert verdict.status == ("invalid_output" if detail in broken else detail)
     assert verdict.coupons == ()
     assert verdict.detail == detail
+    if detail in broken:
+        assert verdict.decision is None
+    else:
+        assert verdict.decision is not None
 
 
 def test_worker_settings_do_not_require_an_llm_key() -> None:
@@ -120,6 +124,8 @@ def test_valid_coupon_uses_database_odds_not_the_reply() -> None:
     )
     verdict = review_model_output(raw, _playable(1, 2), set(), min_odd=MIN, max_legs=3)
     assert verdict.status == "ok"
+    assert verdict.detail == ""
+    assert verdict.decision is not None
     assert verdict.coupons[0].fixture_ids == (1, 2)
     assert verdict.coupons[0].combined_odd == ODD * ODD
 
@@ -296,6 +302,46 @@ def test_single_rules_reject_or_accept_by_partners_and_ev() -> None:
         max_legs=3,
     )
     assert weak_pair.status == "ok"
+
+
+def test_exact_limits_and_a_reject_outside_the_coupon_are_accepted() -> None:
+    three = review_model_output(
+        _raw(
+            [_row(1, "bet"), _row(2, "bet"), _row(3, "bet")],
+            [[1, 2, 3]],
+        ),
+        _playable(1, 2, 3),
+        set(),
+        min_odd=Decimal("1.0"),
+        max_legs=3,
+    )
+    assert three.status == "ok"
+    at_floor = review_model_output(
+        _raw(
+            [_row(1, "bet", probability="0.40"), _row(2, "bet", probability="0.40")],
+            [[1, 2]],
+        ),
+        _playable(1, 2),
+        set(),
+        min_odd=ODD * ODD,
+        max_legs=3,
+    )
+    assert at_floor.status == "ok"
+    mixed = review_model_output(
+        _raw(
+            [
+                _row(1, "bet", probability="0.40"),
+                _row(2, "bet", probability="0.40"),
+                _row(3, "reject"),
+            ],
+            [[1, 2]],
+        ),
+        _playable(1, 2, 3),
+        set(),
+        min_odd=MIN,
+        max_legs=3,
+    )
+    assert mixed.status == "ok"
 
 
 class _Models:

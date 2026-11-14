@@ -13,11 +13,29 @@ from predictor.services.advisor.budget import (
     budget_cap,
     call_cost,
     estimate_call_cost,
+    estimate_tokens,
     utc_day_bounds,
 )
 
 PRICE_IN = Decimal("0.50")
 PRICE_OUT = Decimal("1.25")
+
+
+def test_call_cost_rounds_a_half_quantum_up() -> None:
+    assert call_cost(
+        50,
+        0,
+        0,
+        price_input=Decimal("1"),
+        price_output=Decimal("1"),
+    ) == Decimal("0.0001")
+
+
+def test_estimate_tokens_floors_short_prompts_at_one_and_keeps_thoughts_at_zero() -> (
+    None
+):
+    assert estimate_tokens("") == (1, RESERVED_OUTPUT_TOKENS, 0)
+    assert estimate_tokens("abcde") == (1, RESERVED_OUTPUT_TOKENS, 0)
 
 
 def test_call_cost_prices_thoughts_as_output() -> None:
@@ -45,6 +63,7 @@ def test_estimate_reserves_output_tokens() -> None:
 
 def test_sandbox_stops_at_seventy_percent_and_recommendation_keeps_the_rest() -> None:
     assert budget_cap("sandbox") == Decimal("7.0000")
+    assert budget_cap("sandbox", Decimal("0.0015")) == Decimal("0.0011")
     assert budget_cap("recommendation") == Decimal("10")
     assert budget_allows(Decimal("6.9900"), Decimal("0.0100"), mode="sandbox")
     assert not budget_allows(Decimal("7.0000"), Decimal("0.0001"), mode="sandbox")
@@ -52,12 +71,15 @@ def test_sandbox_stops_at_seventy_percent_and_recommendation_keeps_the_rest() ->
     assert not budget_allows(
         Decimal("9.9900"), Decimal("0.0200"), mode="recommendation"
     )
+    assert not budget_allows(
+        Decimal("0"), Decimal("1"), mode="sandbox", limit=Decimal("1")
+    )
     with pytest.raises(ValueError):
         budget_cap("summary")
 
 
 def test_utc_day_starts_at_midnight() -> None:
-    now = datetime(2026, 10, 18, 23, 30, tzinfo=UTC)
+    now = datetime(2026, 10, 18, 23, 30, 45, 123456, tzinfo=UTC)
     start, end = utc_day_bounds(now)
     assert start == datetime(2026, 10, 18, tzinfo=UTC)
     assert end == datetime(2026, 10, 19, tzinfo=UTC)

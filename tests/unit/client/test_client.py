@@ -344,6 +344,9 @@ def test_parse_retry_after_http_date() -> None:
     parsed = parse_retry_after(value)
     assert parsed is not None
     assert 0 <= parsed <= 40
+    past = datetime.now(UTC) - timedelta(hours=1)
+    assert parse_retry_after(format_datetime(past)) == 0.0
+    assert parse_retry_after("Wed, 21 Oct 2015 07:28:00") == 0.0
 
 
 def test_wait_prefers_retry_after() -> None:
@@ -359,3 +362,26 @@ def test_wait_prefers_retry_after() -> None:
         outcome = _Outcome()
 
     assert wait(_State()) == 7.0  # type: ignore[arg-type]
+    fallback = wait._fallback
+    assert fallback.initial == 1.0
+    assert fallback.max == 60.0
+    assert fallback.jitter == 1.0
+
+    class _Ignored:
+        attempt_number = 1
+
+        def __init__(self, failed: bool, retry_after: float | None) -> None:
+            self.outcome = self._Outcome(failed, retry_after)
+
+        class _Outcome:
+            def __init__(self, failed: bool, retry_after: float | None) -> None:
+                self.failed = failed
+                self.retry_after = retry_after
+
+            def exception(self) -> RetryableHttpError:
+                return RetryableHttpError(429, retry_after=self.retry_after)
+
+    assert wait(_Ignored(False, 7.0)) != 7.0  # type: ignore[arg-type]
+    skipped = wait(_Ignored(True, None))  # type: ignore[arg-type]
+    assert isinstance(skipped, float)
+    assert skipped != 7.0

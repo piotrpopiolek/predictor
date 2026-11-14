@@ -65,6 +65,8 @@ def test_over_line_matches_the_driver_total_and_not_another() -> None:
     assert over_line_matches("Over 1.5", "", 1)
     assert not over_line_matches("Over", "2.5", 1)
     assert not over_line_matches("Under", "1.5", 1)
+    assert not over_line_matches("Over 1.5", "2.5", 1)
+    assert not over_line_matches("Over 2.5", "1.5", 1)
 
 
 def test_quote_rejects_snapshot_from_a_previous_score() -> None:

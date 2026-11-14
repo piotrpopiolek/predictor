@@ -156,13 +156,27 @@ def test_known_extra_time_market_is_playable_at_minute_110() -> None:
     )
     assert result.playable
     assert result.n == 0
+    both_sides = assess(
+        _view(
+            status_short="ET",
+            elapsed=100,
+            extratime_home=2,
+            extratime_away=1,
+        ),
+        LIMITS,
+        NOW,
+    )
+    assert both_sides.playable
+    assert both_sides.n == 3
 
 
 def test_penalties_and_finished_matches_are_not_playable() -> None:
     assert assess(_view(status_short="P"), LIMITS, NOW).code is Skip.PENALTIES
     assert assess(_view(status_short="FT"), LIMITS, NOW).code is Skip.NOT_IN_PLAY
     assert assess(_view(status_short="SUSP"), LIMITS, NOW).code is Skip.NOT_IN_PLAY
-    assert assess(_view(goals_home=None), LIMITS, NOW).code is Skip.NOT_IN_PLAY
+    missing_goals = assess(_view(goals_home=None), LIMITS, NOW)
+    assert missing_goals.code is Skip.NOT_IN_PLAY
+    assert missing_goals.period is Period.REGULATION
 
 
 def test_minute_cutoff_allows_the_limit_and_half_time_without_a_clock() -> None:
@@ -173,6 +187,10 @@ def test_minute_cutoff_allows_the_limit_and_half_time_without_a_clock() -> None:
     assert assess(_view(status_short="ET", elapsed=110), LIMITS, NOW).playable
     extra = assess(_view(status_short="ET", elapsed=110, extra=1), LIMITS, NOW)
     assert extra.code is Skip.MINUTE_CUTOFF
+    assert extra.period is Period.EXTRA_TIME
+    assert extra.n == 0
+    assert extra.state is not None
+    assert extra.state.ordinal == 1
 
 
 def test_missing_suspended_and_stale_quotes() -> None:
@@ -223,10 +241,18 @@ def test_coupon_threshold_and_leg_count() -> None:
     assert not coupon_within_limits((), min_odd=Decimal("1.6"), max_legs=3)
     assert not coupon_within_limits((Decimal("1"),), min_odd=Decimal("1.6"), max_legs=3)
     assert coupon_within_limits((Decimal("1.600"),), min_odd=Decimal("1.6"), max_legs=3)
+    assert coupon_within_limits(
+        (Decimal("1.20"), Decimal("1.20"), Decimal("1.20")),
+        min_odd=Decimal("1.6"),
+        max_legs=3,
+    )
+    assert combined_odd((Decimal("1.2005"),)) == Decimal("1.201")
     with pytest.raises(ValueError):
         combined_odd(())
     with pytest.raises(ValueError):
         combined_odd((Decimal("0.9"),))
+    with pytest.raises(ValueError):
+        combined_odd((Decimal("1"),))
 
 
 @pytest.mark.parametrize(
@@ -340,6 +366,13 @@ def test_coupon_threshold_and_leg_count() -> None:
             Settlement.MANUAL,
             id="missing_extra_time_score_needs_a_person",
         ),
+        pytest.param(
+            Period.EXTRA_TIME,
+            0,
+            _final(status_short="AET", extratime_home=1, extratime_away=None),
+            Settlement.MANUAL,
+            id="one_sided_extra_time_score_needs_a_person",
+        ),
     ],
 )
 def test_settle_leg(
@@ -401,6 +434,18 @@ def test_active_odd_drops_void_and_pending_legs() -> None:
 )
 def test_settled_pnl(outcome: Settlement, expected: Decimal) -> None:
     assert settled_pnl(Decimal("10.00"), Decimal("1.500"), outcome) == expected
+
+
+def test_settled_pnl_rounds_half_up() -> None:
+    assert settled_pnl(
+        Decimal("1.00"),
+        Decimal("1.00"),
+        Settlement.WON,
+        keep=Decimal("1.005"),
+    ) == Decimal("0.01")
+    assert settled_pnl(Decimal("1.005"), Decimal("1.500"), Settlement.LOST) == (
+        Decimal("-1.01")
+    )
 
 
 def test_unsettled_pnl_is_rejected() -> None:
@@ -504,6 +549,22 @@ def test_live_leg_reads_goals_during_susp_and_int() -> None:
     assert live_leg_progress(Period.REGULATION, 1, susp) is LiveProgress.HIT
     paused = _live(status_short="INT", goals_home=1, goals_away=0)
     assert live_leg_progress(Period.REGULATION, 1, paused) is LiveProgress.OPEN
+    fulltime = _live(
+        status_short="SUSP",
+        goals_home=2,
+        goals_away=0,
+        fulltime_home=1,
+        fulltime_away=0,
+    )
+    assert period_score_now(Period.REGULATION, fulltime) == (1, 0)
+    partial = _live(
+        status_short="SUSP",
+        goals_home=2,
+        goals_away=0,
+        fulltime_home=1,
+        fulltime_away=None,
+    )
+    assert period_score_now(Period.REGULATION, partial) == (2, 0)
 
 
 def test_live_leg_finished_extra_time_without_et_columns_is_lost() -> None:
@@ -558,6 +619,37 @@ def test_period_score_now_matches_progress_board() -> None:
         extratime_away=None,
     )
     assert period_score_now(Period.EXTRA_TIME, et) == (1, 0)
+    uneven = _live(
+        status_short="ET",
+        goals_home=2,
+        goals_away=1,
+        fulltime_home=1,
+        fulltime_away=0,
+    )
+    assert period_score_now(Period.EXTRA_TIME, uneven) == (1, 1)
+    columns = _live(
+        status_short="ET",
+        goals_home=1,
+        goals_away=0,
+        fulltime_home=1,
+        fulltime_away=0,
+        extratime_home=2,
+        extratime_away=0,
+    )
+    assert period_score_now(Period.EXTRA_TIME, columns) == (2, 0)
+    assert (
+        period_score_now(
+            Period.EXTRA_TIME,
+            _live(status_short="ET", goals_home=2, goals_away=1),
+        )
+        is None
+    )
+    assert (
+        period_score_now(Period.REGULATION, _live(goals_home=1, goals_away=None))
+        is None
+    )
+    blank_fulltime = _live(status_short="ET")
+    assert live_leg_progress(Period.REGULATION, 0, blank_fulltime) is LiveProgress.LOST
 
 
 def test_prompt_gate_misses_period_goals_favorite_and_short_late() -> None:
