@@ -73,6 +73,8 @@ On every push and pull request, GitHub Actions runs `make test-ci`:
 
 A second job runs `pip-audit` on the production dependencies. Tests that touch the model use a fake client and do not call Gemini.
 
+Mutation testing is local only and is not a CI gate. `make mutmut` runs mutmut against the coupon-logic unit tests and writes survivors to `.mutmut-out/`. The 80% branch-coverage check stays the automated gate.
+
 ## Run locally
 
 Requires Docker, and GNU Make (on Windows, Git Bash or the PowerShell script `scripts/test-ci.ps1`).

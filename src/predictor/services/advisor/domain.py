@@ -19,10 +19,12 @@ from predictor.constants import (
     PAYOUT_KEEP,
 )
 from predictor.services.next_goal_rules import (
-    LLM_MAX_FAVORITE_ODD,
-    LLM_MAX_PERIOD_GOALS,
-    match_minute,
+    LLM_MAX_FAVORITE_ODD as LLM_MAX_FAVORITE_ODD,
 )
+from predictor.services.next_goal_rules import (
+    LLM_MAX_PERIOD_GOALS as LLM_MAX_PERIOD_GOALS,
+)
+from predictor.services.next_goal_rules import match_minute
 
 _ODD_QUANTUM = Decimal("0.001")
 _MONEY_QUANTUM = Decimal("0.01")

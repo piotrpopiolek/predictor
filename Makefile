@@ -13,7 +13,7 @@ COMPOSE_OBS := docker compose -f docker-compose.yml -f docker-compose.observabil
 COMPOSE_PROD := docker compose -f docker-compose.prod.yml -f docker-compose.observability.yml
 WORKER := $(COMPOSE) run --rm --no-deps worker
 
-.PHONY: up down logs migrate pytest pytest-unit test-ci up-obs up-prod down-prod build-prod promtool backup-restore-test
+.PHONY: up down logs migrate pytest pytest-unit test-ci mutmut up-obs up-prod down-prod build-prod promtool backup-restore-test
 
 up:
 	$(COMPOSE) up -d --build
@@ -45,6 +45,14 @@ backup-restore-test:
 	$(COMPOSE) up -d postgres --wait
 	$(COMPOSE) cp scripts/backup/test-restore.sh postgres:/tmp/test-restore.sh
 	$(COMPOSE) exec -T postgres bash /tmp/test-restore.sh
+
+# Local only. Hunts surviving mutants in coupon logic. Not part of test-ci.
+mutmut:
+	mkdir -p .mutmut-out
+	$(COMPOSE) run --rm --no-deps -T --user root --entrypoint bash \
+	  -v "$(CURDIR)/.mutmut-diagnostic.sh:/tmp/run.sh:ro" \
+	  -v "$(CURDIR)/.mutmut-out:/mutmut-out" \
+	  worker /tmp/run.sh
 
 test-ci:
 	$(COMPOSE) build
