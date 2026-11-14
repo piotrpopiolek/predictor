@@ -155,7 +155,7 @@ def test_played_coupons_endpoint_is_read_only() -> None:
     played = played_path.read_text(encoding="utf-8")
     assert '/advisor/coupons"' in http
     assert "/advisor/coupons.json" in http
-    assert http.index('@app.get("/advisor/coupons"') < http.index("@app.post")
+    assert http.index('app.get("/advisor/coupons"') < http.index("app.post(")
     for banned in (
         "session.add",
         "session.delete",
@@ -183,8 +183,8 @@ def test_advisor_browse_is_read_only() -> None:
         ".commit(",
     ):
         assert banned not in browse
-    assert "@app.post" in http
-    assert http.index('@app.get("/advisor/browse"') < http.index("@app.post")
+    assert "app.post(" in http
+    assert http.index('app.get("/advisor/browse"') < http.index("app.post(")
 
 
 def test_advisor_process_does_not_call_api_football() -> None:
@@ -328,13 +328,13 @@ def test_status_api_surface_and_no_get_settle() -> None:
     assert "mutation_token_ok" in source
     assert "operator_bet_token" in source
     assert "prometheus_metrics_token" in source
-    assert source.index("operator_bet_token") < source.index("@app.post")
+    assert 'app.post("/live/bets"' in source
     assert "await settle_open_tickets" in source
-    # No await settle on read helpers used by GET
+    # Settle stays inside the place handler, not on a GET.
     assert "await settle_open_from_engine" not in source
-    assert source.index('@app.post("/live/bets"') < source.index(
-        "await settle_open_tickets"
-    )
+    place = source.index("async def place_live_bet")
+    settle = source.index("await settle_open_tickets")
+    assert place < settle < source.index("async def ", settle)
 
 
 def test_mutation_token_accepts_bearer_or_form() -> None:

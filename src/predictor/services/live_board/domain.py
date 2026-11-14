@@ -16,13 +16,16 @@ from decimal import (
 )
 from typing import Any
 
-from predictor.services.advisor.domain import (
-    LLM_MAX_FAVORITE_ODD,
-    LLM_MAX_PERIOD_GOALS,
-)
 from predictor.services.ingest.next_goal import (
     is_next_goal_market,
     normalized_bet_name,
+)
+from predictor.services.next_goal_rules import (
+    LLM_MAX_FAVORITE_ODD,
+    LLM_MAX_PERIOD_GOALS,
+)
+from predictor.services.next_goal_rules import (
+    match_minute as match_minute,
 )
 
 REFRESH_SECONDS = 15
@@ -423,23 +426,6 @@ def event_kind(event_type: str, detail: str | None) -> str | None:
 
 def goal_clock_minute(minute: int, extra: int | None) -> int:
     return int(minute) + int(extra or 0)
-
-
-def match_minute(
-    status_short: str, elapsed: int | None, extra: int | None
-) -> int | None:
-    """Match minute as the API clock shows it, plus stoppage.
-
-    In extra time ``elapsed`` is already 91–120. ``clock_sort_key`` adds 90
-    only so those matches sort after regulation.
-    """
-    added = extra or 0
-    if status_short == "HT":
-        base = 45 if elapsed is None else elapsed
-        return base + added
-    if elapsed is None:
-        return None
-    return elapsed + added
 
 
 def scoring_team_id(

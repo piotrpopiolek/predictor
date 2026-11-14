@@ -117,279 +117,299 @@ async def load_recommendation_html(engine: AsyncEngine) -> str:
     return render_recommendations(view)
 
 
+def _auth(request: Request, authorization: str | None, form_token: str | None) -> None:
+    token = cast(str, request.app.state.mutation_token)
+    if not mutation_token_ok(authorization, form_token, token):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+async def played_coupons(
+    request: Request, kind: str = "all", limit: int = 50
+) -> HTMLResponse:
+    coupons = await _played(request.app, kind=kind, limit=limit)
+    return HTMLResponse(render_played_coupons(coupons, kind=kind, limit=limit))
+
+
+async def played_coupons_json(
+    request: Request, kind: str = "all", limit: int = 50
+) -> dict[str, Any]:
+    coupons = await _played(request.app, kind=kind, limit=limit)
+    return played_coupons_as_dict(coupons)
+
+
+async def browse_index(request: Request) -> HTMLResponse:
+    factory = make_session_factory(_engine(request))
+    try:
+        async with factory() as session:
+            counts = await table_counts(session)
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    return HTMLResponse(render_browse_index(counts))
+
+
+async def browse_index_json(request: Request) -> list[dict[str, Any]]:
+    factory = make_session_factory(_engine(request))
+    try:
+        async with factory() as session:
+            return await table_counts(session)
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+
+
+async def browse_table_json(table: str, request: Request) -> JSONResponse:
+    return JSONResponse(await _browse_list(request.app, table, request))
+
+
+async def browse_row_json(request: Request, table: str, row_id: int) -> JSONResponse:
+    return JSONResponse(await _browse_row(request.app, table, row_id))
+
+
+async def browse_table(table: str, request: Request) -> HTMLResponse:
+    payload = await _browse_list(request.app, table, request)
+    return HTMLResponse(
+        render_browse_list(
+            table=payload["table"],
+            rows=payload["rows"],
+            filters=payload["filters"],
+            limit=payload["limit"],
+            next_before_id=payload["next_before_id"],
+        )
+    )
+
+
+async def browse_row(request: Request, table: str, row_id: int) -> HTMLResponse:
+    payload = await _browse_row(request.app, table, row_id)
+    return HTMLResponse(render_browse_row(table=payload["table"], row=payload["row"]))
+
+
+async def recommendations(request: Request) -> HTMLResponse:
+    factory = make_session_factory(_engine(request))
+    try:
+        async with factory() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        AdvisorCoupon.id,
+                        AdvisorStrategy.name,
+                        AdvisorCoupon.status,
+                        AdvisorCoupon.combined_odd,
+                    )
+                    .join(
+                        AdvisorStrategyVersion,
+                        AdvisorStrategyVersion.id == AdvisorCoupon.strategy_version_id,
+                    )
+                    .join(
+                        AdvisorStrategy,
+                        AdvisorStrategy.id == AdvisorStrategyVersion.strategy_id,
+                    )
+                    .where(AdvisorCoupon.mode == "recommendation")
+                    .order_by(AdvisorCoupon.id.desc())
+                    .limit(50)
+                )
+            ).all()
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    view = tuple((int(row[0]), str(row[1]), str(row[2]), _odd(row[3])) for row in rows)
+    return HTMLResponse(render_recommendations(view))
+
+
+async def recommendation_card(request: Request, coupon_id: int) -> HTMLResponse:
+    factory = make_session_factory(_engine(request))
+    try:
+        async with factory() as session:
+            card = await _card(session, coupon_id)
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    if card is None:
+        raise HTTPException(status_code=404, detail="missing")
+    return HTMLResponse(card)
+
+
+async def accept(
+    request: Request,
+    coupon_id: int,
+    token_field: str | None = Form(default=None, alias="token"),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse:
+    _auth(request, authorization, token_field)
+    await _act(request.app, lambda session: accept_coupon(session, coupon_id, _now()))
+    return RedirectResponse(f"/advisor/recommendations/{coupon_id}", status_code=303)
+
+
+async def reject(
+    request: Request,
+    coupon_id: int,
+    token_field: str | None = Form(default=None, alias="token"),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse:
+    _auth(request, authorization, token_field)
+    await _act(
+        request.app, lambda session: reject_coupon(session, coupon_id, _now(), "")
+    )
+    return RedirectResponse(f"/advisor/recommendations/{coupon_id}", status_code=303)
+
+
+async def place(
+    request: Request,
+    coupon_id: int,
+    token_field: str | None = Form(default=None, alias="token"),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse:
+    _auth(request, authorization, token_field)
+    await _act(request.app, lambda session: place_coupon(session, coupon_id, _now()))
+    return RedirectResponse(f"/advisor/recommendations/{coupon_id}", status_code=303)
+
+
+async def not_placed(
+    request: Request,
+    coupon_id: int,
+    token_field: str | None = Form(default=None, alias="token"),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse:
+    _auth(request, authorization, token_field)
+    await _act(request.app, lambda session: mark_not_placed(session, coupon_id, _now()))
+    return RedirectResponse(f"/advisor/recommendations/{coupon_id}", status_code=303)
+
+
+async def modify(
+    request: Request,
+    coupon_id: int,
+    stake: str = Form(default=""),
+    odds: str = Form(default=""),
+    remove: str = Form(default=""),
+    token_field: str | None = Form(default=None, alias="token"),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse:
+    _auth(request, authorization, token_field)
+    try:
+        stake_value = Decimal(stake)
+        odd_map = _odds(odds)
+        removed = _ids(remove)
+    except ValueError, ArithmeticError:
+        raise HTTPException(status_code=400, detail="invalid_form") from None
+    await _act(
+        request.app,
+        lambda session: modify_coupon(
+            session,
+            coupon_id,
+            _now(),
+            stake=stake_value,
+            odds=odd_map,
+            remove=removed,
+        ),
+    )
+    return RedirectResponse(f"/advisor/recommendations/{coupon_id}", status_code=303)
+
+
+async def strategies(request: Request) -> HTMLResponse:
+    factory = make_session_factory(_engine(request))
+    try:
+        async with factory() as session:
+            rows = (
+                await session.scalars(
+                    select(AdvisorStrategy)
+                    .where(AdvisorStrategy.kind == "llm")
+                    .order_by(AdvisorStrategy.id)
+                )
+            ).all()
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    view = tuple((int(row.id), row.name, row.status, "") for row in rows)
+    return HTMLResponse(render_strategies(view))
+
+
+async def promote(
+    request: Request,
+    strategy_id: int,
+    token_field: str | None = Form(default=None, alias="token"),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse:
+    _auth(request, authorization, token_field)
+    await _act(request.app, lambda session: promote_strategy(session, strategy_id))
+    return RedirectResponse("/advisor/strategies", status_code=303)
+
+
+async def pause(
+    request: Request,
+    strategy_id: int,
+    token_field: str | None = Form(default=None, alias="token"),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse:
+    _auth(request, authorization, token_field)
+    await _act(
+        request.app,
+        lambda session: set_strategy_status(session, strategy_id, "paused"),
+    )
+    return RedirectResponse("/advisor/strategies", status_code=303)
+
+
+async def resume(
+    request: Request,
+    strategy_id: int,
+    token_field: str | None = Form(default=None, alias="token"),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse:
+    _auth(request, authorization, token_field)
+    await _act(
+        request.app,
+        lambda session: set_strategy_status(session, strategy_id, "sandbox"),
+    )
+    return RedirectResponse("/advisor/strategies", status_code=303)
+
+
+async def launch(
+    request: Request,
+    strategy_id: int,
+    token_field: str | None = Form(default=None, alias="token"),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse:
+    _auth(request, authorization, token_field)
+    await _act(
+        request.app, lambda session: launch_proposed(session, strategy_id, limit=4)
+    )
+    return RedirectResponse("/advisor/strategies", status_code=303)
+
+
+async def settle_leg(
+    request: Request,
+    leg_id: int,
+    outcome: str = Form(default=""),
+    token_field: str | None = Form(default=None, alias="token"),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse:
+    _auth(request, authorization, token_field)
+    await _act(request.app, lambda session: manual_settle(session, leg_id, outcome))
+    return RedirectResponse("/advisor/recommendations", status_code=303)
+
+
 def mount_advisor_http(app: FastAPI, token: str) -> None:
-    def _auth(authorization: str | None, form_token: str | None) -> None:
-        if not mutation_token_ok(authorization, form_token, token):
-            raise HTTPException(status_code=401, detail="unauthorized")
+    """Register advisor routes. Each handler is its own function."""
+    app.state.mutation_token = token
+    app.get("/advisor/coupons")(played_coupons)
+    app.get("/advisor/coupons.json")(played_coupons_json)
+    app.get("/advisor/browse")(browse_index)
+    app.get("/advisor/browse.json")(browse_index_json)
+    app.get("/advisor/browse.json/{table}")(browse_table_json)
+    app.get("/advisor/browse.json/{table}/{row_id}")(browse_row_json)
+    app.get("/advisor/browse/{table}")(browse_table)
+    app.get("/advisor/browse/{table}/{row_id}")(browse_row)
+    app.get("/advisor/recommendations")(recommendations)
+    app.get("/advisor/recommendations/{coupon_id}")(recommendation_card)
+    app.post("/advisor/recommendations/{coupon_id}/accept")(accept)
+    app.post("/advisor/recommendations/{coupon_id}/reject")(reject)
+    app.post("/advisor/recommendations/{coupon_id}/place")(place)
+    app.post("/advisor/recommendations/{coupon_id}/not-placed")(not_placed)
+    app.post("/advisor/recommendations/{coupon_id}/modify")(modify)
+    app.get("/advisor/strategies")(strategies)
+    app.post("/advisor/strategies/{strategy_id}/promote")(promote)
+    app.post("/advisor/strategies/{strategy_id}/pause")(pause)
+    app.post("/advisor/strategies/{strategy_id}/resume")(resume)
+    app.post("/advisor/strategies/{strategy_id}/launch")(launch)
+    app.post("/advisor/legs/{leg_id}/settle")(settle_leg)
 
-    @app.get("/advisor/coupons")
-    async def played_coupons(kind: str = "all", limit: int = 50) -> HTMLResponse:
-        coupons = await _played(app, kind=kind, limit=limit)
-        return HTMLResponse(render_played_coupons(coupons, kind=kind, limit=limit))
 
-    @app.get("/advisor/coupons.json")
-    async def played_coupons_json(kind: str = "all", limit: int = 50) -> dict[str, Any]:
-        coupons = await _played(app, kind=kind, limit=limit)
-        return played_coupons_as_dict(coupons)
-
-    @app.get("/advisor/browse")
-    async def browse_index() -> HTMLResponse:
-        engine = cast(AsyncEngine, app.state.engine)
-        factory = make_session_factory(engine)
-        try:
-            async with factory() as session:
-                counts = await table_counts(session)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        return HTMLResponse(render_browse_index(counts))
-
-    @app.get("/advisor/browse.json")
-    async def browse_index_json() -> list[dict[str, Any]]:
-        engine = cast(AsyncEngine, app.state.engine)
-        factory = make_session_factory(engine)
-        try:
-            async with factory() as session:
-                return await table_counts(session)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-
-    @app.get("/advisor/browse.json/{table}")
-    async def browse_table_json(table: str, request: Request) -> JSONResponse:
-        return JSONResponse(await _browse_list(app, table, request))
-
-    @app.get("/advisor/browse.json/{table}/{row_id}")
-    async def browse_row_json(table: str, row_id: int) -> JSONResponse:
-        return JSONResponse(await _browse_row(app, table, row_id))
-
-    @app.get("/advisor/browse/{table}")
-    async def browse_table(table: str, request: Request) -> HTMLResponse:
-        payload = await _browse_list(app, table, request)
-        return HTMLResponse(
-            render_browse_list(
-                table=payload["table"],
-                rows=payload["rows"],
-                filters=payload["filters"],
-                limit=payload["limit"],
-                next_before_id=payload["next_before_id"],
-            )
-        )
-
-    @app.get("/advisor/browse/{table}/{row_id}")
-    async def browse_row(table: str, row_id: int) -> HTMLResponse:
-        payload = await _browse_row(app, table, row_id)
-        return HTMLResponse(
-            render_browse_row(table=payload["table"], row=payload["row"])
-        )
-
-    @app.get("/advisor/recommendations")
-    async def recommendations() -> HTMLResponse:
-        engine = cast(AsyncEngine, app.state.engine)
-        factory = make_session_factory(engine)
-        try:
-            async with factory() as session:
-                rows = (
-                    await session.execute(
-                        select(
-                            AdvisorCoupon.id,
-                            AdvisorStrategy.name,
-                            AdvisorCoupon.status,
-                            AdvisorCoupon.combined_odd,
-                        )
-                        .join(
-                            AdvisorStrategyVersion,
-                            AdvisorStrategyVersion.id
-                            == AdvisorCoupon.strategy_version_id,
-                        )
-                        .join(
-                            AdvisorStrategy,
-                            AdvisorStrategy.id == AdvisorStrategyVersion.strategy_id,
-                        )
-                        .where(AdvisorCoupon.mode == "recommendation")
-                        .order_by(AdvisorCoupon.id.desc())
-                        .limit(50)
-                    )
-                ).all()
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        view = tuple(
-            (int(row[0]), str(row[1]), str(row[2]), _odd(row[3])) for row in rows
-        )
-        return HTMLResponse(render_recommendations(view))
-
-    @app.get("/advisor/recommendations/{coupon_id}")
-    async def recommendation_card(coupon_id: int) -> HTMLResponse:
-        engine = cast(AsyncEngine, app.state.engine)
-        factory = make_session_factory(engine)
-        try:
-            async with factory() as session:
-                card = await _card(session, coupon_id)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        if card is None:
-            raise HTTPException(status_code=404, detail="missing")
-        return HTMLResponse(card)
-
-    @app.post("/advisor/recommendations/{coupon_id}/accept")
-    async def accept(
-        coupon_id: int,
-        token_field: str | None = Form(default=None, alias="token"),
-        authorization: str | None = Header(default=None),
-    ) -> RedirectResponse:
-        _auth(authorization, token_field)
-        await _act(app, lambda session: accept_coupon(session, coupon_id, _now()))
-        return RedirectResponse(
-            f"/advisor/recommendations/{coupon_id}", status_code=303
-        )
-
-    @app.post("/advisor/recommendations/{coupon_id}/reject")
-    async def reject(
-        coupon_id: int,
-        token_field: str | None = Form(default=None, alias="token"),
-        authorization: str | None = Header(default=None),
-    ) -> RedirectResponse:
-        _auth(authorization, token_field)
-        await _act(app, lambda session: reject_coupon(session, coupon_id, _now(), ""))
-        return RedirectResponse(
-            f"/advisor/recommendations/{coupon_id}", status_code=303
-        )
-
-    @app.post("/advisor/recommendations/{coupon_id}/place")
-    async def place(
-        coupon_id: int,
-        token_field: str | None = Form(default=None, alias="token"),
-        authorization: str | None = Header(default=None),
-    ) -> RedirectResponse:
-        _auth(authorization, token_field)
-        await _act(app, lambda session: place_coupon(session, coupon_id, _now()))
-        return RedirectResponse(
-            f"/advisor/recommendations/{coupon_id}", status_code=303
-        )
-
-    @app.post("/advisor/recommendations/{coupon_id}/not-placed")
-    async def not_placed(
-        coupon_id: int,
-        token_field: str | None = Form(default=None, alias="token"),
-        authorization: str | None = Header(default=None),
-    ) -> RedirectResponse:
-        _auth(authorization, token_field)
-        await _act(app, lambda session: mark_not_placed(session, coupon_id, _now()))
-        return RedirectResponse(
-            f"/advisor/recommendations/{coupon_id}", status_code=303
-        )
-
-    @app.post("/advisor/recommendations/{coupon_id}/modify")
-    async def modify(
-        coupon_id: int,
-        stake: str = Form(default=""),
-        odds: str = Form(default=""),
-        remove: str = Form(default=""),
-        token_field: str | None = Form(default=None, alias="token"),
-        authorization: str | None = Header(default=None),
-    ) -> RedirectResponse:
-        _auth(authorization, token_field)
-        try:
-            stake_value = Decimal(stake)
-            odd_map = _odds(odds)
-            removed = _ids(remove)
-        except ValueError, ArithmeticError:
-            raise HTTPException(status_code=400, detail="invalid_form") from None
-        await _act(
-            app,
-            lambda session: modify_coupon(
-                session,
-                coupon_id,
-                _now(),
-                stake=stake_value,
-                odds=odd_map,
-                remove=removed,
-            ),
-        )
-        return RedirectResponse(
-            f"/advisor/recommendations/{coupon_id}", status_code=303
-        )
-
-    @app.get("/advisor/strategies")
-    async def strategies() -> HTMLResponse:
-        engine = cast(AsyncEngine, app.state.engine)
-        factory = make_session_factory(engine)
-        try:
-            async with factory() as session:
-                rows = (
-                    await session.scalars(
-                        select(AdvisorStrategy)
-                        .where(AdvisorStrategy.kind == "llm")
-                        .order_by(AdvisorStrategy.id)
-                    )
-                ).all()
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        view = tuple((int(row.id), row.name, row.status, "") for row in rows)
-        return HTMLResponse(render_strategies(view))
-
-    @app.post("/advisor/strategies/{strategy_id}/promote")
-    async def promote(
-        strategy_id: int,
-        token_field: str | None = Form(default=None, alias="token"),
-        authorization: str | None = Header(default=None),
-    ) -> RedirectResponse:
-        _auth(authorization, token_field)
-        await _act(app, lambda session: promote_strategy(session, strategy_id))
-        return RedirectResponse("/advisor/strategies", status_code=303)
-
-    @app.post("/advisor/strategies/{strategy_id}/pause")
-    async def pause(
-        strategy_id: int,
-        token_field: str | None = Form(default=None, alias="token"),
-        authorization: str | None = Header(default=None),
-    ) -> RedirectResponse:
-        _auth(authorization, token_field)
-        await _act(
-            app, lambda session: set_strategy_status(session, strategy_id, "paused")
-        )
-        return RedirectResponse("/advisor/strategies", status_code=303)
-
-    @app.post("/advisor/strategies/{strategy_id}/resume")
-    async def resume(
-        strategy_id: int,
-        token_field: str | None = Form(default=None, alias="token"),
-        authorization: str | None = Header(default=None),
-    ) -> RedirectResponse:
-        _auth(authorization, token_field)
-        await _act(
-            app, lambda session: set_strategy_status(session, strategy_id, "sandbox")
-        )
-        return RedirectResponse("/advisor/strategies", status_code=303)
-
-    @app.post("/advisor/strategies/{strategy_id}/launch")
-    async def launch(
-        strategy_id: int,
-        token_field: str | None = Form(default=None, alias="token"),
-        authorization: str | None = Header(default=None),
-    ) -> RedirectResponse:
-        _auth(authorization, token_field)
-        await _act(app, lambda session: launch_proposed(session, strategy_id, limit=4))
-        return RedirectResponse("/advisor/strategies", status_code=303)
-
-    @app.post("/advisor/legs/{leg_id}/settle")
-    async def settle_leg(
-        leg_id: int,
-        outcome: str = Form(default=""),
-        token_field: str | None = Form(default=None, alias="token"),
-        authorization: str | None = Header(default=None),
-    ) -> RedirectResponse:
-        _auth(authorization, token_field)
-        await _act(app, lambda session: manual_settle(session, leg_id, outcome))
-        return RedirectResponse("/advisor/recommendations", status_code=303)
+def _engine(request: Request) -> AsyncEngine:
+    return cast(AsyncEngine, request.app.state.engine)
 
 
 async def _browse_list(app: FastAPI, table: str, request: Request) -> dict[str, Any]:

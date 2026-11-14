@@ -18,6 +18,11 @@ from predictor.constants import (
     IRREGULAR_FIXTURE_STATUSES,
     PAYOUT_KEEP,
 )
+from predictor.services.next_goal_rules import (
+    LLM_MAX_FAVORITE_ODD,
+    LLM_MAX_PERIOD_GOALS,
+    match_minute,
+)
 
 _ODD_QUANTUM = Decimal("0.001")
 _MONEY_QUANTUM = Decimal("0.01")
@@ -35,10 +40,8 @@ LLM_STATUS = "2H"
 LLM_STATUSES = frozenset({"2H", "ET", "BT"})
 # Prompt gate (for_llm only). Short-late floor matches MIN_ANALYSIS_ODD so
 # the model sees more late candidates; coupon floor stays min_combined_odd
-# and lone singles still need LLM_SINGLE_MIN_ODD. Favourite / period-goals
-# gates unchanged from sandbox p4.
-LLM_MAX_PERIOD_GOALS = 2
-LLM_MAX_FAVORITE_ODD = Decimal("2.000")  # must be strictly below
+# and lone singles still need LLM_SINGLE_MIN_ODD. G1/G2 live in
+# next_goal_rules (LLM_MAX_PERIOD_GOALS, LLM_MAX_FAVORITE_ODD).
 LLM_SHORT_FAVORITE_ODD = Decimal("1.500")  # below: short_favorite
 LLM_WEAK_FAVORITE_ODD = Decimal("1.800")  # at or above: weak_favorite
 LLM_SHORT_ODD = Decimal("1.200")
@@ -228,9 +231,6 @@ def assess(candidate: CandidateView, limits: PlayLimits, now: datetime) -> Playa
         goals_away=score[1],
         ordinal=n + 1,
     )
-    # Imported here to avoid a live_board ↔ advisor circular import.
-    from predictor.services.live_board.domain import match_minute
-
     minute = match_minute(candidate.status_short, candidate.elapsed, candidate.extra)
     limit = (
         limits.max_minute_extra

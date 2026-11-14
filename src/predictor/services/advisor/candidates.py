@@ -23,7 +23,7 @@ from predictor.services.advisor.domain import (
     prompt_gate_misses,
 )
 from predictor.services.advisor.sql import OverUnderRow
-from predictor.services.live_board.domain import match_minute
+from predictor.services.next_goal_rules import match_minute
 
 StateKey = tuple[int, str, int, int, int]
 

@@ -43,10 +43,10 @@ from predictor.services.advisor.sql import (
 from predictor.services.live_board.domain import (
     LiveMatch,
     favorite_prematch_odd,
-    match_minute,
     next_goal_reasons,
 )
 from predictor.services.live_board.sql import list_next_goal_matches, load_first_legs
+from predictor.services.next_goal_rules import match_minute
 
 _ACTIVE = frozenset({"sandbox", "promoted"})
 _DEFAULT_MINUTE = 80

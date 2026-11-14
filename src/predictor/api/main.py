@@ -78,6 +78,8 @@ from predictor.ui import (
 from predictor.ui.advisor import render_yield_report
 from predictor.ui.llm_note import render_llm_note
 
+_REPORT_PERIODS = frozenset({"all", "regulation", "extra_time"})
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -92,6 +94,427 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await engine.dispose()
 
 
+def _engine(request: Request) -> AsyncEngine:
+    return cast(AsyncEngine, request.app.state.engine)
+
+
+def _settings(request: Request) -> Settings:
+    return cast(Settings, request.app.state.settings)
+
+
+def _mutation_token(request: Request) -> str:
+    return cast(str, request.app.state.mutation_token)
+
+
+def _require_mutation_token(
+    request: Request,
+    authorization: str | None,
+    form_token: str | None,
+) -> None:
+    if not mutation_token_ok(authorization, form_token, _mutation_token(request)):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+async def ready(request: Request) -> JSONResponse:
+    payload, ok = await inspect_ready(_settings(request), _engine(request))
+    return JSONResponse(payload, status_code=200 if ok else 503)
+
+
+async def status(request: Request) -> dict[str, Any]:
+    try:
+        return await operator_status(_settings(request), _engine(request))
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+
+
+async def _live_matches(engine: AsyncEngine) -> list[LiveMatch]:
+    try:
+        return await list_live_matches(engine)
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+
+
+async def live(request: Request) -> HTMLResponse:
+    engine = _engine(request)
+    matches = await _live_matches(engine)
+    try:
+        coupons = await load_sandbox_coupon_labels(
+            engine, [item.fixture_id for item in matches]
+        )
+    except Exception:
+        coupons = {}
+    html = render_live_html(
+        matches,
+        generated_at=datetime.now(UTC),
+        active_nav="all",
+        operator_token=_mutation_token(request),
+        sandbox_coupons=coupons,
+    )
+    return HTMLResponse(html)
+
+
+async def live_json(request: Request) -> dict[str, Any]:
+    engine = _engine(request)
+    matches = await _live_matches(engine)
+    try:
+        coupons = await load_sandbox_coupon_labels(
+            engine, [item.fixture_id for item in matches]
+        )
+    except Exception:
+        coupons = {}
+    return {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "count": len(matches),
+        "matches": [
+            {
+                **item.as_dict(),
+                "sandbox_coupon": coupons.get(item.fixture_id),
+            }
+            for item in matches
+        ],
+    }
+
+
+async def _next_goal_board(
+    engine: AsyncEngine,
+) -> list[tuple[LiveMatch, tuple[str, ...]]]:
+    try:
+        return await list_next_goal_matches(engine)
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+
+
+async def live_next_goal(request: Request) -> HTMLResponse:
+    engine = _engine(request)
+    selected = await _next_goal_board(engine)
+    matches = [match for match, _reasons in selected]
+    try:
+        open_bets = await list_open_from_engine(engine)
+        stake = await current_stake_label(engine)
+        notes = await load_llm_notes(
+            engine,
+            matches,
+            candidate_ids={item.fixture_id for item in matches},
+        )
+        sandbox_coupons = await load_sandbox_coupon_labels(
+            engine, [item.fixture_id for item in matches]
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    try:
+        cards = await load_recommendation_html(engine)
+    except Exception:
+        cards = ""
+    html = render_live_html(
+        matches,
+        generated_at=datetime.now(UTC),
+        title="Następny gol",
+        recommendation_html=cards,
+        empty=(
+            "Brak meczów, w których faworyt przegrywa lub musi odrabiać w dwumeczu."
+        ),
+        active_nav="next_goal",
+        open_bets={fid: bet_as_dict(bet) for fid, bet in open_bets.items()},
+        current_stake=stake,
+        operator_token=_mutation_token(request),
+        llm_notes={
+            fixture_id: render_llm_note(note) for fixture_id, note in notes.items()
+        },
+        sandbox_coupons=sandbox_coupons,
+    )
+    return HTMLResponse(html)
+
+
+async def live_next_goal_json(request: Request) -> dict[str, Any]:
+    engine = _engine(request)
+    selected = await _next_goal_board(engine)
+    matches = [match for match, _reasons in selected]
+    try:
+        open_bets = await list_open_from_engine(engine)
+        stake = await current_stake_label(engine)
+        notes = await load_llm_notes(
+            engine,
+            matches,
+            candidate_ids={item.fixture_id for item in matches},
+        )
+        sandbox_coupons = await load_sandbox_coupon_labels(
+            engine, [item.fixture_id for item in matches]
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    return {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "count": len(selected),
+        "current_stake": stake,
+        "matches": [
+            {
+                **match.as_dict(),
+                "next_goal_reasons": list(reasons),
+                "open_bet": (
+                    None
+                    if match.fixture_id not in open_bets
+                    else bet_as_dict(open_bets[match.fixture_id])
+                ),
+                "llm": notes[match.fixture_id].as_dict(),
+                "sandbox_coupon": sandbox_coupons.get(match.fixture_id),
+                "llm_coupon": sandbox_coupons.get(match.fixture_id) == "Kupon LLM",
+            }
+            for match, reasons in selected
+        ],
+    }
+
+
+async def live_day(request: Request, day: str | None = None) -> HTMLResponse:
+    return await _day_page(request, day)
+
+
+async def live_day_path(request: Request, day: str) -> HTMLResponse:
+    return await _day_page(request, day)
+
+
+async def _day_page(request: Request, raw: str | None) -> HTMLResponse:
+    today = datetime.now(UTC).date()
+    invalid = False
+    if raw is None or not raw.strip():
+        selected = today
+    else:
+        parsed = parse_query_day(raw)
+        if parsed is None:
+            invalid = True
+            selected = today
+        else:
+            selected = parsed
+    try:
+        matches = await list_day_matches(_engine(request), selected)
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    html = render_day_html(
+        matches,
+        day=selected,
+        today=today,
+        generated_at=datetime.now(UTC),
+        invalid_date=invalid,
+    )
+    return HTMLResponse(html)
+
+
+async def live_match(request: Request, fixture_id: int) -> HTMLResponse:
+    engine = _engine(request)
+    try:
+        detail = await load_match_detail(engine, fixture_id)
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    if detail is None:
+        return HTMLResponse(render_match_missing(), status_code=404)
+    try:
+        notes = await load_llm_notes(engine, [detail.match])
+        coupons = await load_sandbox_coupon_labels(engine, [detail.match.fixture_id])
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    note = notes.get(detail.match.fixture_id)
+    llm_html = "" if note is None else render_llm_note(note)
+    return HTMLResponse(
+        render_match_html(
+            detail,
+            generated_at=datetime.now(UTC),
+            llm_html=llm_html,
+            sandbox_coupon=coupons.get(detail.match.fixture_id),
+        )
+    )
+
+
+async def live_bets(request: Request) -> HTMLResponse:
+    try:
+        payload = await load_history_payload(_engine(request))
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    html = render_bets_html(
+        payload,
+        generated_at=datetime.now(UTC),
+        operator_token=_mutation_token(request),
+    )
+    return HTMLResponse(html)
+
+
+async def live_bets_json(request: Request) -> dict[str, Any]:
+    try:
+        return await load_history_payload(_engine(request))
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+
+
+async def place_live_bet(
+    request: Request,
+    fixture_id: int = Form(...),
+    odd: str = Form(...),
+    token: str | None = Form(default=None),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse | JSONResponse:
+    _require_mutation_token(request, authorization, token)
+    engine = _engine(request)
+    wants_json = "application/json" in (request.headers.get("accept") or "")
+    try:
+        odd_dec = parse_odd(odd)
+        selected = await list_next_goal_matches(engine)
+        match = next(
+            (item for item, _reasons in selected if item.fixture_id == fixture_id),
+            None,
+        )
+        if match is None:
+            raise BetError(404, "fixture_not_on_next_goal_board")
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            await settle_open_tickets(session)
+            bet = await place_bet(session, match=match, odd=odd_dec)
+            await session.commit()
+            payload = bet_as_dict(bet)
+    except BetError as exc:
+        if wants_json:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.code)
+        raise HTTPException(status_code=exc.code, detail=exc.detail) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from exc
+    if wants_json:
+        return JSONResponse(payload, status_code=201)
+    return RedirectResponse(url="/live/next-goal", status_code=303)
+
+
+async def settle_live_bet(
+    bet_id: int,
+    request: Request,
+    outcome: str = Form(...),
+    token: str | None = Form(default=None),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse | JSONResponse:
+    _require_mutation_token(request, authorization, token)
+    wants_json = "application/json" in (request.headers.get("accept") or "")
+    try:
+        async with AsyncSession(_engine(request), expire_on_commit=False) as session:
+            bet = await settle_bet_manual(session, bet_id, outcome)
+            await session.commit()
+            payload = bet_as_dict(bet)
+    except BetError as exc:
+        if wants_json:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.code)
+        raise HTTPException(status_code=exc.code, detail=exc.detail) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from exc
+    if wants_json:
+        return JSONResponse(payload)
+    referer = request.headers.get("referer") or "/live/bets"
+    return RedirectResponse(url=referer, status_code=303)
+
+
+async def metrics(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> PlainTextResponse:
+    settings = _settings(request)
+    token = settings.prometheus_metrics_token.get_secret_value()
+    if not metrics_token_ok(authorization, token):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    engine = _engine(request)
+    try:
+        async with engine.connect() as conn:
+            holder = await fetch_holder_sqlalchemy(conn)
+            await conn.execute(text("SELECT 1"))
+        counts = await task_counts(engine)
+        queue_rows = await task_counts_by_endpoint(engine)
+        gauges = await scrape_gauges(engine)
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    remaining = int(gauges["quota_remaining"])
+    used = int(gauges["quota_used"])
+    vendor_plan = int(gauges.get("quota_plan") or 0)
+    quota_plan = vendor_plan if vendor_plan > 0 else settings.quota_daily_limit
+    now = datetime.now(UTC)
+    planned = float(gauges.get("score_poll_seconds") or 0)
+    interval = (
+        planned
+        if planned > 0
+        else live_poll_interval_gauge(
+            remaining,
+            used,
+            quota_plan,
+            settings.live_poll_target_seconds,
+            now,
+        )
+    )
+    body = render_metrics(
+        environment=settings.host_environment.value,
+        lock_held=holder is not None,
+        task_counts=counts,
+        in_play_fixtures=int(gauges["in_play_fixtures"]),
+        live_last_snapshot_unixtime=gauges["live_last_snapshot_unixtime"],
+        live_snapshot_age_seconds=gauges["live_snapshot_age_seconds"],
+        oldest_pending_age_seconds=gauges["oldest_pending_age_seconds"],
+        quota_plan=quota_plan,
+        quota_remaining=remaining,
+        quota_used=used,
+        quota_seconds_until_reset=seconds_until_utc_midnight(now),
+        live_poll_interval_seconds=interval,
+        detail_refresh_seconds=gauges.get("detail_refresh_seconds", 0.0),
+        context_call_cap=gauges.get("context_call_cap", 0.0),
+        quota_overloaded=gauges.get("quota_overloaded", 0.0),
+        quota_allowed_per_minute=gauges.get("quota_allowed_per_minute", 0.0),
+        queue_counts=tuple(queue_rows),
+    )
+    return PlainTextResponse(
+        body, media_type="text/plain; version=0.0.4; charset=utf-8"
+    )
+
+
+async def advisor_report(request: Request, period: str = "all") -> HTMLResponse:
+    if period not in _REPORT_PERIODS:
+        raise HTTPException(status_code=400, detail="invalid_period")
+    factory = make_session_factory(_engine(request))
+    try:
+        async with factory() as session:
+            report = await load_yield_report(session, period=period)
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    return HTMLResponse(render_yield_report(report))
+
+
+async def advisor_report_json(request: Request, period: str = "all") -> dict[str, Any]:
+    if period not in _REPORT_PERIODS:
+        raise HTTPException(status_code=400, detail="invalid_period")
+    factory = make_session_factory(_engine(request))
+    try:
+        async with factory() as session:
+            report = await load_yield_report(session, period=period)
+    except Exception:
+        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    return report_as_dict(report)
+
+
+def mount_status_http(app: FastAPI) -> None:
+    """Register status routes. Each handler is its own function."""
+    app.get("/health")(health)
+    app.get("/ready")(ready)
+    app.get("/status")(status)
+    app.get("/")(live)
+    app.get("/live")(live)
+    app.get("/live.json")(live_json)
+    app.get("/live/next-goal")(live_next_goal)
+    app.get("/live/next-goal.json")(live_next_goal_json)
+    app.get("/live/day", response_model=None)(live_day)
+    app.get("/live/day/{day}", response_model=None)(live_day_path)
+    app.get("/live/match/{fixture_id}", response_model=None)(live_match)
+    app.get("/live/bets")(live_bets)
+    app.get("/live/bets.json")(live_bets_json)
+    app.post("/live/bets", response_model=None)(place_live_bet)
+    app.post("/live/bets/{bet_id}/settle", response_model=None)(settle_live_bet)
+    app.get("/metrics")(metrics)
+    app.get("/advisor/report")(advisor_report)
+    app.get("/advisor/report.json")(advisor_report_json)
+
+
 def create_app() -> FastAPI:
     try:
         settings = load_settings()
@@ -101,427 +524,8 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Predictor status", lifespan=_lifespan)
     app.state.settings = settings
-    mutation_token = settings.operator_bet_token.get_secret_value()
-
-    def _require_mutation_token(
-        authorization: str | None,
-        form_token: str | None,
-    ) -> None:
-        if not mutation_token_ok(authorization, form_token, mutation_token):
-            raise HTTPException(status_code=401, detail="unauthorized")
-
-    @app.get("/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
-
-    @app.get("/ready")
-    async def ready() -> JSONResponse:
-        engine = cast(AsyncEngine, app.state.engine)
-        payload, ok = await inspect_ready(settings, engine)
-        return JSONResponse(payload, status_code=200 if ok else 503)
-
-    @app.get("/status")
-    async def status() -> dict[str, Any]:
-        engine = cast(AsyncEngine, app.state.engine)
-        try:
-            return await operator_status(settings, engine)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-
-    async def _live_matches() -> list[LiveMatch]:
-        engine = cast(AsyncEngine, app.state.engine)
-        try:
-            return await list_live_matches(engine)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-
-    @app.get("/")
-    @app.get("/live")
-    async def live() -> HTMLResponse:
-        engine = cast(AsyncEngine, app.state.engine)
-        matches = await _live_matches()
-        try:
-            coupons = await load_sandbox_coupon_labels(
-                engine, [item.fixture_id for item in matches]
-            )
-        except Exception:
-            coupons = {}
-        html = render_live_html(
-            matches,
-            generated_at=datetime.now(UTC),
-            active_nav="all",
-            operator_token=mutation_token,
-            sandbox_coupons=coupons,
-        )
-        return HTMLResponse(html)
-
-    @app.get("/live.json")
-    async def live_json() -> dict[str, Any]:
-        engine = cast(AsyncEngine, app.state.engine)
-        matches = await _live_matches()
-        try:
-            coupons = await load_sandbox_coupon_labels(
-                engine, [item.fixture_id for item in matches]
-            )
-        except Exception:
-            coupons = {}
-        return {
-            "generated_at": datetime.now(UTC).isoformat(),
-            "count": len(matches),
-            "matches": [
-                {
-                    **item.as_dict(),
-                    "sandbox_coupon": coupons.get(item.fixture_id),
-                }
-                for item in matches
-            ],
-        }
-
-    async def _next_goal_board() -> list[tuple[LiveMatch, tuple[str, ...]]]:
-        engine = cast(AsyncEngine, app.state.engine)
-        try:
-            return await list_next_goal_matches(engine)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-
-    @app.get("/live/next-goal")
-    async def live_next_goal() -> HTMLResponse:
-        engine = cast(AsyncEngine, app.state.engine)
-        selected = await _next_goal_board()
-        matches = [match for match, _reasons in selected]
-        try:
-            open_bets = await list_open_from_engine(engine)
-            stake = await current_stake_label(engine)
-            notes = await load_llm_notes(
-                engine,
-                matches,
-                candidate_ids={item.fixture_id for item in matches},
-            )
-            sandbox_coupons = await load_sandbox_coupon_labels(
-                engine, [item.fixture_id for item in matches]
-            )
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        try:
-            cards = await load_recommendation_html(engine)
-        except Exception:
-            cards = ""
-        html = render_live_html(
-            matches,
-            generated_at=datetime.now(UTC),
-            title="Następny gol",
-            recommendation_html=cards,
-            empty=(
-                "Brak meczów, w których faworyt przegrywa lub musi odrabiać w dwumeczu."
-            ),
-            active_nav="next_goal",
-            open_bets={fid: bet_as_dict(bet) for fid, bet in open_bets.items()},
-            current_stake=stake,
-            operator_token=mutation_token,
-            llm_notes={
-                fixture_id: render_llm_note(note) for fixture_id, note in notes.items()
-            },
-            sandbox_coupons=sandbox_coupons,
-        )
-        return HTMLResponse(html)
-
-    @app.get("/live/next-goal.json")
-    async def live_next_goal_json() -> dict[str, Any]:
-        engine = cast(AsyncEngine, app.state.engine)
-        selected = await _next_goal_board()
-        matches = [match for match, _reasons in selected]
-        try:
-            open_bets = await list_open_from_engine(engine)
-            stake = await current_stake_label(engine)
-            notes = await load_llm_notes(
-                engine,
-                matches,
-                candidate_ids={item.fixture_id for item in matches},
-            )
-            sandbox_coupons = await load_sandbox_coupon_labels(
-                engine, [item.fixture_id for item in matches]
-            )
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        return {
-            "generated_at": datetime.now(UTC).isoformat(),
-            "count": len(selected),
-            "current_stake": stake,
-            "matches": [
-                {
-                    **match.as_dict(),
-                    "next_goal_reasons": list(reasons),
-                    "open_bet": (
-                        None
-                        if match.fixture_id not in open_bets
-                        else bet_as_dict(open_bets[match.fixture_id])
-                    ),
-                    "llm": notes[match.fixture_id].as_dict(),
-                    "sandbox_coupon": sandbox_coupons.get(match.fixture_id),
-                    "llm_coupon": sandbox_coupons.get(match.fixture_id) == "Kupon LLM",
-                }
-                for match, reasons in selected
-            ],
-        }
-
-    @app.get("/live/day", response_model=None)
-    async def live_day(day: str | None = None) -> HTMLResponse:
-        return await _day_page(day)
-
-    @app.get("/live/day/{day}", response_model=None)
-    async def live_day_path(day: str) -> HTMLResponse:
-        return await _day_page(day)
-
-    async def _day_page(raw: str | None) -> HTMLResponse:
-        today = datetime.now(UTC).date()
-        invalid = False
-        if raw is None or not raw.strip():
-            selected = today
-        else:
-            parsed = parse_query_day(raw)
-            if parsed is None:
-                invalid = True
-                selected = today
-            else:
-                selected = parsed
-        engine = cast(AsyncEngine, app.state.engine)
-        try:
-            matches = await list_day_matches(engine, selected)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        html = render_day_html(
-            matches,
-            day=selected,
-            today=today,
-            generated_at=datetime.now(UTC),
-            invalid_date=invalid,
-        )
-        return HTMLResponse(html)
-
-    @app.get("/live/match/{fixture_id}", response_model=None)
-    async def live_match(fixture_id: int) -> HTMLResponse:
-        engine = cast(AsyncEngine, app.state.engine)
-        try:
-            detail = await load_match_detail(engine, fixture_id)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        if detail is None:
-            return HTMLResponse(render_match_missing(), status_code=404)
-        try:
-            notes = await load_llm_notes(engine, [detail.match])
-            coupons = await load_sandbox_coupon_labels(
-                engine, [detail.match.fixture_id]
-            )
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        note = notes.get(detail.match.fixture_id)
-        llm_html = "" if note is None else render_llm_note(note)
-        return HTMLResponse(
-            render_match_html(
-                detail,
-                generated_at=datetime.now(UTC),
-                llm_html=llm_html,
-                sandbox_coupon=coupons.get(detail.match.fixture_id),
-            )
-        )
-
-    @app.get("/live/bets")
-    async def live_bets() -> HTMLResponse:
-        engine = cast(AsyncEngine, app.state.engine)
-        try:
-            payload = await load_history_payload(engine)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        html = render_bets_html(
-            payload,
-            generated_at=datetime.now(UTC),
-            operator_token=mutation_token,
-        )
-        return HTMLResponse(html)
-
-    @app.get("/live/bets.json")
-    async def live_bets_json() -> dict[str, Any]:
-        engine = cast(AsyncEngine, app.state.engine)
-        try:
-            return await load_history_payload(engine)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-
-    @app.post("/live/bets", response_model=None)
-    async def place_live_bet(
-        request: Request,
-        fixture_id: int = Form(...),
-        odd: str = Form(...),
-        token: str | None = Form(default=None),
-        authorization: str | None = Header(default=None),
-    ) -> RedirectResponse | JSONResponse:
-        _require_mutation_token(authorization, token)
-        engine = cast(AsyncEngine, app.state.engine)
-        wants_json = "application/json" in (request.headers.get("accept") or "")
-        try:
-            odd_dec = parse_odd(odd)
-            selected = await list_next_goal_matches(engine)
-            match = next(
-                (m for m, _ in selected if m.fixture_id == fixture_id),
-                None,
-            )
-            if match is None:
-                raise BetError(404, "fixture_not_on_next_goal_board")
-            async with AsyncSession(engine, expire_on_commit=False) as session:
-                await settle_open_tickets(session)
-                bet = await place_bet(session, match=match, odd=odd_dec)
-                await session.commit()
-                payload = bet_as_dict(bet)
-        except BetError as exc:
-            if wants_json:
-                return JSONResponse({"detail": exc.detail}, status_code=exc.code)
-            raise HTTPException(status_code=exc.code, detail=exc.detail) from exc
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail="postgres_unavailable") from exc
-        if wants_json:
-            return JSONResponse(payload, status_code=201)
-        return RedirectResponse(url="/live/next-goal", status_code=303)
-
-    @app.post("/live/bets/{bet_id}/settle", response_model=None)
-    async def settle_live_bet(
-        bet_id: int,
-        request: Request,
-        outcome: str = Form(...),
-        token: str | None = Form(default=None),
-        authorization: str | None = Header(default=None),
-    ) -> RedirectResponse | JSONResponse:
-        _require_mutation_token(authorization, token)
-        engine = cast(AsyncEngine, app.state.engine)
-        wants_json = "application/json" in (request.headers.get("accept") or "")
-        try:
-            async with AsyncSession(engine, expire_on_commit=False) as session:
-                bet = await settle_bet_manual(session, bet_id, outcome)
-                await session.commit()
-                payload = bet_as_dict(bet)
-        except BetError as exc:
-            if wants_json:
-                return JSONResponse({"detail": exc.detail}, status_code=exc.code)
-            raise HTTPException(status_code=exc.code, detail=exc.detail) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail="postgres_unavailable") from exc
-        if wants_json:
-            return JSONResponse(payload)
-        referer = request.headers.get("referer") or "/live/bets"
-        return RedirectResponse(url=referer, status_code=303)
-
-    @app.get("/metrics")
-    async def metrics(
-        authorization: str | None = Header(default=None),
-    ) -> PlainTextResponse:
-        token = settings.prometheus_metrics_token.get_secret_value()
-        if not metrics_token_ok(authorization, token):
-            raise HTTPException(status_code=401, detail="unauthorized")
-        engine = cast(AsyncEngine, app.state.engine)
-        try:
-            async with engine.connect() as conn:
-                holder = await fetch_holder_sqlalchemy(conn)
-                await conn.execute(text("SELECT 1"))
-            counts = await task_counts(engine)
-            queue_rows = await task_counts_by_endpoint(engine)
-            gauges = await scrape_gauges(engine)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        remaining = int(gauges["quota_remaining"])
-        used = int(gauges["quota_used"])
-        vendor_plan = int(gauges.get("quota_plan") or 0)
-        quota_plan = vendor_plan if vendor_plan > 0 else settings.quota_daily_limit
-        now = datetime.now(UTC)
-        planned = float(gauges.get("score_poll_seconds") or 0)
-        interval = (
-            planned
-            if planned > 0
-            else live_poll_interval_gauge(
-                remaining,
-                used,
-                quota_plan,
-                settings.live_poll_target_seconds,
-                now,
-            )
-        )
-        body = render_metrics(
-            environment=settings.host_environment.value,
-            lock_held=holder is not None,
-            task_counts=counts,
-            in_play_fixtures=int(gauges["in_play_fixtures"]),
-            live_last_snapshot_unixtime=gauges["live_last_snapshot_unixtime"],
-            live_snapshot_age_seconds=gauges["live_snapshot_age_seconds"],
-            oldest_pending_age_seconds=gauges["oldest_pending_age_seconds"],
-            quota_plan=quota_plan,
-            quota_remaining=remaining,
-            quota_used=used,
-            quota_seconds_until_reset=seconds_until_utc_midnight(now),
-            live_poll_interval_seconds=interval,
-            detail_refresh_seconds=gauges.get("detail_refresh_seconds", 0.0),
-            context_call_cap=gauges.get("context_call_cap", 0.0),
-            quota_overloaded=gauges.get("quota_overloaded", 0.0),
-            quota_allowed_per_minute=gauges.get("quota_allowed_per_minute", 0.0),
-            queue_counts=tuple(queue_rows),
-        )
-        return PlainTextResponse(
-            body, media_type="text/plain; version=0.0.4; charset=utf-8"
-        )
-
-    _PERIODS = frozenset({"all", "regulation", "extra_time"})
-
-    @app.get("/advisor/report")
-    async def advisor_report(period: str = "all") -> HTMLResponse:
-        if period not in _PERIODS:
-            raise HTTPException(status_code=400, detail="invalid_period")
-        engine = cast(AsyncEngine, app.state.engine)
-        factory = make_session_factory(engine)
-        try:
-            async with factory() as session:
-                report = await load_yield_report(session, period=period)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        return HTMLResponse(render_yield_report(report))
-
-    @app.get("/advisor/report.json")
-    async def advisor_report_json(period: str = "all") -> dict[str, Any]:
-        if period not in _PERIODS:
-            raise HTTPException(status_code=400, detail="invalid_period")
-        engine = cast(AsyncEngine, app.state.engine)
-        factory = make_session_factory(engine)
-        try:
-            async with factory() as session:
-                report = await load_yield_report(session, period=period)
-        except Exception:
-            raise HTTPException(
-                status_code=503, detail="postgres_unavailable"
-            ) from None
-        return report_as_dict(report)
-
-    mount_advisor_http(app, mutation_token)
+    app.state.mutation_token = settings.operator_bet_token.get_secret_value()
+    mount_status_http(app)
+    mount_advisor_http(app, app.state.mutation_token)
     instrument_fastapi(app)
     return app
