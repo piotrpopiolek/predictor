@@ -140,6 +140,20 @@ def test_provisioned_grafana_dashboards() -> None:
             assert "count(*)" in sql
             assert "pg_total_relation_size" in sql
             assert data["panels"][1]["options"]["displayLabels"] == ["name", "percent"]
+        if data["uid"] == "predictor-llm-advisor":
+            sql = " ".join(
+                str(target.get("rawSql", ""))
+                for panel in data["panels"]
+                for target in panel.get("targets", [])
+            )
+            assert "advisor_cycles" in sql
+            assert "cost_pln" in sql
+            assert "validation_status" in sql
+            assert "advisor_langfuse_outbox" in sql
+            assert "advisor_telegram_outbox" in sql
+            assert "prompt_text" not in sql
+            assert "raw_output" not in sql
+            assert "input_json" not in sql
     assert uids == {
         "predictor-infra",
         "predictor-api-live",
@@ -147,6 +161,7 @@ def test_provisioned_grafana_dashboards() -> None:
         "predictor-quota",
         "predictor-etl-queue",
         "predictor-database",
+        "predictor-llm-advisor",
     }
 
 

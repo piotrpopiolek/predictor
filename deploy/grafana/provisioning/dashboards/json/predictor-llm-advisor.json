@@ -1,0 +1,626 @@
+{
+  "uid": "predictor-llm-advisor",
+  "title": "LLM and advisor",
+  "description": "Advisor ledger in Postgres. Daily cost panels use the 10 PLN budget and 7 PLN sandbox cap from budget.py and ignore the time picker. Charts follow the dashboard range. Queries omit prompt text, model input, and raw output.",
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["predictor", "advisor", "llm"],
+  "time": {"from": "now-24h", "to": "now"},
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "UTC day",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Cost today",
+      "description": "Sum of advisor_cycles.cost_pln since 00:00 UTC. Yellow at 7 PLN (sandbox cap), red at 10 PLN. Thresholds are the budget.py defaults and do not follow ADVISOR_DAILY_BUDGET_PLN.",
+      "gridPos": {"h": 5, "w": 4, "x": 0, "y": 1},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyPLN",
+          "decimals": 4,
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 7},
+              {"color": "red", "value": 10}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT coalesce(sum(cost_pln), 0) AS cost_pln FROM advisor_cycles WHERE started_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Budget used",
+      "description": "Today's cost divided by the 10 PLN daily budget. Yellow at 70%, red at 100%.",
+      "gridPos": {"h": 5, "w": 4, "x": 4, "y": 1},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 70},
+              {"color": "red", "value": 100}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT coalesce(sum(cost_pln), 0) / 10 * 100 AS budget_pct FROM advisor_cycles WHERE started_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Cycles today",
+      "gridPos": {"h": 5, "w": 3, "x": 8, "y": 1},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "blue", "value": null}]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS cycles FROM advisor_cycles WHERE started_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "invalid_output (1h)",
+      "description": "Share of cycles in the last hour whose validation_status is invalid_output. Red at 1%.",
+      "gridPos": {"h": 5, "w": 4, "x": 11, "y": 1},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT coalesce(100.0 * count(*) FILTER (WHERE validation_status = 'invalid_output') / nullif(count(*), 0), 0) AS invalid_output_pct FROM advisor_cycles WHERE started_at >= now() - interval '1 hour'"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "provider_error today",
+      "gridPos": {"h": 5, "w": 3, "x": 15, "y": 1},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) FILTER (WHERE validation_status = 'provider_error') AS provider_error FROM advisor_cycles WHERE started_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "p95 latency (6h)",
+      "description": "percentile_cont 0.95 of latency_ms over the last 6 hours. Red at 20 seconds. Zero when no call recorded a latency.",
+      "gridPos": {"h": 5, "w": 3, "x": 18, "y": 1},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 0,
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 20000}
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0) AS p95_ms FROM advisor_cycles WHERE started_at >= now() - interval '6 hours' AND latency_ms IS NOT NULL"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Tokens today",
+      "description": "input_tokens + output_tokens + thoughts_tokens since 00:00 UTC.",
+      "gridPos": {"h": 5, "w": 3, "x": 21, "y": 1},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "blue", "value": null}]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT coalesce(sum(input_tokens + output_tokens + thoughts_tokens), 0) AS tokens FROM advisor_cycles WHERE started_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "type": "row",
+      "title": "Cycles in range",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 6},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Cost by mode",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 7},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyPLN",
+          "decimals": 4,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "stacking": {"mode": "normal", "group": "A"}
+          }
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(started_at,$__interval), mode AS metric, sum(cost_pln)::float8 AS value FROM advisor_cycles WHERE $__timeFilter(started_at) GROUP BY 1, mode ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Cycles by validation",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 7},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "stacking": {"mode": "normal", "group": "A"}
+          }
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(started_at,$__interval), validation_status AS metric, count(*)::float8 AS value FROM advisor_cycles WHERE $__timeFilter(started_at) GROUP BY 1, validation_status ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Tokens",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "stacking": {"mode": "normal", "group": "A"}
+          }
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(started_at,$__interval), kind AS metric, sum(tokens)::float8 AS value FROM advisor_cycles CROSS JOIN LATERAL (VALUES ('input', input_tokens), ('output', output_tokens), ('thoughts', thoughts_tokens)) AS parts(kind, tokens) WHERE $__timeFilter(started_at) GROUP BY 1, kind ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Latency",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "stacking": {"mode": "none", "group": "A"}
+          }
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(started_at,$__interval), 'avg' AS metric, avg(latency_ms)::float8 AS value FROM advisor_cycles WHERE $__timeFilter(started_at) AND latency_ms IS NOT NULL GROUP BY 1 UNION ALL SELECT $__timeGroupAlias(started_at,$__interval), 'p95' AS metric, percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::float8 AS value FROM advisor_cycles WHERE $__timeFilter(started_at) AND latency_ms IS NOT NULL GROUP BY 1 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 102,
+      "type": "row",
+      "title": "Decisions",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 12,
+      "type": "piechart",
+      "title": "Decisions",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 24},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {
+        "pieType": "pie",
+        "displayLabels": ["name", "percent"],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": ["value", "percent"]
+        },
+        "tooltip": {"mode": "single", "sort": "none"},
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": true}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT decision, count(*) AS liczba FROM advisor_decisions WHERE $__timeFilter(created_at) GROUP BY decision ORDER BY liczba DESC"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "Reason codes",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 24},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {
+        "showHeader": true,
+        "sortBy": [{"displayName": "liczba", "desc": true}]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT code AS powod, count(*) AS liczba FROM advisor_decisions CROSS JOIN LATERAL jsonb_array_elements_text(reasons) AS code WHERE $__timeFilter(created_at) GROUP BY code ORDER BY liczba DESC"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "table",
+      "title": "Candidate rules",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 24},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {
+        "showHeader": true,
+        "sortBy": [{"displayName": "liczba", "desc": true}]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT candidate_rule AS regula, count(*) AS liczba FROM advisor_decisions WHERE $__timeFilter(created_at) GROUP BY candidate_rule ORDER BY liczba DESC"
+        }
+      ]
+    },
+    {
+      "id": 103,
+      "type": "row",
+      "title": "Coupons and strategies",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 32},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Coupons by status",
+      "gridPos": {"h": 10, "w": 8, "x": 0, "y": 33},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {
+        "showHeader": true,
+        "sortBy": [{"displayName": "liczba", "desc": true}]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT mode, status, count(*) AS liczba FROM advisor_coupons WHERE $__timeFilter(created_at) GROUP BY mode, status ORDER BY mode, status"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "table",
+      "title": "Net yield",
+      "description": "Won and lost coupons only; void stays out of the ratio. Profit is stake * combined_odd * payout_keep - stake, or -stake, matching settled_pnl. Shared-match comparison stays on /advisor/report.",
+      "gridPos": {"h": 10, "w": 16, "x": 8, "y": 33},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "zysk_netto"},
+            "properties": [
+              {"id": "unit", "value": "currencyPLN"},
+              {"id": "decimals", "value": 2}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "yield_netto"},
+            "properties": [
+              {"id": "unit", "value": "percentunit"},
+              {"id": "decimals", "value": 2}
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{"displayName": "strategia", "desc": false}]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT s.name AS strategia, s.kind, count(c.id) AS rozliczone, coalesce(sum(CASE WHEN c.status = 'won' THEN c.stake * c.combined_odd * c.payout_keep - c.stake ELSE -c.stake END), 0) AS zysk_netto, sum(CASE WHEN c.status = 'won' THEN c.stake * c.combined_odd * c.payout_keep - c.stake ELSE -c.stake END) / nullif(sum(c.stake), 0) AS yield_netto FROM advisor_strategies s LEFT JOIN advisor_strategy_versions v ON v.strategy_id = s.id LEFT JOIN advisor_coupons c ON c.strategy_version_id = v.id AND c.status IN ('won', 'lost') AND c.combined_odd IS NOT NULL AND $__timeFilter(c.created_at) GROUP BY s.id, s.name, s.kind ORDER BY s.name"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "table",
+      "title": "Strategies",
+      "description": "Current strategy row and its latest version. Independent of the time picker.",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 43},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {"showHeader": true},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT s.name AS strategia, s.kind, s.status, v.version_no, v.prompt_version, v.min_combined_odd FROM advisor_strategies s LEFT JOIN LATERAL (SELECT version_no, prompt_version, min_combined_odd FROM advisor_strategy_versions WHERE strategy_id = s.id ORDER BY version_no DESC LIMIT 1) v ON true ORDER BY s.name"
+        }
+      ]
+    },
+    {
+      "id": 104,
+      "type": "row",
+      "title": "Queues",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 51},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 18,
+      "type": "table",
+      "title": "Langfuse outbox",
+      "description": "Current rows by status. Independent of the time picker.",
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 52},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {"showHeader": true},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT status, count(*) AS liczba FROM advisor_langfuse_outbox GROUP BY status ORDER BY status"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "table",
+      "title": "Telegram outbox",
+      "description": "Current rows by status. Independent of the time picker.",
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 52},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {"showHeader": true},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT status, count(*) AS liczba FROM advisor_telegram_outbox GROUP BY status ORDER BY status"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "stat",
+      "title": "Odds refresh queue",
+      "gridPos": {"h": 8, "w": 4, "x": 12, "y": 52},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "blue", "value": null}]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS oczekujace FROM advisor_odds_refresh"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "table",
+      "title": "Abandoned deliveries",
+      "description": "Latest abandoned Langfuse and Telegram rows. last_error only; the payload is not selected.",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 52},
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {
+        "showHeader": true,
+        "sortBy": [{"displayName": "created_at", "desc": true}]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT 'langfuse' AS kolejka, id, last_error, created_at FROM advisor_langfuse_outbox WHERE status = 'abandoned' UNION ALL SELECT 'telegram' AS kolejka, id, last_error, created_at FROM advisor_telegram_outbox WHERE status = 'abandoned' ORDER BY created_at DESC LIMIT 20"
+        }
+      ]
+    }
+  ]
+}
