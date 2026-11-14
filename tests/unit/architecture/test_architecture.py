@@ -43,6 +43,17 @@ def test_api_does_not_import_football_client() -> None:
     assert "httpx" not in ui
 
 
+def test_advisor_domain_and_live_board_do_not_import_each_other() -> None:
+    """Shared clock is next_goal_rules. The two domains must not import each other."""
+    root = Path("src/predictor/services")
+    advisor = (root / "advisor" / "domain.py").read_text(encoding="utf-8")
+    board = (root / "live_board" / "domain.py").read_text(encoding="utf-8")
+    assert "live_board" not in advisor
+    assert "services.advisor" not in board
+    assert "next_goal_rules" in advisor
+    assert "next_goal_rules" in board
+
+
 def test_catalog_ingest_does_not_call_fixtures() -> None:
     text = Path("src/predictor/services/ingest/catalog.py").read_text(encoding="utf-8")
     assert '"/fixtures"' not in text

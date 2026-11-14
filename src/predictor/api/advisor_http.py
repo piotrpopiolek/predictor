@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from predictor.api.errors import postgres_unavailable
 from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorLeg,
@@ -142,8 +143,8 @@ async def browse_index(request: Request) -> HTMLResponse:
     try:
         async with factory() as session:
             counts = await table_counts(session)
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     return HTMLResponse(render_browse_index(counts))
 
 
@@ -152,8 +153,8 @@ async def browse_index_json(request: Request) -> list[dict[str, Any]]:
     try:
         async with factory() as session:
             return await table_counts(session)
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
 
 
 async def browse_table_json(table: str, request: Request) -> JSONResponse:
@@ -207,8 +208,8 @@ async def recommendations(request: Request) -> HTMLResponse:
                     .limit(50)
                 )
             ).all()
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     view = tuple((int(row[0]), str(row[1]), str(row[2]), _odd(row[3])) for row in rows)
     return HTMLResponse(render_recommendations(view))
 
@@ -218,8 +219,8 @@ async def recommendation_card(request: Request, coupon_id: int) -> HTMLResponse:
     try:
         async with factory() as session:
             card = await _card(session, coupon_id)
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     if card is None:
         raise HTTPException(status_code=404, detail="missing")
     return HTMLResponse(card)
@@ -312,8 +313,8 @@ async def strategies(request: Request) -> HTMLResponse:
                     .order_by(AdvisorStrategy.id)
                 )
             ).all()
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     view = tuple((int(row.id), row.name, row.status, "") for row in rows)
     return HTMLResponse(render_strategies(view))
 
@@ -441,8 +442,8 @@ async def _browse_list(app: FastAPI, table: str, request: Request) -> dict[str, 
         raise HTTPException(
             status_code=_BROWSE_CODES.get(exc.code, 400), detail=exc.code
         ) from None
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
 
 
 async def _browse_row(app: FastAPI, table: str, row_id: int) -> dict[str, Any]:
@@ -455,8 +456,8 @@ async def _browse_row(app: FastAPI, table: str, row_id: int) -> dict[str, Any]:
         raise HTTPException(
             status_code=_BROWSE_CODES.get(exc.code, 400), detail=exc.code
         ) from None
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
 
 
 def _now() -> datetime:
@@ -497,8 +498,8 @@ async def _played(app: FastAPI, *, kind: str, limit: int) -> tuple[Any, ...]:
             return await load_played_coupons(
                 session, kind=parsed_kind, limit=parsed_limit
             )
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
 
 
 async def _act(app: FastAPI, call: Callable[[AsyncSession], Awaitable[object]]) -> None:
@@ -516,8 +517,8 @@ async def _act(app: FastAPI, call: Callable[[AsyncSession], Awaitable[object]]) 
                     raise
     except ActionError as exc:
         error = exc
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     if error is not None:
         raise HTTPException(status_code=_CODES.get(error.code, 409), detail=error.code)
 

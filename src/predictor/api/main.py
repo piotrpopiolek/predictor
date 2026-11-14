@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from predictor.api.advisor_http import load_recommendation_html, mount_advisor_http
+from predictor.api.errors import postgres_unavailable
 from predictor.logutil import configure_logging, log_startup
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings, SettingsError, load_settings
@@ -127,15 +128,15 @@ async def ready(request: Request) -> JSONResponse:
 async def status(request: Request) -> dict[str, Any]:
     try:
         return await operator_status(_settings(request), _engine(request))
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
 
 
 async def _live_matches(engine: AsyncEngine) -> list[LiveMatch]:
     try:
         return await list_live_matches(engine)
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
 
 
 async def live(request: Request) -> HTMLResponse:
@@ -184,8 +185,8 @@ async def _next_goal_board(
 ) -> list[tuple[LiveMatch, tuple[str, ...]]]:
     try:
         return await list_next_goal_matches(engine)
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
 
 
 async def live_next_goal(request: Request) -> HTMLResponse:
@@ -203,8 +204,8 @@ async def live_next_goal(request: Request) -> HTMLResponse:
         sandbox_coupons = await load_sandbox_coupon_labels(
             engine, [item.fixture_id for item in matches]
         )
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     try:
         cards = await load_recommendation_html(engine)
     except Exception:
@@ -244,8 +245,8 @@ async def live_next_goal_json(request: Request) -> dict[str, Any]:
         sandbox_coupons = await load_sandbox_coupon_labels(
             engine, [item.fixture_id for item in matches]
         )
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "count": len(selected),
@@ -290,8 +291,8 @@ async def _day_page(request: Request, raw: str | None) -> HTMLResponse:
             selected = parsed
     try:
         matches = await list_day_matches(_engine(request), selected)
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     html = render_day_html(
         matches,
         day=selected,
@@ -306,15 +307,15 @@ async def live_match(request: Request, fixture_id: int) -> HTMLResponse:
     engine = _engine(request)
     try:
         detail = await load_match_detail(engine, fixture_id)
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     if detail is None:
         return HTMLResponse(render_match_missing(), status_code=404)
     try:
         notes = await load_llm_notes(engine, [detail.match])
         coupons = await load_sandbox_coupon_labels(engine, [detail.match.fixture_id])
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     note = notes.get(detail.match.fixture_id)
     llm_html = "" if note is None else render_llm_note(note)
     return HTMLResponse(
@@ -330,8 +331,8 @@ async def live_match(request: Request, fixture_id: int) -> HTMLResponse:
 async def live_bets(request: Request) -> HTMLResponse:
     try:
         payload = await load_history_payload(_engine(request))
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     html = render_bets_html(
         payload,
         generated_at=datetime.now(UTC),
@@ -343,8 +344,8 @@ async def live_bets(request: Request) -> HTMLResponse:
 async def live_bets_json(request: Request) -> dict[str, Any]:
     try:
         return await load_history_payload(_engine(request))
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
 
 
 async def place_live_bet(
@@ -378,7 +379,7 @@ async def place_live_bet(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from exc
+        raise postgres_unavailable(exc) from exc
     if wants_json:
         return JSONResponse(payload, status_code=201)
     return RedirectResponse(url="/live/next-goal", status_code=303)
@@ -403,7 +404,7 @@ async def settle_live_bet(
             return JSONResponse({"detail": exc.detail}, status_code=exc.code)
         raise HTTPException(status_code=exc.code, detail=exc.detail) from exc
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from exc
+        raise postgres_unavailable(exc) from exc
     if wants_json:
         return JSONResponse(payload)
     referer = request.headers.get("referer") or "/live/bets"
@@ -426,8 +427,8 @@ async def metrics(
         counts = await task_counts(engine)
         queue_rows = await task_counts_by_endpoint(engine)
         gauges = await scrape_gauges(engine)
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     remaining = int(gauges["quota_remaining"])
     used = int(gauges["quota_used"])
     vendor_plan = int(gauges.get("quota_plan") or 0)
@@ -476,8 +477,8 @@ async def advisor_report(request: Request, period: str = "all") -> HTMLResponse:
     try:
         async with factory() as session:
             report = await load_yield_report(session, period=period)
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     return HTMLResponse(render_yield_report(report))
 
 
@@ -488,8 +489,8 @@ async def advisor_report_json(request: Request, period: str = "all") -> dict[str
     try:
         async with factory() as session:
             report = await load_yield_report(session, period=period)
-    except Exception:
-        raise HTTPException(status_code=503, detail="postgres_unavailable") from None
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
     return report_as_dict(report)
 
 
