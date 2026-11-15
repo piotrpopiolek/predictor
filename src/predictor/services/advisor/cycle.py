@@ -22,6 +22,7 @@ from predictor.constants import ADVISOR_CYCLE_LOCK_KEY
 from predictor.models.advisor import (
     AdvisorCycle,
     AdvisorDecision,
+    AdvisorGraphCheckpoint,
     AdvisorLangfuseOutbox,
 )
 from predictor.schemas.advisor import AdvisorSettings, CandidateDecision, LlmDecision
@@ -31,6 +32,13 @@ from predictor.services.advisor.budget import (
     estimate_call_cost,
     estimate_tokens,
     utc_day_bounds,
+)
+from predictor.services.advisor.graph import (
+    CycleGraphState,
+    decision_label,
+    interrupt_closed,
+    recommendation_waits,
+    run_graph,
 )
 from predictor.services.advisor.langfuse import (
     TraceDraft,
@@ -43,7 +51,17 @@ from predictor.services.advisor.llm.protocol import LlmProvider, ProviderError
 from predictor.services.advisor.llm.schema import response_json_schema
 from predictor.services.advisor.llm.validate import PricedCandidate, review_model_output
 from predictor.services.advisor.recommend_ops import place_proposed
-from predictor.services.advisor.sandbox import place_sandbox_coupons, reply_slips
+from predictor.services.advisor.sandbox import (
+    LegSnapshot,
+    SandboxSlip,
+    place_sandbox_coupons,
+    reply_slips,
+)
+from predictor.services.advisor.telegram import (
+    KIND_DECISION_WAIT,
+    enqueue,
+    waiting_decision_text,
+)
 from predictor.services.lock import hold_session_lock
 
 _DECISION_SCHEMA = response_json_schema(LlmDecision)
@@ -346,17 +364,33 @@ async def _commit_cycle(
             coupon_ids = await _place_if_sandbox(
                 session, cycle, request, stored, coupon_fixtures
             )
-            if request.recommend and request.recommendation_stake is not None:
-                allowed = [
-                    fixtures
-                    for fixtures in coupon_fixtures
-                    if fixtures
-                    and all(
-                        fixture_id in request.recommendation_fixtures
-                        for fixture_id in fixtures
-                    )
-                ]
-                reco = reply_slips(allowed, request.candidates, stored)
+            decision = decision_label(
+                cycle.validation_status,
+                tuple(item.decision for item in decisions),
+            )
+            reco = _recommendation_slips(request, stored, coupon_fixtures)
+            waiting = recommendation_waits(
+                recommend=request.recommend,
+                validation_status=cycle.validation_status,
+                decision=decision,
+                has_slip=bool(reco),
+            )
+            run_graph(
+                CycleGraphState(
+                    mode=request.mode,
+                    recommend=request.recommend,
+                    validation_status=cycle.validation_status,
+                    decision=decision,
+                    interrupt=waiting,
+                    node="",
+                    trail=(),
+                )
+            )
+            if (
+                request.recommend
+                and request.recommendation_stake is not None
+                and not waiting
+            ):
                 await place_proposed(
                     session,
                     strategy_id=request.strategy_id,
@@ -366,7 +400,146 @@ async def _commit_cycle(
                     stake=request.recommendation_stake,
                     created_at=cycle.finished_at or cycle.started_at,
                 )
-        return cycle.id, tuple(skipped), coupon_ids
+        else:
+            waiting = False
+            decision = "invalid"
+            reco = ()
+        cycle_id = cycle.id
+    if request is not None and waiting:
+        async with session.begin():
+            _save_checkpoint(
+                session,
+                cycle_id=cycle_id,
+                node="interrupt",
+                status="waiting_human",
+                state=_checkpoint_state(request, decision, reco),
+            )
+            enqueue(session, KIND_DECISION_WAIT, waiting_decision_text(cycle_id))
+    return cycle_id, tuple(skipped), coupon_ids
+
+
+def _recommendation_slips(
+    request: CycleRequest,
+    stored: set[int],
+    coupon_fixtures: Sequence[Sequence[int]],
+):
+    allowed = [
+        fixtures
+        for fixtures in coupon_fixtures
+        if fixtures
+        and all(
+            fixture_id in request.recommendation_fixtures for fixture_id in fixtures
+        )
+    ]
+    return reply_slips(allowed, request.candidates, stored)
+
+
+def _checkpoint_state(
+    request: CycleRequest,
+    decision: str,
+    reco,
+) -> dict[str, Any]:
+    return {
+        "mode": request.mode,
+        "decision": decision,
+        "prompt_version": request.prompt_version,
+        "strategy_id": request.strategy_id,
+        "strategy_version_id": request.strategy_version_id,
+        "candidate_ids": [item.fixture_id for item in request.candidates],
+        "stake": (
+            None
+            if request.recommendation_stake is None
+            else str(request.recommendation_stake)
+        ),
+        "coupons": [
+            [
+                {
+                    "fixture_id": leg.fixture_id,
+                    "period": leg.period,
+                    "goals_home": leg.goals_home,
+                    "goals_away": leg.goals_away,
+                    "odd": str(leg.odd),
+                    "n": leg.n,
+                }
+                for leg in slip.legs
+            ]
+            for slip in reco
+        ],
+    }
+
+
+def _save_checkpoint(
+    session: AsyncSession,
+    *,
+    cycle_id: int,
+    node: str,
+    status: str,
+    state: dict[str, Any],
+) -> None:
+    session.add(
+        AdvisorGraphCheckpoint(
+            cycle_id=cycle_id,
+            node_name=node,
+            state=state,
+            status=status,
+            updated_at=datetime.now(UTC),
+        )
+    )
+
+
+async def resume_recommendation(
+    session: AsyncSession,
+    cycle_id: int,
+    verdict: str,
+    *,
+    now: datetime,
+    score_changed: bool,
+) -> str:
+    """Continue a waiting recommendation. Does not change the cycle row."""
+    _require_idle(session)
+    async with session.begin():
+        row = await session.get(AdvisorGraphCheckpoint, cycle_id)
+        if row is None or row.status != "waiting_human":
+            return "missing"
+        closed = verdict == "reject" or interrupt_closed(
+            row.updated_at, now, score_changed=score_changed
+        )
+        if closed:
+            row.status = "done"
+            row.node_name = "commit"
+            row.updated_at = now
+            return "rejected" if verdict == "reject" else "closed"
+        state = dict(row.state)
+        stake = Decimal(str(state["stake"]))
+        slips = tuple(
+            SandboxSlip(
+                tuple(
+                    LegSnapshot(
+                        fixture_id=int(leg["fixture_id"]),
+                        period=str(leg["period"]),
+                        goals_home=int(leg["goals_home"]),
+                        goals_away=int(leg["goals_away"]),
+                        odd=Decimal(str(leg["odd"])),
+                        n=int(leg["n"]),
+                    )
+                    for leg in coupon
+                )
+            )
+            for coupon in state["coupons"]
+        )
+        await place_proposed(
+            session,
+            strategy_id=int(state["strategy_id"]),
+            strategy_version_id=int(state["strategy_version_id"]),
+            slips=slips,
+            cycle_id=cycle_id,
+            stake=stake,
+            created_at=now,
+        )
+        row.status = "done"
+        row.node_name = "commit"
+        row.updated_at = now
+        return "accepted"
 
 
 async def _place_if_sandbox(
@@ -376,8 +549,14 @@ async def _place_if_sandbox(
     stored: set[int],
     coupon_fixtures: Sequence[Sequence[int]],
 ) -> tuple[int, ...]:
-    """Coupons share the decision transaction. Only a valid sandbox reply."""
-    if request.mode != "sandbox" or cycle.validation_status != "ok":
+    """Virtual book is committed before a recommendation wait.
+
+    Sandbox mode and an open recommendation gate both write it. The
+    recommendation coupon itself is not created here.
+    """
+    if cycle.validation_status != "ok":
+        return ()
+    if request.mode != "sandbox" and not request.recommend:
         return ()
     if cycle.finished_at is None:
         return ()

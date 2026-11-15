@@ -15,7 +15,13 @@ KIND_RECOMMENDATION = "recommendation"
 KIND_WITHDRAW = "withdraw"
 KIND_SUMMARY = "summary"
 KIND_SANDBOX_LLM = "sandbox_llm"
-OPERATOR_KINDS = (KIND_RECOMMENDATION, KIND_WITHDRAW, KIND_SUMMARY)
+KIND_DECISION_WAIT = "decision_wait"
+OPERATOR_KINDS = (
+    KIND_RECOMMENDATION,
+    KIND_WITHDRAW,
+    KIND_SUMMARY,
+    KIND_DECISION_WAIT,
+)
 
 
 class TelegramError(Exception):
@@ -58,6 +64,11 @@ def sandbox_llm_text(
         f"Kurs łączny {combined}\n"
         f"Stawka {stake}"
     )
+
+
+def waiting_decision_text(cycle_id: int) -> str:
+    """Operator chat only. No coupon, no token, no button."""
+    return f"Czekam na decyzję.\n/advisor/recommendations?cycle={cycle_id}"
 
 
 def enqueue(session: AsyncSession, kind: str, text: str) -> None:

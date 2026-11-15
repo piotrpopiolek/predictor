@@ -13,12 +13,15 @@ from sqlalchemy import delete, func, select
 
 from predictor.models.advisor import (
     AdvisorCoupon,
+    AdvisorCouponEvent,
     AdvisorCycle,
     AdvisorDecision,
+    AdvisorGraphCheckpoint,
     AdvisorLangfuseOutbox,
     AdvisorLeg,
     AdvisorStrategy,
     AdvisorStrategyVersion,
+    AdvisorTelegramOutbox,
 )
 from predictor.models.catalog import League
 from predictor.models.fixtures import Fixture, Team
@@ -32,9 +35,11 @@ from predictor.services.advisor.budget import (
 from predictor.services.advisor.cycle import (
     CycleCandidate,
     CycleRequest,
+    resume_recommendation,
     run_cycle,
 )
 from predictor.services.advisor.llm.protocol import LlmCompletion, ProviderError
+from predictor.services.advisor.telegram import KIND_DECISION_WAIT
 
 NOW = datetime(2026, 10, 18, 15, 0, tzinfo=UTC)
 LEAGUE = 880_001
@@ -436,6 +441,121 @@ async def test_second_cycle_waits_until_the_first_cost_is_committed() -> None:
                 home=880_012,
                 away=880_013,
                 fixture=880_014,
+            )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_recommendation_bet_waits_until_accept() -> None:
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    version_id = 0
+    strategy_id = 0
+    fixture = 880_904
+    cycle_id = None
+    try:
+        async with factory() as session, session.begin():
+            version_id, strategy_id = await _seed(
+                session,
+                league=880_901,
+                home=880_902,
+                away=880_903,
+                fixture=fixture,
+                name="advisor-cycle-wait",
+            )
+        request = replace(
+            _request(),
+            strategy_id=strategy_id,
+            strategy_version_id=version_id,
+            mode="recommendation",
+            recommend=True,
+            recommendation_stake=Decimal("20.00"),
+            recommendation_fixtures=frozenset({fixture}),
+            candidates=(replace(_request().candidates[0], fixture_id=fixture),),
+        )
+        async with factory() as session:
+            outcome = await run_cycle(
+                session,
+                _Provider(_reply("bet", fixture)),
+                _settings(),
+                request,
+                clock=lambda: NOW,
+            )
+        assert outcome.status == "ok"
+        cycle_id = outcome.cycle_id
+        async with factory() as session:
+            coupons = (
+                await session.scalars(
+                    select(AdvisorCoupon).where(
+                        AdvisorCoupon.cycle_id == outcome.cycle_id
+                    )
+                )
+            ).all()
+            checkpoint = await session.get(AdvisorGraphCheckpoint, outcome.cycle_id)
+            cycle = await session.get(AdvisorCycle, outcome.cycle_id)
+        assert {item.mode for item in coupons} == {"sandbox"}
+        assert checkpoint is not None
+        assert checkpoint.status == "waiting_human"
+        assert cycle is not None
+        assert cycle.validation_status == "ok"
+        async with factory() as session:
+            resumed = await resume_recommendation(
+                session,
+                outcome.cycle_id,
+                "accept",
+                now=NOW,
+                score_changed=False,
+            )
+        assert resumed == "accepted"
+        async with factory() as session:
+            again = await resume_recommendation(
+                session,
+                outcome.cycle_id,
+                "accept",
+                now=NOW,
+                score_changed=False,
+            )
+            modes = (
+                await session.scalars(
+                    select(AdvisorCoupon.mode).where(
+                        AdvisorCoupon.cycle_id == outcome.cycle_id
+                    )
+                )
+            ).all()
+            checkpoint = await session.get(AdvisorGraphCheckpoint, outcome.cycle_id)
+        assert again == "missing"
+        assert sorted(modes) == ["recommendation", "sandbox"]
+        assert checkpoint is not None and checkpoint.status == "done"
+    finally:
+        async with factory() as session, session.begin():
+            if version_id:
+                coupon_ids = select(AdvisorCoupon.id).where(
+                    AdvisorCoupon.strategy_version_id == version_id
+                )
+                await session.execute(
+                    delete(AdvisorCouponEvent).where(
+                        AdvisorCouponEvent.coupon_id.in_(coupon_ids)
+                    )
+                )
+                await session.execute(
+                    delete(AdvisorTelegramOutbox).where(
+                        AdvisorTelegramOutbox.kind == KIND_DECISION_WAIT
+                    )
+                )
+            if cycle_id is not None:
+                await session.execute(
+                    delete(AdvisorGraphCheckpoint).where(
+                        AdvisorGraphCheckpoint.cycle_id == cycle_id
+                    )
+                )
+            await _cleanup(
+                session,
+                strategy_id,
+                version_id,
+                league=880_901,
+                home=880_902,
+                away=880_903,
+                fixture=fixture,
             )
         await engine.dispose()
 
