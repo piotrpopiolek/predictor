@@ -471,6 +471,81 @@ class AdvisorOddsRefresh(Base):
     )
 
 
+class AdvisorGraphCheckpoint(Base):
+    """Mutable graph cursor for one cycle. The cycle row itself is never updated."""
+
+    __tablename__ = "advisor_graph_checkpoint"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'waiting_human', 'done')",
+            name="advisor_graph_checkpoint_status_check",
+        ),
+    )
+
+    cycle_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("advisor_cycles.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    node_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AdvisorPlayClaim(Base):
+    """Whether the operator played one sandbox-llm coupon. Not a graph checkpoint."""
+
+    __tablename__ = "advisor_play_claims"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'played', 'not_played')",
+            name="advisor_play_claims_status_check",
+        ),
+        CheckConstraint(
+            "recommendation_coupon_id IS NULL "
+            "OR recommendation_coupon_id <> sandbox_coupon_id",
+            name="advisor_play_claims_distinct_coupon_check",
+        ),
+        CheckConstraint(
+            "("
+            "status = 'pending' AND combined_odd IS NULL AND stake IS NULL "
+            "AND recommendation_coupon_id IS NULL AND answered_at IS NULL"
+            ") OR ("
+            "status = 'played' AND combined_odd > 1 AND stake > 0 "
+            "AND recommendation_coupon_id IS NOT NULL AND answered_at IS NOT NULL"
+            ") OR ("
+            "status = 'not_played' AND combined_odd IS NULL AND stake IS NULL "
+            "AND recommendation_coupon_id IS NULL AND answered_at IS NOT NULL"
+            ")",
+            name="advisor_play_claims_shape_check",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    sandbox_coupon_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("advisor_coupons.id", ondelete="RESTRICT"),
+        unique=True,
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    combined_odd: Mapped[Decimal | None] = mapped_column(Numeric(10, 3), nullable=True)
+    stake: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    recommendation_coupon_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("advisor_coupons.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    asked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    answered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class AdvisorTelegramOutbox(Base):
     """One Telegram send. The payload is the message text, never a token."""
 

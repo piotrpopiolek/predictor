@@ -59,6 +59,8 @@ EXPECTED_TABLES = frozenset(
         "advisor_strategy_events",
         "advisor_telegram_outbox",
         "advisor_odds_refresh",
+        "advisor_graph_checkpoint",
+        "advisor_play_claims",
     }
 )
 
@@ -101,7 +103,7 @@ def test_alembic_head_is_cycle_single_rules() -> None:
     with app_connect() as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     assert version is not None
-    assert version[0] == "0026_cycle_single_rules"
+    assert version[0] == "0027_advisor_graph_play"
 
 
 def test_fixture_odds_live_pk_is_append_only() -> None:
