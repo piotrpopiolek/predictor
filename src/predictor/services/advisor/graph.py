@@ -77,7 +77,7 @@ def _builder() -> StateGraph[CycleGraphState]:
 
 def _mark(name: str) -> Any:
     def step(state: CycleGraphState) -> dict[str, Any]:
-        with start_span(f"advisor.cycle.{name}"):
+        with start_span(name):
             trail = tuple(state.get("trail", ())) + (name,)
             return {"node": name, "trail": trail}
 

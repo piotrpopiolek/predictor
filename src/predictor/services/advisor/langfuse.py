@@ -73,6 +73,7 @@ class TraceDraft:
     latency_ms: int | None
     started_at: datetime
     finished_at: datetime
+    exit_node: str = "commit"
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,16 +96,74 @@ def redact(value: Any, secrets: Sequence[str]) -> Any:
 
 
 def build_trace(draft: TraceDraft, secrets: Sequence[str]) -> TraceExport:
-    """One generation span for a single model call."""
+    """One trace: the cycle, then its graph nodes. Only ``decide`` is a generation."""
     trace_id = uuid.uuid4().hex
-    span_id = uuid.uuid4().hex[:16]
+    parent_id = _span_id()
     start = _aware(draft.started_at)
     end = _aware(draft.finished_at)
     if end < start:
         end = start
+    failed = draft.status == "provider_error"
+    status = {"code": 2, "message": draft.status} if failed else {"code": 1}
+    exit_node = (
+        draft.exit_node if draft.exit_node in {"interrupt", "commit"} else "commit"
+    )
+    names = ("prepare", "decide", "validate", exit_node)
+    spans = [
+        _span(
+            trace_id=trace_id,
+            span_id=parent_id,
+            parent_id=None,
+            name="advisor.cycle",
+            kind=1,
+            start=start,
+            end=end,
+            attributes=[
+                _string("langfuse.trace.name", "advisor.cycle"),
+                _string("langfuse.observation.metadata.mode", draft.mode),
+                _string(
+                    "langfuse.observation.metadata.validation_status", draft.status
+                ),
+            ],
+            status=status,
+        )
+    ]
+    for name in names:
+        spans.append(
+            _span(
+                trace_id=trace_id,
+                span_id=_span_id(),
+                parent_id=parent_id,
+                name=name,
+                kind=3 if name == "decide" else 1,
+                start=start,
+                end=end,
+                attributes=(
+                    _decide_attributes(draft, secrets) if name == "decide" else []
+                ),
+                status=status if name == "decide" else {"code": 1},
+            )
+        )
+    body: dict[str, Any] = {
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [_string("service.name", "predictor-advisor")]
+                },
+                "scopeSpans": [
+                    {"scope": {"name": "predictor.advisor"}, "spans": spans}
+                ],
+            }
+        ]
+    }
+    return TraceExport(trace_id, body)
+
+
+def _decide_attributes(
+    draft: TraceDraft, secrets: Sequence[str]
+) -> list[dict[str, Any]]:
     output = "" if draft.output is None else draft.output
     attributes = [
-        _string("langfuse.trace.name", "advisor.cycle"),
         _string("langfuse.observation.type", "generation"),
         _string("langfuse.version", draft.prompt_version),
         _string("gen_ai.system", draft.provider),
@@ -128,37 +187,38 @@ def build_trace(draft: TraceDraft, secrets: Sequence[str]) -> TraceExport:
         attributes.append(
             _int("langfuse.observation.metadata.latency_ms", draft.latency_ms)
         )
+    return attributes
+
+
+def _span_id() -> str:
+    return uuid.uuid4().hex[:16]
+
+
+def _span(
+    *,
+    trace_id: str,
+    span_id: str,
+    parent_id: str | None,
+    name: str,
+    kind: int,
+    start: datetime,
+    end: datetime,
+    attributes: list[dict[str, Any]],
+    status: dict[str, Any],
+) -> dict[str, Any]:
     body: dict[str, Any] = {
-        "resourceSpans": [
-            {
-                "resource": {
-                    "attributes": [_string("service.name", "predictor-advisor")]
-                },
-                "scopeSpans": [
-                    {
-                        "scope": {"name": "predictor.advisor"},
-                        "spans": [
-                            {
-                                "traceId": trace_id,
-                                "spanId": span_id,
-                                "name": "advisor.cycle",
-                                "kind": 3,
-                                "startTimeUnixNano": _nano(start),
-                                "endTimeUnixNano": _nano(end),
-                                "attributes": attributes,
-                                "status": (
-                                    {"code": 2, "message": draft.status}
-                                    if draft.status == "provider_error"
-                                    else {"code": 1}
-                                ),
-                            }
-                        ],
-                    }
-                ],
-            }
-        ]
+        "traceId": trace_id,
+        "spanId": span_id,
+        "name": name,
+        "kind": kind,
+        "startTimeUnixNano": _nano(start),
+        "endTimeUnixNano": _nano(end),
+        "attributes": attributes,
+        "status": status,
     }
-    return TraceExport(trace_id, body)
+    if parent_id is not None:
+        body["parentSpanId"] = parent_id
+    return body
 
 
 def sink_from_settings(settings: AdvisorSettings) -> LangfuseSink | None:

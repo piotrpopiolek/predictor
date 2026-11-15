@@ -69,6 +69,7 @@ from predictor.services.advisor.telegram import (
     waiting_decision_text,
 )
 from predictor.services.lock import hold_session_lock
+from predictor.telemetry import start_span
 
 _DECISION_SCHEMA = response_json_schema(LlmDecision)
 
@@ -227,7 +228,7 @@ async def _run_locked(
         cycle_id, _skipped, _coupons = await _commit_cycle(
             session,
             failed,
-            export=_export(traces, failed, redact_secrets),
+            export=None if traces is None else _export(failed, redact_secrets),
         )
         return CycleOutcome(True, "provider_error", cycle_id, exc.code)
     verdict = review_model_output(
@@ -274,7 +275,8 @@ async def _run_locked(
         request,
         decisions,
         coupon_fixtures,
-        export=_export(traces, cycle, redact_secrets),
+        export=None if traces is None else _export(cycle, redact_secrets),
+        redact_secrets=redact_secrets,
     )
     return CycleOutcome(
         True,
@@ -342,24 +344,13 @@ async def _commit_cycle(
     decisions: Sequence[CandidateDecision] = (),
     coupon_fixtures: Sequence[Sequence[int]] = (),
     export: TraceExport | None = None,
+    redact_secrets: tuple[str, ...] = (),
 ) -> tuple[int, tuple[int, ...], tuple[int, ...]]:
     skipped: list[int] = []
     coupon_ids: tuple[int, ...] = ()
     async with session.begin():
-        if export is not None:
-            cycle.langfuse_trace_id = export.trace_id
         session.add(cycle)
         await session.flush()
-        if export is not None:
-            session.add(
-                AdvisorLangfuseOutbox(
-                    cycle_id=cycle.id,
-                    trace_id=export.trace_id,
-                    payload=export.body,
-                    attempts=0,
-                    status="pending",
-                )
-            )
         if request is not None:
             stored: set[int] = set()
             for decision in decisions:
@@ -399,19 +390,37 @@ async def _commit_cycle(
             waiting = False
             label = "invalid"
             reco = ()
+        if export is not None and request is not None:
+            export = _export(
+                cycle,
+                redact_secrets,
+                exit_node="interrupt" if waiting else "commit",
+            )
+        if export is not None:
+            cycle.langfuse_trace_id = export.trace_id
+            session.add(
+                AdvisorLangfuseOutbox(
+                    cycle_id=cycle.id,
+                    trace_id=export.trace_id,
+                    payload=export.body,
+                    attempts=0,
+                    status="pending",
+                )
+            )
         cycle_id = cycle.id
     if request is not None:
-        final = run_graph(
-            CycleGraphState(
-                mode=request.mode,
-                recommend=request.recommend,
-                validation_status=cycle.validation_status,
-                decision=label,
-                interrupt=waiting,
-                node="",
-                trail=(),
+        with start_span("advisor.cycle"):
+            final = run_graph(
+                CycleGraphState(
+                    mode=request.mode,
+                    recommend=request.recommend,
+                    validation_status=cycle.validation_status,
+                    decision=label,
+                    interrupt=waiting,
+                    node="",
+                    trail=(),
+                )
             )
-        )
         if final["node"] == "interrupt":
             async with session.begin():
                 _save_checkpoint(
@@ -716,12 +725,11 @@ def _latency(started: float) -> int:
 
 
 def _export(
-    traces: TraceSink | None,
     cycle: AdvisorCycle,
     secrets: tuple[str, ...],
-) -> TraceExport | None:
-    if traces is None:
-        return None
+    *,
+    exit_node: str = "commit",
+) -> TraceExport:
     finished = cycle.finished_at or cycle.started_at
     return build_trace(
         TraceDraft(
@@ -741,6 +749,7 @@ def _export(
             latency_ms=cycle.latency_ms,
             started_at=cycle.started_at,
             finished_at=finished,
+            exit_node=exit_node,
         ),
         secrets,
     )

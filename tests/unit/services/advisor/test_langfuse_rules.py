@@ -89,11 +89,38 @@ def test_provider_error_is_an_error_span() -> None:
     assert SECRET not in rendered
     assert "db.internal" not in rendered
     assert "tailsecret" not in rendered
-    span = export.body["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
-    assert span["traceId"] == export.trace_id
-    assert span["status"]["code"] == 2
-    assert span["status"]["message"] == "provider_error"
+    spans = export.body["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    decide = next(item for item in spans if item["name"] == "decide")
+    assert decide["traceId"] == export.trace_id
+    assert decide["status"]["code"] == 2
+    assert decide["status"]["message"] == "provider_error"
     assert len(export.trace_id) == 32
+
+
+def test_trace_children_follow_the_graph_and_only_decide_is_a_generation() -> None:
+    export = build_trace(replace(_PLAIN, exit_node="interrupt"), ())
+    spans = export.body["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    names = [item["name"] for item in spans]
+    assert names == ["advisor.cycle", "prepare", "decide", "validate", "interrupt"]
+    parent = spans[0]["spanId"]
+    assert "parentSpanId" not in spans[0]
+    assert all(item["parentSpanId"] == parent for item in spans[1:])
+    kinds = {item["name"]: _attr(item, "langfuse.observation.type") for item in spans}
+    assert kinds["decide"] == "generation"
+    assert kinds["prepare"] is None
+    assert kinds["validate"] is None
+    assert kinds["interrupt"] is None
+    decide = next(item for item in spans if item["name"] == "decide")
+    assert _attr(spans[1], "gen_ai.usage.input_tokens") is None
+    assert _attr(decide, "gen_ai.request.model") == "gemini-2.5-flash"
+
+
+def _attr(span: dict, key: str) -> str | None:
+    for item in span["attributes"]:
+        if item["key"] == key:
+            value = item["value"]
+            return str(value.get("stringValue", value.get("intValue")))
+    return None
 
 
 def test_empty_langfuse_keys_skip_the_export() -> None:
