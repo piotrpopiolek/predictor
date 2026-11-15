@@ -90,7 +90,8 @@ async def test_played_coupon_keeps_the_sandbox_price(
             )
             text = await session.scalar(
                 select(AdvisorTelegramOutbox.payload).where(
-                    AdvisorTelegramOutbox.kind == "play_claim"
+                    AdvisorTelegramOutbox.kind == "play_claim",
+                    cast(AdvisorTelegramOutbox.payload, String).like(f"%/{first}%"),
                 )
             )
         assert claim is not None and claim.status == "pending"

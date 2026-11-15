@@ -142,6 +142,21 @@ _COUPONS_CSS = """
     font-size: 0.72rem;
     font-variant-numeric: tabular-nums;
   }
+  .play-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: end;
+    margin: 8px 0 16px;
+  }
+  .play-form input[type="text"], .play-form input:not([type="hidden"]) {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 8px;
+  }
+  .warn { color: #f2cc60; }
 """
 _CHART_CSS = """
   :root {
@@ -305,6 +320,7 @@ def render_played_coupons(
     *,
     kind: str,
     limit: int = 50,
+    notice: str = "",
 ) -> str:
     """Live list shaped like /live/next-goal: league sections + match cards."""
     body = "".join(_coupon_section(item) for item in coupons)
@@ -334,6 +350,7 @@ def render_played_coupons(
 </header>
 <main>
   <nav class="coupon-filters" aria-label="Filtr">{_kind_nav(kind, limit)}</nav>
+  {"" if not notice else f'<p class="warn">{escape(notice)}</p>'}
   {body}
 </main>
 {_REFRESH_SCRIPT}
@@ -376,8 +393,32 @@ def _coupon_section(coupon: PlayedCouponView) -> str:
     <span class="sandbox-coupon {coupon.progress.value}">{escape(progress)}</span>
   </h2>
   {legs}
+  {_play_form(coupon)}
 </section>
 """
+
+
+def _play_form(coupon: PlayedCouponView) -> str:
+    if coupon.play_status is None:
+        return ""
+    if coupon.play_status == "played":
+        return '<p class="coupon-sub">Zagrane na koncie.</p>'
+    if coupon.play_status == "not_played":
+        return '<p class="coupon-sub">Oznaczone jako niezagrane.</p>'
+    odd = "" if coupon.combined_odd is None else format(coupon.combined_odd, "f")
+    stake = format(coupon.stake, "f")
+    played = f"/advisor/sandbox/{coupon.id}/played"
+    missed = f"/advisor/sandbox/{coupon.id}/not-played"
+    return (
+        f'<form class="play-form" method="post" action="{played}">'
+        '<input type="hidden" name="back" value="coupons">'
+        f'<label>Kurs łączny <input name="combined" value="{escape(odd)}"></label>'
+        f'<label>Stawka <input name="stake" value="{escape(stake)}"></label>'
+        '<button type="submit">Zagrałem</button></form>'
+        f'<form class="play-form" method="post" action="{missed}">'
+        '<input type="hidden" name="back" value="coupons">'
+        '<button type="submit">Nie zagrałem</button></form>'
+    )
 
 
 def _section_title(coupon: PlayedCouponView) -> str:

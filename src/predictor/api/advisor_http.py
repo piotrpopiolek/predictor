@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from predictor.api.errors import postgres_unavailable
+from predictor.constants import SANDBOX_LLM_NAME
 from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorCycle,
@@ -133,7 +134,10 @@ async def played_coupons(
     request: Request, kind: str = "all", limit: int = 50
 ) -> HTMLResponse:
     coupons = await _played(request.app, kind=kind, limit=limit)
-    return HTMLResponse(render_played_coupons(coupons, kind=kind, limit=limit))
+    notice = _PLAY_NOTICES.get(request.query_params.get("notice", ""), "")
+    return HTMLResponse(
+        render_played_coupons(coupons, kind=kind, limit=limit, notice=notice)
+    )
 
 
 async def played_coupons_json(
@@ -473,6 +477,7 @@ async def play_played(
     coupon_id: int,
     combined: str = Form(default=""),
     stake: str = Form(default=""),
+    back: str = Form(default=""),
 ) -> RedirectResponse:
     try:
         combined_value = Decimal(combined)
@@ -491,19 +496,25 @@ async def play_played(
     )
     code, _placed, below = cast(tuple[str, int | None, bool], result)
     notice = "below" if below and code == "played" else str(code)
-    return RedirectResponse(
-        f"/advisor/sandbox/{coupon_id}?notice={notice}", status_code=303
-    )
+    return RedirectResponse(_play_back(coupon_id, back, notice), status_code=303)
 
 
-async def play_not_played(request: Request, coupon_id: int) -> RedirectResponse:
+async def play_not_played(
+    request: Request,
+    coupon_id: int,
+    back: str = Form(default=""),
+) -> RedirectResponse:
     await _act(
         request.app,
         lambda session: mark_claim_not_played(session, coupon_id, _now()),
     )
-    return RedirectResponse(
-        f"/advisor/sandbox/{coupon_id}?notice=not_played", status_code=303
-    )
+    return RedirectResponse(_play_back(coupon_id, back, "not_played"), status_code=303)
+
+
+def _play_back(coupon_id: int, back: str, notice: str) -> str:
+    if back == "coupons":
+        return f"/advisor/coupons?kind=llm&notice={notice}"
+    return f"/advisor/sandbox/{coupon_id}?notice={notice}"
 
 
 class _PlayCard(TypedDict):
@@ -520,9 +531,17 @@ async def _play_view(session: AsyncSession, coupon_id: int) -> _PlayCard | None:
         select(AdvisorPlayClaim).where(AdvisorPlayClaim.sandbox_coupon_id == coupon_id)
     )
     coupon = await session.get(AdvisorCoupon, coupon_id)
-    if claim is None or coupon is None:
+    if coupon is None or coupon.mode != "sandbox":
         return None
     version = await session.get(AdvisorStrategyVersion, coupon.strategy_version_id)
+    strategy = (
+        None
+        if version is None
+        else await session.get(AdvisorStrategy, version.strategy_id)
+    )
+    if strategy is None or strategy.name != SANDBOX_LLM_NAME:
+        return None
+    status = "pending" if claim is None else claim.status
     floor = version.min_combined_odd if version is not None else Decimal("1.600")
     legs = (
         await session.scalars(
@@ -537,7 +556,7 @@ async def _play_view(session: AsyncSession, coupon_id: int) -> _PlayCard | None:
     combined = coupon.combined_odd or Decimal("0")
     card: _PlayCard = {
         "coupon_id": int(coupon.id),
-        "status": claim.status,
+        "status": status,
         "stake": format(coupon.stake, "f"),
         "combined": format(combined, "f"),
         "floor": format(floor, "f"),

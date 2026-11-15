@@ -136,7 +136,7 @@ async def mark_not_played(
     session: AsyncSession, coupon_id: int, now: datetime
 ) -> str:
     """Record a no. A changed score still counts. A settled row stays put."""
-    claim = await _claim(session, coupon_id)
+    claim = await _claim(session, coupon_id, now)
     if claim.status != "pending":
         return claim.status
     claim.status = "not_played"
@@ -154,7 +154,7 @@ async def mark_played(
 ) -> tuple[str, int | None, bool]:
     """Create one placed coupon. The bool says the price is under the strategy floor."""
     _check_money(combined, stake)
-    claim = await _claim(session, coupon_id)
+    claim = await _claim(session, coupon_id, now)
     if claim.status == "played":
         return "played", claim.recommendation_coupon_id, False
     if claim.status != "pending":
@@ -243,14 +243,32 @@ def _check_money(combined: Decimal, stake: Decimal) -> None:
         raise ActionError("stake")
 
 
-async def _claim(session: AsyncSession, coupon_id: int) -> AdvisorPlayClaim:
+async def _claim(
+    session: AsyncSession, coupon_id: int, now: datetime
+) -> AdvisorPlayClaim:
     claim = await session.scalar(
         select(AdvisorPlayClaim)
         .where(AdvisorPlayClaim.sandbox_coupon_id == coupon_id)
         .with_for_update()
     )
-    if claim is None:
+    if claim is not None:
+        return claim
+    coupon = await session.get(AdvisorCoupon, coupon_id)
+    if coupon is None or coupon.mode != "sandbox":
         raise ActionError("missing")
+    version = await session.get(AdvisorStrategyVersion, coupon.strategy_version_id)
+    strategy = None
+    if version is not None:
+        strategy = await session.get(AdvisorStrategy, version.strategy_id)
+    if strategy is None or strategy.name != SANDBOX_LLM_NAME:
+        raise ActionError("missing")
+    claim = AdvisorPlayClaim(
+        sandbox_coupon_id=coupon_id,
+        status="pending",
+        asked_at=now,
+    )
+    session.add(claim)
+    await session.flush()
     return claim
 
 

@@ -13,10 +13,12 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from predictor.constants import SANDBOX_LLM_NAME
 from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorDecision,
     AdvisorLeg,
+    AdvisorPlayClaim,
     AdvisorStrategy,
     AdvisorStrategyVersion,
 )
@@ -76,6 +78,7 @@ class PlayedCouponView:
     combined_odd: Decimal | None
     legs: tuple[PlayedLegView, ...]
     progress: LiveProgress
+    play_status: str | None = None
 
 
 def parse_played_kind(raw: str) -> KindFilter:
@@ -275,7 +278,34 @@ async def load_played_coupons(
                 progress=live_coupon_progress(tuple(leg.progress for leg in legs)),
             )
         )
-    return tuple(views)
+    return await _with_play_status(session, tuple(views))
+
+
+async def _with_play_status(
+    session: AsyncSession, views: tuple[PlayedCouponView, ...]
+) -> tuple[PlayedCouponView, ...]:
+    ids = [
+        item.id
+        for item in views
+        if item.mode == "sandbox" and item.strategy == SANDBOX_LLM_NAME
+    ]
+    if not ids:
+        return views
+    rows = (
+        await session.execute(
+            select(AdvisorPlayClaim.sandbox_coupon_id, AdvisorPlayClaim.status).where(
+                AdvisorPlayClaim.sandbox_coupon_id.in_(ids)
+            )
+        )
+    ).all()
+    known = {int(coupon_id): str(status) for coupon_id, status in rows}
+    updated: list[PlayedCouponView] = []
+    for item in views:
+        if item.id not in ids:
+            updated.append(item)
+            continue
+        updated.append(replace(item, play_status=known.get(item.id, "pending")))
+    return tuple(updated)
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +374,7 @@ def _coupon_dict(coupon: PlayedCouponView) -> dict[str, Any]:
         "stake": _text(coupon.stake),
         "combined_odd": _text(coupon.combined_odd),
         "progress": coupon.progress.value,
+        "play_status": coupon.play_status,
         "legs": [_leg_dict(leg) for leg in coupon.legs],
     }
 
