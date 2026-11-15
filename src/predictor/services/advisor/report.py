@@ -174,14 +174,16 @@ def report_as_dict(report: YieldReport) -> dict[str, object]:
             }
             for pair in report.pairs
         ],
-        "play": None
-        if report.play is None
-        else {
-            "pending": report.play.pending,
-            "played": report.play.played,
-            "not_played": report.play.not_played,
-            "skipped_share": _text(report.play.skipped_share()),
-        },
+        "play": (
+            None
+            if report.play is None
+            else {
+                "pending": report.play.pending,
+                "played": report.play.played,
+                "not_played": report.play.not_played,
+                "skipped_share": _text(report.play.skipped_share()),
+            }
+        ),
         "charts": [
             {
                 "strategy_id": chart.strategy_id,

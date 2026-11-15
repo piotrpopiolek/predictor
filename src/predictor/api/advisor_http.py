@@ -482,7 +482,7 @@ async def play_played(
     try:
         combined_value = Decimal(combined)
         stake_value = Decimal(stake)
-    except (ValueError, ArithmeticError):
+    except ValueError, ArithmeticError:
         raise HTTPException(status_code=400, detail="invalid_form") from None
     result = await _act(
         request.app,

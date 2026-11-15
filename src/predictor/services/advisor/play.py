@@ -132,9 +132,7 @@ async def open_play_claim(
     return True
 
 
-async def mark_not_played(
-    session: AsyncSession, coupon_id: int, now: datetime
-) -> str:
+async def mark_not_played(session: AsyncSession, coupon_id: int, now: datetime) -> str:
     """Record a no. A changed score still counts. A settled row stays put."""
     claim = await _claim(session, coupon_id, now)
     if claim.status != "pending":

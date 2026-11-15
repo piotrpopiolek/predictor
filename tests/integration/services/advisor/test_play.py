@@ -57,12 +57,8 @@ async def test_played_coupon_keeps_the_sandbox_price(
     monkeypatch.setenv("ADVISOR_OPERATOR_HOURS", "0-24")
     monkeypatch.setenv("ADVISOR_RECOMMENDATION_COUPON_LIMIT", "100000")
     monkeypatch.setenv("ADVISOR_WITHDRAW_YIELD", "0")
-    monkeypatch.setattr(
-        "predictor.services.advisor.play.SANDBOX_LLM_NAME", NAME
-    )
-    monkeypatch.setattr(
-        "predictor.services.advisor.sandbox.SANDBOX_LLM_NAME", NAME
-    )
+    monkeypatch.setattr("predictor.services.advisor.play.SANDBOX_LLM_NAME", NAME)
+    monkeypatch.setattr("predictor.services.advisor.sandbox.SANDBOX_LLM_NAME", NAME)
     engine = make_async_engine(Settings())
     factory = make_session_factory(engine)
     version_id = 0
@@ -229,9 +225,7 @@ async def _wipe(session, strategy_id: int, version_id: int) -> None:
         )
     if version_id:
         await session.execute(
-            delete(AdvisorCoupon).where(
-                AdvisorCoupon.strategy_version_id == version_id
-            )
+            delete(AdvisorCoupon).where(AdvisorCoupon.strategy_version_id == version_id)
         )
         await session.execute(
             delete(AdvisorStrategyVersion).where(

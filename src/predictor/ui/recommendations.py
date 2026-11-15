@@ -153,7 +153,7 @@ def render_play_card(
     notice: str,
 ) -> str:
     items = "".join(f"<li>{escape(line)}</li>" for line in lines)
-    note = f"<p class=\"warn\">{escape(notice)}</p>" if notice else ""
+    note = f'<p class="warn">{escape(notice)}</p>' if notice else ""
     forms = ""
     if status == "pending":
         forms = f"""
