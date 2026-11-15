@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import String, cast, delete, select
+from sqlalchemy import String, cast, delete, select, update
 
 from predictor.constants import PAYOUT_KEEP
 from predictor.models.advisor import (
@@ -213,30 +213,34 @@ async def test_modify_stores_the_operator_odd_and_a_notice() -> None:
                 select(AdvisorLeg).where(AdvisorLeg.coupon_id == coupon_id)
             )
             notice = await session.scalar(
-                select(AdvisorTelegramOutbox).where(
-                    cast(AdvisorTelegramOutbox.payload, String).like(f"%/{coupon_id}%")
+                select(AdvisorTelegramOutbox)
+                .where(
+                    cast(AdvisorTelegramOutbox.payload, String).like(
+                        f"%/advisor/recommendations/{coupon_id}%"
+                    )
                 )
+                .order_by(AdvisorTelegramOutbox.id.desc())
             )
         assert coupon is not None and coupon.status == "modified"
         assert leg is not None and leg.odd == Decimal("1.400")
         assert notice is not None
         assert notice.status == "pending"
         assert "bot" not in str(notice.payload)
-        sent_ids: list[int] = []
-
-        async def _capture(token: str, chat_id: str, text: str) -> None:
-            await _post(token, chat_id, text)
-            if f"/{coupon_id}" in text:
-                sent_ids.append(coupon_id)
+        notice_id = notice.id
 
         async with factory() as session, session.begin():
-            await deliver_pending(
+            await session.execute(
+                update(AdvisorTelegramOutbox)
+                .where(AdvisorTelegramOutbox.id != notice_id)
+                .values(status="sent")
+            )
+            sent = await deliver_pending(
                 session,
                 token="secret-token",
                 chat_id="1",
-                post=_capture,
+                post=_post,
             )
-        assert sent_ids == [coupon_id]
+        assert sent == 1
         async with factory() as session:
             notice = await session.get(AdvisorTelegramOutbox, notice.id)
         assert notice is not None and notice.status == "sent"

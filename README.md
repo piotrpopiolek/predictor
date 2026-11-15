@@ -12,7 +12,7 @@ A private operator console for live football. One process mirrors an upstream da
 | HTTP API | FastAPI 0.141.1, uvicorn 0.52.4, Pydantic 2.13.5 |
 | Database | PostgreSQL 17, SQLAlchemy 2.0.52, Alembic 1.20.0, psycopg 3.3.5 |
 | External HTTP | httpx 0.28.1, tenacity 9.1.4 |
-| LLM | `google-genai` 2.31.0, model `gemini-2.5-flash` |
+| LLM | `google-genai` 2.31.0, model `gemini-3.5-flash` |
 | Telemetry | OpenTelemetry 1.45.2 (API, SDK, OTLP exporter; FastAPI, httpx, logging, SQLAlchemy) |
 | Dashboards | Prometheus 3.4, Alertmanager 0.28, Loki 3.5, Tempo 2.8, Grafana 11.6 |
 | Quality | ruff 0.16, black 26.10, **mypy strict**, pytest 9.1 (80% branch coverage gate) |
@@ -34,7 +34,9 @@ The UI is server-rendered HTML. There is no separate frontend.
 
 ## LLM integration
 
-One provider. Settings accept only `google`. The default model is `gemini-2.5-flash`.
+One provider. Settings accept only `google`. The default model is `gemini-3.5-flash`.
+
+A recommendation cycle is a graph that interrupts before the recommendation coupon is saved. After its virtual coupon, `sandbox-llm` asks for the combined price and stake of a real play. That question does not measure whether the model is right.
 
 Each cycle is a single `generate_content` call, not a chat session:
 
@@ -73,7 +75,7 @@ On every push and pull request, GitHub Actions runs `make test-ci`:
 
 A second job runs `pip-audit` on the production dependencies. Tests that touch the model use a fake client and do not call Gemini.
 
-Mutation testing is local only and is not a CI gate. `make mutmut` runs mutmut against the coupon-logic unit tests and writes survivors to `.mutmut-out/`. The 80% branch-coverage check stays the automated gate.
+Mutation testing is local only and is not a CI gate. `make mutmut` runs mutmut against the coupon-logic unit tests and writes survivors to `.mutmut-out/`. `make stability` runs two model calls on a frozen candidate set and prints how often the decisions match. It needs an API key and is not a CI gate. The 80% branch-coverage check stays the automated gate.
 
 ## Run locally
 

@@ -1,0 +1,26 @@
+[
+  {
+    "name": "single-chase",
+    "prompt": "Minute 67, score 0-1. One open Over 1.5 at 1.700. Reply with one candidate.",
+    "min_odd": "1.600",
+    "max_legs": 3,
+    "candidates": [{"fixture_id": 1, "odd": "1.700"}]
+  },
+  {
+    "name": "two-legs",
+    "prompt": "Two open Over lines, 1.500 and 1.400. A coupon may use one or both.",
+    "min_odd": "1.600",
+    "max_legs": 3,
+    "candidates": [
+      {"fixture_id": 2, "odd": "1.500"},
+      {"fixture_id": 3, "odd": "1.400"}
+    ]
+  },
+  {
+    "name": "short-price",
+    "prompt": "Minute 80, score 1-1. One open Over 2.5 at 1.250.",
+    "min_odd": "1.600",
+    "max_legs": 1,
+    "candidates": [{"fixture_id": 4, "odd": "1.250"}]
+  }
+]

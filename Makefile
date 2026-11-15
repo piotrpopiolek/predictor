@@ -13,7 +13,7 @@ COMPOSE_OBS := docker compose -f docker-compose.yml -f docker-compose.observabil
 COMPOSE_PROD := docker compose -f docker-compose.prod.yml -f docker-compose.observability.yml
 WORKER := $(COMPOSE) run --rm --no-deps worker
 
-.PHONY: up down logs migrate pytest pytest-unit test-ci mutmut up-obs up-prod down-prod build-prod promtool backup-restore-test
+.PHONY: up down logs migrate pytest pytest-unit test-ci mutmut stability up-obs up-prod down-prod build-prod promtool backup-restore-test
 
 up:
 	$(COMPOSE) up -d --build
@@ -45,6 +45,10 @@ backup-restore-test:
 	$(COMPOSE) up -d postgres --wait
 	$(COMPOSE) cp scripts/backup/test-restore.sh postgres:/tmp/test-restore.sh
 	$(COMPOSE) exec -T postgres bash /tmp/test-restore.sh
+
+# Local only. Two model passes on a frozen set. Not part of test-ci.
+stability:
+	$(COMPOSE) --profile advisor run --rm --no-deps advisor python -m predictor.advisor.stability
 
 # Local only. Hunts surviving mutants in coupon logic. Not part of test-ci.
 mutmut:
