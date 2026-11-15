@@ -6,9 +6,8 @@ across a process restart. The cycle row is never updated.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
 
 from langgraph.graph import END, StateGraph
 
@@ -76,8 +75,8 @@ def _builder() -> StateGraph[CycleGraphState]:
     return builder
 
 
-def _mark(name: str) -> Callable[[CycleGraphState], dict[str, object]]:
-    def step(state: CycleGraphState) -> dict[str, object]:
+def _mark(name: str) -> Any:
+    def step(state: CycleGraphState) -> dict[str, Any]:
         with start_span(f"advisor.cycle.{name}"):
             trail = tuple(state.get("trail", ())) + (name,)
             return {"node": name, "trail": trail}
