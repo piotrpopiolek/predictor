@@ -24,6 +24,7 @@ from predictor.services.advisor.candidates import (
 from predictor.services.advisor.cycle import CycleCandidate
 from predictor.services.advisor.domain import (
     LLM_STATUSES,
+    MAX_MINUTE_REGULATION,
     MIN_ANALYSIS_ODD,
     QUOTE_MAX_AGE,
     LineQuote,
@@ -49,7 +50,7 @@ from predictor.services.live_board.sql import list_next_goal_matches, load_first
 from predictor.services.next_goal_rules import match_minute
 
 _ACTIVE = frozenset({"sandbox", "promoted"})
-_DEFAULT_MINUTE = 80
+_DEFAULT_MINUTE = MAX_MINUTE_REGULATION
 
 
 class LlmGap(StrEnum):

@@ -33,6 +33,7 @@ from predictor.services.advisor.candidates import (
 )
 from predictor.services.advisor.cycle import CycleCandidate, CycleRequest, run_cycle
 from predictor.services.advisor.domain import (
+    MAX_MINUTE_REGULATION,
     MIN_ANALYSIS_ODD,
     QUOTE_MAX_AGE,
     PlayLimits,
@@ -578,7 +579,7 @@ async def ensure_strategy(session: AsyncSession, name: str, kind: str) -> Strate
             prompt_version=PROMPT_VERSION,
             min_combined_odd=Decimal("1.600"),
             max_legs=3,
-            max_minute_regulation=80,
+            max_minute_regulation=MAX_MINUTE_REGULATION,
             max_minute_extra=110,
             wait_minutes=10,
             candidate_rules=list(_BOARD_RULES),

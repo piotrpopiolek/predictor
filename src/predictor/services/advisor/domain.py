@@ -49,6 +49,8 @@ LLM_WEAK_FAVORITE_ODD = Decimal("1.800")  # at or above: weak_favorite
 LLM_SHORT_ODD = Decimal("1.200")
 LLM_SHORT_ODD_AFTER_MINUTE = 60
 LLM_SINGLE_MIN_ODD = Decimal("1.800")
+# Default last regulation minute on a new strategy version.
+MAX_MINUTE_REGULATION = 83
 
 REGULATION_OVER_UNDER = "over/under line"
 # Live dictionary name (lowercased). Same Over value labels as regulation.
