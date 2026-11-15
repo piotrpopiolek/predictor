@@ -596,15 +596,6 @@ _LIVE_CSS = """
 """
 
 
-def _token_field(operator_token: str | None) -> str:
-    if not operator_token:
-        return ""
-    return (
-        '<input type="hidden" name="token" '
-        f'value="{escape(operator_token, quote=True)}">'
-    )
-
-
 def sandbox_coupon_badge(label: str | None) -> str:
     """Corner mark for an open sandbox coupon on the board or match page."""
     if not label:
@@ -627,7 +618,6 @@ def _match_card(
     open_bet: dict[str, Any] | None = None,
     current_stake: str | None = None,
     show_kickoff: bool = False,
-    operator_token: str | None = None,
     llm_html: str = "",
     sandbox_coupon: str | None = None,
 ) -> str:
@@ -660,7 +650,6 @@ def _match_card(
             match,
             open_bet=open_bet,
             current_stake=current_stake,
-            operator_token=operator_token,
         )
     coupon_mark = sandbox_coupon_badge(sandbox_coupon)
     return f"""
@@ -710,9 +699,7 @@ def _bet_block(
     *,
     open_bet: dict[str, Any] | None,
     current_stake: str | None,
-    operator_token: str | None = None,
 ) -> str:
-    token = _token_field(operator_token)
     if open_bet is not None:
         odd = escape(str(open_bet.get("odd", "")))
         stake = escape(str(open_bet.get("stake", "")))
@@ -721,7 +708,6 @@ def _bet_block(
   <div class="bet-open" data-open-bet="1">
     <span class="bet-badge">Otwarty · Gol @ {odd} · stawka {stake}</span>
     <form class="bet-settle" method="post" action="/live/bets/{bet_id}/settle">
-      {token}
       <button type="submit" name="outcome" value="won">Wygrana</button>
       <button type="submit" name="outcome" value="lost">Przegrana</button>
       <button type="submit" name="outcome" value="void">Void</button>
@@ -736,7 +722,6 @@ def _bet_block(
     </button>
     <form class="bet-form" method="post" action="/live/bets" hidden>
       <input type="hidden" name="fixture_id" value="{match.fixture_id}">
-      {token}
       <p class="bet-market">
         Następny gol · <strong>padnie</strong> (bez względu kto strzeli)
       </p>
@@ -820,7 +805,6 @@ def render_live_html(
     active_nav: str = "all",
     open_bets: dict[int, dict[str, Any]] | None = None,
     current_stake: str | None = None,
-    operator_token: str | None = None,
     recommendation_html: str = "",
     llm_notes: dict[int, str] | None = None,
     sandbox_coupons: dict[int, str] | None = None,
@@ -843,7 +827,6 @@ def render_live_html(
                 allow_bet=allow_bet,
                 open_bet=bets.get(item.fixture_id),
                 current_stake=current_stake,
-                operator_token=operator_token,
                 llm_html=notes.get(item.fixture_id, ""),
                 sandbox_coupon=coupons.get(item.fixture_id),
             )
@@ -1418,14 +1401,12 @@ def render_bets_html(
     payload: dict[str, Any],
     *,
     generated_at: datetime,
-    operator_token: str | None = None,
 ) -> str:
     metrics = payload.get("metrics") or {}
     bets = list(payload.get("bets") or [])
     when = escape(generated_at.strftime("%H:%M:%S UTC"))
     nav = _live_nav("bets")
     hit = _pct(metrics.get("hit_rate"))
-    token = _token_field(operator_token)
     rows_html: list[str] = []
     for bet in reversed(bets):
         status = str(bet.get("status", ""))
@@ -1469,7 +1450,6 @@ def render_bets_html(
                 f"· Gol @ {_pl_num(bet.get('odd'))} "
                 f"<form class='bet-settle inline' method='post' "
                 f"action='/live/bets/{bet_id}/settle'>"
-                f"{token}"
                 f"<button type='submit' name='outcome' value='won'>W</button>"
                 f"<button type='submit' name='outcome' value='lost'>P</button>"
                 f"<button type='submit' name='outcome' value='void'>V</button>"

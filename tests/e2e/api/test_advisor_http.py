@@ -49,29 +49,13 @@ class _Seed:
     leg_id: int
 
 
-def _token() -> str:
-    return load_settings().operator_bet_token.get_secret_value()
-
-
-def _metrics_token() -> str:
-    return load_settings().prometheus_metrics_token.get_secret_value()
-
-
 def _post(
     client: TestClient,
     path: str,
     *,
-    bearer: str | None = None,
-    form_token: str | None = None,
     fields: dict[str, str] | None = None,
 ) -> object:
-    data = dict(fields or {})
-    if form_token is not None:
-        data["token"] = form_token
-    headers = {}
-    if bearer is not None:
-        headers["Authorization"] = f"Bearer {bearer}"
-    return client.post(path, data=data, headers=headers, follow_redirects=False)
+    return client.post(path, data=dict(fields or {}), follow_redirects=False)
 
 
 async def _wipe(session: AsyncSession) -> None:
@@ -238,46 +222,7 @@ def _fresh() -> datetime:
 
 
 @pytest.mark.asyncio
-async def test_posts_without_the_operator_token_leave_the_coupon() -> None:
-    async with _database() as factory:
-        async with factory() as session, session.begin():
-            seeded = (await _seed(session, created_at=_fresh()))[0]
-        events_before = await _events(factory, seeded.coupon_id)
-        paths = (
-            f"/advisor/recommendations/{seeded.coupon_id}/accept",
-            f"/advisor/recommendations/{seeded.coupon_id}/reject",
-            f"/advisor/recommendations/{seeded.coupon_id}/place",
-            f"/advisor/recommendations/{seeded.coupon_id}/not-placed",
-            f"/advisor/recommendations/{seeded.coupon_id}/modify",
-            f"/advisor/strategies/{seeded.strategy_id}/promote",
-            f"/advisor/strategies/{seeded.strategy_id}/pause",
-            f"/advisor/strategies/{seeded.strategy_id}/resume",
-            f"/advisor/strategies/{seeded.strategy_id}/launch",
-            f"/advisor/legs/{seeded.leg_id}/settle",
-        )
-        with TestClient(create_app()) as client:
-            for path in paths:
-                bare = _post(client, path)
-                assert bare.status_code == 401
-                assert bare.json()["detail"] == "unauthorized"
-                wrong = _post(client, path, bearer="not-the-token")
-                assert wrong.status_code == 401
-                metrics = _post(client, path, bearer=_metrics_token())
-                assert metrics.status_code == 401
-        coupon = await _coupon(factory, seeded.coupon_id)
-        async with factory() as session:
-            strategy = await session.get(AdvisorStrategy, seeded.strategy_id)
-            leg = await session.get(AdvisorLeg, seeded.leg_id)
-        assert coupon.status == "proposed"
-        assert coupon.placed_at is None
-        assert strategy is not None and strategy.status == "sandbox"
-        assert leg is not None and leg.status == "open"
-        assert leg.odd == Decimal("1.700")
-        assert await _events(factory, seeded.coupon_id) == events_before
-
-
-@pytest.mark.asyncio
-async def test_bearer_and_form_token_both_accept() -> None:
+async def test_accept_posts_change_the_coupon() -> None:
     async with _database() as factory:
         async with factory() as session, session.begin():
             first, second = await _seed(
@@ -289,12 +234,10 @@ async def test_bearer_and_form_token_both_accept() -> None:
             by_bearer = _post(
                 client,
                 f"/advisor/recommendations/{first.coupon_id}/accept",
-                bearer=_token(),
             )
             by_form = _post(
                 client,
                 f"/advisor/recommendations/{second.coupon_id}/accept",
-                form_token=_token(),
             )
         assert by_bearer.status_code == 303
         assert by_form.status_code == 303
@@ -317,7 +260,6 @@ async def test_form_token_places_an_accepted_coupon() -> None:
             response = _post(
                 client,
                 f"/advisor/recommendations/{seeded.coupon_id}/place",
-                form_token=_token(),
             )
         assert response.status_code == 303
         coupon = await _coupon(factory, seeded.coupon_id)
@@ -335,7 +277,6 @@ async def test_place_of_an_expired_coupon_is_409_and_writes_nothing() -> None:
             response = _post(
                 client,
                 f"/advisor/recommendations/{seeded.coupon_id}/place",
-                bearer=_token(),
             )
         assert response.status_code == 409
         assert response.json()["detail"] == "expired"
@@ -358,7 +299,6 @@ async def test_place_past_ttl_is_409_and_does_not_place() -> None:
             response = _post(
                 client,
                 f"/advisor/recommendations/{seeded.coupon_id}/place",
-                bearer=_token(),
             )
         assert response.status_code == 409
         assert response.json()["detail"] == "expired"
@@ -373,7 +313,6 @@ async def test_place_past_ttl_is_409_and_does_not_place() -> None:
 @pytest.mark.asyncio
 async def test_get_pages_do_not_expire_or_settle() -> None:
     stale = _fresh() - timedelta(minutes=10)
-    token = _token()
     async with _database() as factory:
         async with factory() as session, session.begin():
             seeded = (await _seed(session, created_at=stale, status="accepted"))[0]
@@ -387,9 +326,9 @@ async def test_get_pages_do_not_expire_or_settle() -> None:
         assert card.status_code == 200
         assert report.status_code == 200
         assert report_json.status_code == 200
-        assert token not in listing.text
-        assert token not in card.text
-        assert token not in report.text
+        assert 'name="token"' not in listing.text
+        assert 'name="token"' not in card.text
+        assert 'name="token"' not in report.text
         assert "accepted" in card.text
         coupon = await _coupon(factory, seeded.coupon_id)
         async with factory() as session:
@@ -410,7 +349,6 @@ async def test_modify_rejects_a_bad_form_and_stores_a_valid_one() -> None:
             bad = _post(
                 client,
                 f"/advisor/recommendations/{seeded.coupon_id}/modify",
-                form_token=_token(),
                 fields={"stake": "abc", "odds": f"{_FIXTURE}=1.50"},
             )
             assert bad.status_code == 400
@@ -420,7 +358,6 @@ async def test_modify_rejects_a_bad_form_and_stores_a_valid_one() -> None:
             good = _post(
                 client,
                 f"/advisor/recommendations/{seeded.coupon_id}/modify",
-                bearer=_token(),
                 fields={"stake": "20.00", "odds": f"{_FIXTURE}=1.50"},
             )
         assert good.status_code == 303
@@ -441,26 +378,22 @@ async def test_missing_coupon_is_404_and_pause_resume_round_trip() -> None:
             missing = _post(
                 client,
                 "/advisor/recommendations/991599/accept",
-                bearer=_token(),
             )
             assert missing.status_code == 404
             assert missing.json()["detail"] == "missing"
             paused = _post(
                 client,
                 f"/advisor/strategies/{seeded.strategy_id}/pause",
-                form_token=_token(),
             )
             assert paused.status_code == 303
             assert paused.headers["location"].endswith("/advisor/strategies")
             resumed = _post(
                 client,
                 f"/advisor/strategies/{seeded.strategy_id}/resume",
-                bearer=_token(),
             )
             blocked = _post(
                 client,
                 f"/advisor/strategies/{seeded.strategy_id}/promote",
-                bearer=_token(),
             )
         assert resumed.status_code == 303
         assert blocked.status_code == 409

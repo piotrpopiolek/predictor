@@ -124,14 +124,6 @@ def test_postgres_port_range(valid_env: None, monkeypatch: pytest.MonkeyPatch) -
         load_settings()
 
 
-def test_operator_bet_token_must_differ_from_metrics(
-    valid_env: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("OPERATOR_BET_TOKEN", "test-metrics-token")
-    with pytest.raises(SettingsError, match="OPERATOR_BET_TOKEN"):
-        load_settings()
-
-
 def test_does_not_sniff_dsn(valid_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(
         "DATABASE_URL",

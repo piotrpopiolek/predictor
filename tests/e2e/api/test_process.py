@@ -207,31 +207,17 @@ def test_place_and_settle_bet_json(
     monkeypatch.setattr("predictor.api.main.settle_bet_manual", fake_settle)
     monkeypatch.setattr("predictor.api.main.AsyncSession", _SessionCM)
 
-    auth = {"Authorization": "Bearer test-operator-bet-token"}
-    metrics_auth = {"Authorization": "Bearer test-metrics-token"}
     with TestClient(create_app()) as client:
-        denied = client.post(
+        place = client.post(
             "/live/bets",
             data={"fixture_id": "42", "odd": "1.70"},
             headers={"Accept": "application/json"},
         )
-        metrics_denied = client.post(
-            "/live/bets",
-            data={"fixture_id": "42", "odd": "1.70"},
-            headers={"Accept": "application/json", **metrics_auth},
-        )
-        place = client.post(
-            "/live/bets",
-            data={"fixture_id": "42", "odd": "1.70"},
-            headers={"Accept": "application/json", **auth},
-        )
         settle = client.post(
             "/live/bets/7/settle",
             data={"outcome": "won"},
-            headers={"Accept": "application/json", **auth},
+            headers={"Accept": "application/json"},
         )
-    assert denied.status_code == 401
-    assert metrics_denied.status_code == 401
     assert place.status_code == 201
     assert place.json()["fixture_id"] == 42
     assert "selection" not in place.json()

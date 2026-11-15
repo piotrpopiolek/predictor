@@ -1,4 +1,4 @@
-"""Recommendation card. The operator types the token; the page does not contain it."""
+"""Recommendation card. Posts carry the decision, not a secret."""
 
 from __future__ import annotations
 
@@ -63,22 +63,20 @@ def render_waiting_card(
     if status == "waiting_human":
         forms = f"""
         <form method="post" action="/advisor/recommendations/cycles/{cycle_id}/accept">
-          <label>Token <input type="password" name="token" autocomplete="off"></label>
           <button type="submit">Akceptuj</button>
         </form>
         <form method="post" action="/advisor/recommendations/cycles/{cycle_id}/reject">
-          <label>Token <input type="password" name="token" autocomplete="off"></label>
           <button type="submit">Odrzuć</button>
         </form>
         """
     if status == "waiting_human":
-        state = "Czekam na decyzję."
+        state = "Czekam na decyzję. Kuponu rekomendacji jeszcze nie ma."
     else:
         state = "Czekanie zakończone."
     return _page(
         f"Cykl {cycle_id}",
         f"""
-        <p>{escape(state)} Kuponu rekomendacji jeszcze nie ma.</p>
+        <p>{escape(state)}</p>
         {note}
         <ul>{items}</ul>
         {forms}
@@ -108,11 +106,9 @@ def render_recommendation_card(
     if status in {"proposed", "accepted", "modified"}:
         forms = f"""
         <form method="post" action="/advisor/recommendations/{coupon_id}/accept">
-          <label>Token <input type="password" name="token" autocomplete="off"></label>
           <button type="submit">Akceptuj</button>
         </form>
         <form method="post" action="/advisor/recommendations/{coupon_id}/modify">
-          <label>Token <input type="password" name="token" autocomplete="off"></label>
           <label>Stawka <input name="stake" value="{escape(stake)}"></label>
           <label>Kursy fixture=kurs
             <input name="odds" placeholder="1=1.70,2=1.80">
@@ -121,18 +117,15 @@ def render_recommendation_card(
           <button type="submit">Koryguj</button>
         </form>
         <form method="post" action="/advisor/recommendations/{coupon_id}/reject">
-          <label>Token <input type="password" name="token" autocomplete="off"></label>
           <button type="submit">Odrzuć</button>
         </form>
         """
     if status in {"accepted", "modified"}:
         forms += f"""
         <form method="post" action="/advisor/recommendations/{coupon_id}/place">
-          <label>Token <input type="password" name="token" autocomplete="off"></label>
           <button type="submit">Potwierdź zagranie</button>
         </form>
         <form method="post" action="/advisor/recommendations/{coupon_id}/not-placed">
-          <label>Token <input type="password" name="token" autocomplete="off"></label>
           <button type="submit">Nie zagrano</button>
         </form>
         """
@@ -156,7 +149,6 @@ def render_strategies(
         "<tr>"
         f"<td>{escape(name)}</td><td>{escape(status)}</td><td>{escape(check)}</td>"
         f'<td><form method="post" action="/advisor/strategies/{strategy_id}/promote">'
-        f'<input type="password" name="token" autocomplete="off">'
         f'<button type="submit">Przenieś</button></form></td>'
         "</tr>"
         for strategy_id, name, status, check in rows

@@ -336,8 +336,7 @@ def test_status_api_surface_and_no_get_settle() -> None:
     worker = Path("src/predictor/worker/main.py").read_text(encoding="utf-8")
     assert "settle_open_from_engine" in worker
     assert "list_open_from_engine" in source
-    assert "mutation_token_ok" in source
-    assert "operator_bet_token" in source
+    assert "operator_bet_token" not in source
     assert "prometheus_metrics_token" in source
     assert 'app.post("/live/bets"' in source
     assert "await settle_open_tickets" in source
@@ -346,15 +345,6 @@ def test_status_api_surface_and_no_get_settle() -> None:
     place = source.index("async def place_live_bet")
     settle = source.index("await settle_open_tickets")
     assert place < settle < source.index("async def ", settle)
-
-
-def test_mutation_token_accepts_bearer_or_form() -> None:
-    from predictor.services.metrics import mutation_token_ok
-
-    assert mutation_token_ok("Bearer secret", None, "secret") is True
-    assert mutation_token_ok(None, "secret", "secret") is True
-    assert mutation_token_ok(None, None, "secret") is False
-    assert mutation_token_ok("Bearer other", "nope", "secret") is False
 
 
 def test_board_packages_split_domain_sql_html() -> None:

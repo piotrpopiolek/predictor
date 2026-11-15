@@ -44,11 +44,7 @@ from predictor.services.live_board import (
 )
 from predictor.services.lock import fetch_holder_sqlalchemy
 from predictor.services.match_detail import load_match_detail
-from predictor.services.metrics import (
-    metrics_token_ok,
-    mutation_token_ok,
-    render_metrics,
-)
+from predictor.services.metrics import metrics_token_ok, render_metrics
 from predictor.services.operator_bets import (
     BetError,
     bet_as_dict,
@@ -103,19 +99,6 @@ def _settings(request: Request) -> Settings:
     return cast(Settings, request.app.state.settings)
 
 
-def _mutation_token(request: Request) -> str:
-    return cast(str, request.app.state.mutation_token)
-
-
-def _require_mutation_token(
-    request: Request,
-    authorization: str | None,
-    form_token: str | None,
-) -> None:
-    if not mutation_token_ok(authorization, form_token, _mutation_token(request)):
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
@@ -152,7 +135,6 @@ async def live(request: Request) -> HTMLResponse:
         matches,
         generated_at=datetime.now(UTC),
         active_nav="all",
-        operator_token=_mutation_token(request),
         sandbox_coupons=coupons,
     )
     return HTMLResponse(html)
@@ -221,7 +203,6 @@ async def live_next_goal(request: Request) -> HTMLResponse:
         active_nav="next_goal",
         open_bets={fid: bet_as_dict(bet) for fid, bet in open_bets.items()},
         current_stake=stake,
-        operator_token=_mutation_token(request),
         llm_notes={
             fixture_id: render_llm_note(note) for fixture_id, note in notes.items()
         },
@@ -336,7 +317,6 @@ async def live_bets(request: Request) -> HTMLResponse:
     html = render_bets_html(
         payload,
         generated_at=datetime.now(UTC),
-        operator_token=_mutation_token(request),
     )
     return HTMLResponse(html)
 
@@ -352,10 +332,7 @@ async def place_live_bet(
     request: Request,
     fixture_id: int = Form(...),
     odd: str = Form(...),
-    token: str | None = Form(default=None),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse | JSONResponse:
-    _require_mutation_token(request, authorization, token)
     engine = _engine(request)
     wants_json = "application/json" in (request.headers.get("accept") or "")
     try:
@@ -389,10 +366,7 @@ async def settle_live_bet(
     bet_id: int,
     request: Request,
     outcome: str = Form(...),
-    token: str | None = Form(default=None),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse | JSONResponse:
-    _require_mutation_token(request, authorization, token)
     wants_json = "application/json" in (request.headers.get("accept") or "")
     try:
         async with AsyncSession(_engine(request), expire_on_commit=False) as session:
@@ -525,8 +499,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Predictor status", lifespan=_lifespan)
     app.state.settings = settings
-    app.state.mutation_token = settings.operator_bet_token.get_secret_value()
     mount_status_http(app)
-    mount_advisor_http(app, app.state.mutation_token)
+    mount_advisor_http(app)
     instrument_fastapi(app)
     return app

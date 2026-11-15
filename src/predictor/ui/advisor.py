@@ -541,22 +541,17 @@ def _recommendation_card(card: dict[str, object]) -> str:
         f"Ważny jeszcze {escape(str(card['remaining']))} s.</p>"
         f"{warning}<ul>{''.join(leg_html)}</ul>"
         f'<form method="post" action="{action}/accept">'
-        '<label>token <input name="token" type="password" autocomplete="off"></label>'
         '<button type="submit">Akceptuj</button></form>'
         f'<form method="post" action="{action}/modify">'
-        '<label>token <input name="token" type="password" autocomplete="off"></label>'
         f'<label>stawka <input name="stake" '
         f'value="{escape(str(card["stake"]))}"></label>'
         f"{''.join(leg_html)}"
         '<button type="submit">Koryguj</button></form>'
         f'<form method="post" action="{action}/place">'
-        '<label>token <input name="token" type="password" autocomplete="off"></label>'
         '<button type="submit">Potwierdź zagranie</button></form>'
         f'<form method="post" action="{action}/reject">'
-        '<label>token <input name="token" type="password" autocomplete="off"></label>'
         '<button type="submit">Odrzuć</button></form>'
         f'<form method="post" action="{action}/not-placed">'
-        '<label>token <input name="token" type="password" autocomplete="off"></label>'
         '<button type="submit">Nie zagrano</button></form>'
         "</article>"
     )

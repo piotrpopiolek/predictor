@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, cast
 
-from fastapi import FastAPI, Form, Header, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -48,7 +48,6 @@ from predictor.services.advisor.recommend_ops import (
     reject_coupon,
     set_strategy_status,
 )
-from predictor.services.metrics import mutation_token_ok
 from predictor.ui.advisor import render_played_coupons
 from predictor.ui.advisor_browse import (
     render_browse_index,
@@ -121,12 +120,6 @@ async def load_recommendation_html(engine: AsyncEngine) -> str:
         return ""
     view = tuple((int(row[0]), str(row[1]), str(row[2]), _odd(row[3])) for row in rows)
     return render_recommendations(view)
-
-
-def _auth(request: Request, authorization: str | None, form_token: str | None) -> None:
-    token = cast(str, request.app.state.mutation_token)
-    if not mutation_token_ok(authorization, form_token, token):
-        raise HTTPException(status_code=401, detail="unauthorized")
 
 
 async def played_coupons(
@@ -261,10 +254,7 @@ async def recommendation_card(request: Request, coupon_id: int) -> HTMLResponse:
 async def accept(
     request: Request,
     coupon_id: int,
-    token_field: str | None = Form(default=None, alias="token"),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse:
-    _auth(request, authorization, token_field)
     await _act(request.app, lambda session: accept_coupon(session, coupon_id, _now()))
     return RedirectResponse(f"/advisor/recommendations/{coupon_id}", status_code=303)
 
@@ -272,10 +262,7 @@ async def accept(
 async def reject(
     request: Request,
     coupon_id: int,
-    token_field: str | None = Form(default=None, alias="token"),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse:
-    _auth(request, authorization, token_field)
     await _act(
         request.app, lambda session: reject_coupon(session, coupon_id, _now(), "")
     )
@@ -285,10 +272,7 @@ async def reject(
 async def accept_cycle(
     request: Request,
     cycle_id: int,
-    token_field: str | None = Form(default=None, alias="token"),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse:
-    _auth(request, authorization, token_field)
     result = await _act(
         request.app,
         lambda session: resume_waiting(
@@ -315,10 +299,7 @@ async def accept_cycle(
 async def reject_cycle(
     request: Request,
     cycle_id: int,
-    token_field: str | None = Form(default=None, alias="token"),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse:
-    _auth(request, authorization, token_field)
     await _act(
         request.app,
         lambda session: resume_waiting(
@@ -338,10 +319,7 @@ async def reject_cycle(
 async def place(
     request: Request,
     coupon_id: int,
-    token_field: str | None = Form(default=None, alias="token"),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse:
-    _auth(request, authorization, token_field)
     await _act(request.app, lambda session: place_coupon(session, coupon_id, _now()))
     return RedirectResponse(f"/advisor/recommendations/{coupon_id}", status_code=303)
 
@@ -349,10 +327,7 @@ async def place(
 async def not_placed(
     request: Request,
     coupon_id: int,
-    token_field: str | None = Form(default=None, alias="token"),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse:
-    _auth(request, authorization, token_field)
     await _act(request.app, lambda session: mark_not_placed(session, coupon_id, _now()))
     return RedirectResponse(f"/advisor/recommendations/{coupon_id}", status_code=303)
 
@@ -363,10 +338,7 @@ async def modify(
     stake: str = Form(default=""),
     odds: str = Form(default=""),
     remove: str = Form(default=""),
-    token_field: str | None = Form(default=None, alias="token"),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse:
-    _auth(request, authorization, token_field)
     try:
         stake_value = Decimal(stake)
         odd_map = _odds(odds)
@@ -407,10 +379,7 @@ async def strategies(request: Request) -> HTMLResponse:
 async def promote(
     request: Request,
     strategy_id: int,
-    token_field: str | None = Form(default=None, alias="token"),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse:
-    _auth(request, authorization, token_field)
     await _act(request.app, lambda session: promote_strategy(session, strategy_id))
     return RedirectResponse("/advisor/strategies", status_code=303)
 
@@ -418,10 +387,7 @@ async def promote(
 async def pause(
     request: Request,
     strategy_id: int,
-    token_field: str | None = Form(default=None, alias="token"),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse:
-    _auth(request, authorization, token_field)
     await _act(
         request.app,
         lambda session: set_strategy_status(session, strategy_id, "paused"),
@@ -432,10 +398,7 @@ async def pause(
 async def resume(
     request: Request,
     strategy_id: int,
-    token_field: str | None = Form(default=None, alias="token"),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse:
-    _auth(request, authorization, token_field)
     await _act(
         request.app,
         lambda session: set_strategy_status(session, strategy_id, "sandbox"),
@@ -446,10 +409,7 @@ async def resume(
 async def launch(
     request: Request,
     strategy_id: int,
-    token_field: str | None = Form(default=None, alias="token"),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse:
-    _auth(request, authorization, token_field)
     await _act(
         request.app, lambda session: launch_proposed(session, strategy_id, limit=4)
     )
@@ -460,17 +420,13 @@ async def settle_leg(
     request: Request,
     leg_id: int,
     outcome: str = Form(default=""),
-    token_field: str | None = Form(default=None, alias="token"),
-    authorization: str | None = Header(default=None),
 ) -> RedirectResponse:
-    _auth(request, authorization, token_field)
     await _act(request.app, lambda session: manual_settle(session, leg_id, outcome))
     return RedirectResponse("/advisor/recommendations", status_code=303)
 
 
-def mount_advisor_http(app: FastAPI, token: str) -> None:
+def mount_advisor_http(app: FastAPI) -> None:
     """Register advisor routes. Each handler is its own function."""
-    app.state.mutation_token = token
     app.get("/advisor/coupons")(played_coupons)
     app.get("/advisor/coupons.json")(played_coupons_json)
     app.get("/advisor/browse")(browse_index)

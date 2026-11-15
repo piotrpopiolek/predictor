@@ -525,27 +525,20 @@ async def test_recommendation_bet_waits_until_accept(
         monkeypatch.setenv("ADVISOR_OPERATOR_HOURS", "0-24")
         monkeypatch.setenv("ADVISOR_RECOMMENDATION_COUPON_LIMIT", "100000")
         monkeypatch.setenv("ADVISOR_WITHDRAW_YIELD", "0")
-        token = Settings().operator_bet_token.get_secret_value()
         with TestClient(create_app()) as client:
             page = client.get(f"/advisor/recommendations?cycle={cycle_id}")
             assert page.status_code == 200
             assert "Akceptuj" in page.text
+            assert 'name="token"' not in page.text
             assert "Kuponu rekomendacji jeszcze nie ma" in page.text
-            denied = client.post(
-                f"/advisor/recommendations/cycles/{cycle_id}/accept",
-                follow_redirects=False,
-            )
-            assert denied.status_code == 401
             accepted = client.post(
                 f"/advisor/recommendations/cycles/{cycle_id}/accept",
-                data={"token": token},
                 follow_redirects=False,
             )
             assert accepted.status_code == 303
             assert accepted.headers["location"].startswith("/advisor/recommendations/")
             again = client.post(
                 f"/advisor/recommendations/cycles/{cycle_id}/accept",
-                data={"token": token},
                 follow_redirects=False,
             )
         assert again.status_code == 303
