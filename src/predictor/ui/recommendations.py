@@ -142,6 +142,44 @@ def render_recommendation_card(
     )
 
 
+def render_play_card(
+    *,
+    coupon_id: int,
+    status: str,
+    stake: str,
+    combined: str,
+    floor: str,
+    lines: tuple[str, ...],
+    notice: str,
+) -> str:
+    items = "".join(f"<li>{escape(line)}</li>" for line in lines)
+    note = f"<p class=\"warn\">{escape(notice)}</p>" if notice else ""
+    forms = ""
+    if status == "pending":
+        forms = f"""
+        <form method="post" action="/advisor/sandbox/{coupon_id}/played">
+          <label>Kurs łączny <input name="combined" value="{escape(combined)}"></label>
+          <label>Stawka <input name="stake" value="{escape(stake)}"></label>
+          <button type="submit">Zagrałem</button>
+        </form>
+        <form method="post" action="/advisor/sandbox/{coupon_id}/not-played">
+          <button type="submit">Nie zagrałem</button>
+        </form>
+        """
+    return _page(
+        f"Kupon {coupon_id}",
+        f"""
+        <p>Pytanie o zagranie. Status {escape(status)}.
+        Kurs z bazy {escape(combined)}. Stawka wirtualna {escape(stake)}.
+        Próg {escape(floor)}.</p>
+        {note}
+        <ul>{items}</ul>
+        {forms}
+        <p><a href="/advisor/report">Raport</a></p>
+        """,
+    )
+
+
 def render_strategies(
     rows: tuple[tuple[int, str, str, str], ...],
 ) -> str:

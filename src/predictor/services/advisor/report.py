@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -25,6 +25,7 @@ from predictor.models.advisor import (
     AdvisorStrategyVersion,
 )
 from predictor.services.advisor.domain import Settlement, settled_pnl
+from predictor.services.advisor.play import PlayCounts, load_play_counts
 from predictor.services.advisor.sandbox import portfolio_balance
 
 _PLAYED = frozenset({"won", "lost"})
@@ -103,6 +104,7 @@ class YieldReport:
     books: tuple[BookLine, ...]
     pairs: tuple[PairYield, ...]
     charts: tuple[StrategyChart, ...] = ()
+    play: PlayCounts | None = None
 
 
 def build_report(
@@ -172,6 +174,14 @@ def report_as_dict(report: YieldReport) -> dict[str, object]:
             }
             for pair in report.pairs
         ],
+        "play": None
+        if report.play is None
+        else {
+            "pending": report.play.pending,
+            "played": report.play.played,
+            "not_played": report.play.not_played,
+            "skipped_share": _text(report.play.skipped_share()),
+        },
         "charts": [
             {
                 "strategy_id": chart.strategy_id,
@@ -236,7 +246,8 @@ async def load_yield_report(session: AsyncSession, *, period: str) -> YieldRepor
         StrategyView(strategy_id=row.id, name=row.name, kind=row.kind)
         for row in strategies
     )
-    return build_report(views, coupons, period=period)
+    report = build_report(views, coupons, period=period)
+    return replace(report, play=await load_play_counts(session))
 
 
 def _book(strategy: StrategyView, coupons: Sequence[CouponView]) -> BookLine:

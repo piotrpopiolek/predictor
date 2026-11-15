@@ -247,6 +247,7 @@ def render_yield_report(report: YieldReport) -> str:
     · <a href="/advisor/strategies">Strategie</a>
     · <a href="/advisor/browse">Tabele</a></p>
   <h1>Raport piaskownicy</h1>
+  {_play_line(report)}
   <p>Yield netto to zysk po współczynniku 0,88 podzielony przez stawki kuponów
   wygranych i przegranych. Kupon nieważny oddaje stawkę i nie wchodzi do yieldu.
   Średni kurs to średnia arytmetyczna kursu łącznego kuponów wygranych i
@@ -283,6 +284,20 @@ def render_yield_report(report: YieldReport) -> str:
 </body>
 </html>
 """
+
+
+def _play_line(report: YieldReport) -> str:
+    play = report.play
+    if play is None:
+        return ""
+    share = play.skipped_share()
+    shown = "—" if share is None else format(share, "f")
+    return (
+        "<h2>Zagranie sandbox-llm</h2>"
+        f"<p>Oczekuje {play.pending}. Zagrałem {play.played}. "
+        f"Nie zagrałem {play.not_played}. Odsetek niezagranych {shown}. "
+        "Yield i saldo powyżej liczą tylko księgę wirtualną.</p>"
+    )
 
 
 def render_played_coupons(

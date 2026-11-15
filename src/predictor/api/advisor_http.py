@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -18,6 +18,7 @@ from predictor.models.advisor import (
     AdvisorCycle,
     AdvisorGraphCheckpoint,
     AdvisorLeg,
+    AdvisorPlayClaim,
     AdvisorStrategy,
     AdvisorStrategyVersion,
 )
@@ -29,6 +30,8 @@ from predictor.services.advisor.browse import (
     table_counts,
 )
 from predictor.services.advisor.cycle import resume_waiting
+from predictor.services.advisor.play import mark_not_played as mark_claim_not_played
+from predictor.services.advisor.play import mark_played
 from predictor.services.advisor.played import (
     load_played_coupons,
     parse_played_kind,
@@ -55,6 +58,7 @@ from predictor.ui.advisor_browse import (
     render_browse_row,
 )
 from predictor.ui.recommendations import (
+    render_play_card,
     render_recommendation_card,
     render_recommendations,
     render_strategies,
@@ -77,14 +81,17 @@ _CODES = {
     "not_confirmable": 409,
     "not_recommendation": 409,
     "retired": 409,
+    "score": 409,
+    "gate": 409,
+    "conflict": 409,
+    "odd": 400,
+    "stake": 400,
     "status": 409,
     "strategy_limit": 409,
     "sample": 409,
     "yield": 409,
     "baseline": 409,
     "drawdown": 409,
-    "stake": 400,
-    "odd": 400,
     "empty": 400,
     "outcome": 400,
 }
@@ -425,6 +432,120 @@ async def settle_leg(
     return RedirectResponse("/advisor/recommendations", status_code=303)
 
 
+_PLAY_NOTICES = {
+    "score": "Wynik albo okres meczu zmienił się od decyzji.",
+    "gate": "Bramki rekomendacji są zamknięte.",
+    "conflict": "Mecz jest już na otwartej rekomendacji.",
+    "below": "Kurs łączny jest poniżej progu strategii. Zapis przeszedł.",
+    "played": "Zapisane na koncie.",
+    "not_played": "Oznaczone jako niezagrane.",
+    "closed": "To pytanie jest już zamknięte.",
+}
+
+
+async def play_card(request: Request, coupon_id: int) -> HTMLResponse:
+    factory = make_session_factory(_engine(request))
+    try:
+        async with factory() as session:
+            view = await _play_view(session, coupon_id)
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
+    if view is None:
+        raise HTTPException(status_code=404, detail="missing")
+    notice = _PLAY_NOTICES.get(request.query_params.get("notice", ""), "")
+    return HTMLResponse(render_play_card(**view, notice=notice))
+
+
+async def play_card_json(request: Request, coupon_id: int) -> JSONResponse:
+    factory = make_session_factory(_engine(request))
+    try:
+        async with factory() as session:
+            view = await _play_view(session, coupon_id)
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
+    if view is None:
+        raise HTTPException(status_code=404, detail="missing")
+    return JSONResponse(view)
+
+
+async def play_played(
+    request: Request,
+    coupon_id: int,
+    combined: str = Form(default=""),
+    stake: str = Form(default=""),
+) -> RedirectResponse:
+    try:
+        combined_value = Decimal(combined)
+        stake_value = Decimal(stake)
+    except (ValueError, ArithmeticError):
+        raise HTTPException(status_code=400, detail="invalid_form") from None
+    result = await _act(
+        request.app,
+        lambda session: mark_played(
+            session,
+            coupon_id,
+            combined=combined_value,
+            stake=stake_value,
+            now=_now(),
+        ),
+    )
+    code, _placed, below = cast(tuple[str, int | None, bool], result)
+    notice = "below" if below and code == "played" else str(code)
+    return RedirectResponse(
+        f"/advisor/sandbox/{coupon_id}?notice={notice}", status_code=303
+    )
+
+
+async def play_not_played(request: Request, coupon_id: int) -> RedirectResponse:
+    await _act(
+        request.app,
+        lambda session: mark_claim_not_played(session, coupon_id, _now()),
+    )
+    return RedirectResponse(
+        f"/advisor/sandbox/{coupon_id}?notice=not_played", status_code=303
+    )
+
+
+class _PlayCard(TypedDict):
+    coupon_id: int
+    status: str
+    stake: str
+    combined: str
+    floor: str
+    lines: tuple[str, ...]
+
+
+async def _play_view(session: AsyncSession, coupon_id: int) -> _PlayCard | None:
+    claim = await session.scalar(
+        select(AdvisorPlayClaim).where(AdvisorPlayClaim.sandbox_coupon_id == coupon_id)
+    )
+    coupon = await session.get(AdvisorCoupon, coupon_id)
+    if claim is None or coupon is None:
+        return None
+    version = await session.get(AdvisorStrategyVersion, coupon.strategy_version_id)
+    floor = version.min_combined_odd if version is not None else Decimal("1.600")
+    legs = (
+        await session.scalars(
+            select(AdvisorLeg).where(AdvisorLeg.coupon_id == coupon.id)
+        )
+    ).all()
+    lines = tuple(
+        f"mecz {leg.fixture_id} {leg.period} {leg.goals_home}:{leg.goals_away} "
+        f"Over {leg.n}+0.5 kurs {leg.odd}"
+        for leg in legs
+    )
+    combined = coupon.combined_odd or Decimal("0")
+    card: _PlayCard = {
+        "coupon_id": int(coupon.id),
+        "status": claim.status,
+        "stake": format(coupon.stake, "f"),
+        "combined": format(combined, "f"),
+        "floor": format(floor, "f"),
+        "lines": lines,
+    }
+    return card
+
+
 def mount_advisor_http(app: FastAPI) -> None:
     """Register advisor routes. Each handler is its own function."""
     app.get("/advisor/coupons")(played_coupons)
@@ -444,6 +565,10 @@ def mount_advisor_http(app: FastAPI) -> None:
     app.post("/advisor/recommendations/{coupon_id}/place")(place)
     app.post("/advisor/recommendations/{coupon_id}/not-placed")(not_placed)
     app.post("/advisor/recommendations/{coupon_id}/modify")(modify)
+    app.get("/advisor/sandbox/{coupon_id}.json")(play_card_json)
+    app.get("/advisor/sandbox/{coupon_id}")(play_card)
+    app.post("/advisor/sandbox/{coupon_id}/played")(play_played)
+    app.post("/advisor/sandbox/{coupon_id}/not-played")(play_not_played)
     app.get("/advisor/strategies")(strategies)
     app.post("/advisor/strategies/{strategy_id}/promote")(promote)
     app.post("/advisor/strategies/{strategy_id}/pause")(pause)

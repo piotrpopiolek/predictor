@@ -249,7 +249,18 @@ async def place_sandbox_coupons(
         placed.append(coupon_id)
         balance -= stake
         if notify:
-            await _enqueue_sandbox_llm(session, slip, coupon_id=coupon_id, stake=stake)
+            asked = await _ask_play(
+                session,
+                strategy,
+                slip,
+                coupon_id=coupon_id,
+                stake=stake,
+                placed_at=placed_at,
+            )
+            if not asked:
+                await _enqueue_sandbox_llm(
+                    session, slip, coupon_id=coupon_id, stake=stake
+                )
     if balance < stake:
         strategy.status = "paused"
     return SandboxPlacement(tuple(placed), strategy.status == "paused")
@@ -361,6 +372,32 @@ def _is_open_leg_conflict(exc: IntegrityError) -> bool:
     orig = getattr(exc, "orig", None)
     diag = getattr(orig, "diag", None)
     return getattr(diag, "constraint_name", None) == _OPEN_LEG
+
+
+async def _ask_play(
+    session: AsyncSession,
+    strategy: AdvisorStrategy,
+    slip: SandboxSlip,
+    *,
+    coupon_id: int,
+    stake: Decimal,
+    placed_at: datetime,
+) -> bool:
+    from predictor.services.advisor.play import open_play_claim
+
+    labels = await _fixture_labels(session, tuple(leg.fixture_id for leg in slip.legs))
+    lines = tuple(_leg_line(labels.get(leg.fixture_id), leg) for leg in slip.legs)
+    odd = combined_odd(tuple(leg.odd for leg in slip.legs))
+    return await open_play_claim(
+        session,
+        strategy,
+        slip.legs,
+        coupon_id=coupon_id,
+        stake=stake,
+        combined=odd,
+        lines=lines,
+        now=placed_at,
+    )
 
 
 async def _enqueue_sandbox_llm(

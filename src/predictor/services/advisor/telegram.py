@@ -16,11 +16,13 @@ KIND_WITHDRAW = "withdraw"
 KIND_SUMMARY = "summary"
 KIND_SANDBOX_LLM = "sandbox_llm"
 KIND_DECISION_WAIT = "decision_wait"
+KIND_PLAY_CLAIM = "play_claim"
 OPERATOR_KINDS = (
     KIND_RECOMMENDATION,
     KIND_WITHDRAW,
     KIND_SUMMARY,
     KIND_DECISION_WAIT,
+    KIND_PLAY_CLAIM,
 )
 
 
@@ -63,6 +65,24 @@ def sandbox_llm_text(
         f"{body}\n"
         f"Kurs łączny {combined}\n"
         f"Stawka {stake}"
+    )
+
+
+def play_claim_text(
+    *,
+    coupon_id: int,
+    lines: Sequence[str],
+    stake: str,
+    combined: str,
+) -> str:
+    """Operator chat. A link, no token, no button."""
+    body = "\n".join(lines)
+    return (
+        f"Czy zagrałeś kupon {coupon_id}?\n"
+        f"{body}\n"
+        f"Kurs z bazy {combined}\n"
+        f"Stawka wirtualna {stake}\n"
+        f"/advisor/sandbox/{coupon_id}"
     )
 
 
