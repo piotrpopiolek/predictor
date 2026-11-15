@@ -6,8 +6,9 @@ across a process restart. The cycle row is never updated.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import TypedDict
+from typing import TypedDict, cast
 
 from langgraph.graph import END, StateGraph
 
@@ -54,11 +55,10 @@ def interrupt_closed(
 def run_graph(state: CycleGraphState) -> CycleGraphState:
     """Walk the nodes once. Returns the state, including the node trail."""
     graph = _builder().compile()
-    result = graph.invoke(state)
-    return result
+    return cast(CycleGraphState, graph.invoke(state))
 
 
-def _builder() -> StateGraph:
+def _builder() -> StateGraph[CycleGraphState]:
     builder = StateGraph(CycleGraphState)
     for name in ("prepare", "decide", "validate", "commit"):
         builder.add_node(name, _mark(name))
@@ -76,7 +76,7 @@ def _builder() -> StateGraph:
     return builder
 
 
-def _mark(name: str):
+def _mark(name: str) -> Callable[[CycleGraphState], dict[str, object]]:
     def step(state: CycleGraphState) -> dict[str, object]:
         with start_span(f"advisor.cycle.{name}"):
             trail = tuple(state.get("trail", ())) + (name,)

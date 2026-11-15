@@ -370,7 +370,7 @@ async def _commit_cycle(
             coupon_ids = await _place_if_sandbox(
                 session, cycle, request, stored, coupon_fixtures
             )
-            decision = decision_label(
+            label = decision_label(
                 cycle.validation_status,
                 tuple(item.decision for item in decisions),
             )
@@ -378,7 +378,7 @@ async def _commit_cycle(
             waiting = recommendation_waits(
                 recommend=request.recommend,
                 validation_status=cycle.validation_status,
-                decision=decision,
+                decision=label,
                 has_slip=bool(reco),
             )
             if (
@@ -397,7 +397,7 @@ async def _commit_cycle(
                 )
         else:
             waiting = False
-            decision = "invalid"
+            label = "invalid"
             reco = ()
         cycle_id = cycle.id
     if request is not None:
@@ -406,7 +406,7 @@ async def _commit_cycle(
                 mode=request.mode,
                 recommend=request.recommend,
                 validation_status=cycle.validation_status,
-                decision=decision,
+                decision=label,
                 interrupt=waiting,
                 node="",
                 trail=(),
@@ -419,7 +419,7 @@ async def _commit_cycle(
                     cycle_id=cycle_id,
                     node=str(final["node"]),
                     status="waiting_human",
-                    state=_checkpoint_state(request, decision, reco),
+                    state=_checkpoint_state(request, label, reco),
                 )
                 enqueue(session, KIND_DECISION_WAIT, waiting_decision_text(cycle_id))
     return cycle_id, tuple(skipped), coupon_ids
@@ -429,7 +429,7 @@ def _recommendation_slips(
     request: CycleRequest,
     stored: set[int],
     coupon_fixtures: Sequence[Sequence[int]],
-):
+) -> tuple[SandboxSlip, ...]:
     allowed = [
         fixtures
         for fixtures in coupon_fixtures
@@ -444,7 +444,7 @@ def _recommendation_slips(
 def _checkpoint_state(
     request: CycleRequest,
     decision: str,
-    reco,
+    reco: Sequence[SandboxSlip],
 ) -> dict[str, Any]:
     return {
         "mode": request.mode,
