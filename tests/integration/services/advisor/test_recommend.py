@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import String, cast, delete, select
 
 from predictor.constants import PAYOUT_KEEP
 from predictor.models.advisor import (
@@ -212,19 +212,34 @@ async def test_modify_stores_the_operator_odd_and_a_notice() -> None:
             leg = await session.scalar(
                 select(AdvisorLeg).where(AdvisorLeg.coupon_id == coupon_id)
             )
-            notice = await session.scalar(select(AdvisorTelegramOutbox))
+            notice = await session.scalar(
+                select(AdvisorTelegramOutbox).where(
+                    cast(AdvisorTelegramOutbox.payload, String).like(f"%/{coupon_id}%")
+                )
+            )
         assert coupon is not None and coupon.status == "modified"
         assert leg is not None and leg.odd == Decimal("1.400")
         assert notice is not None
+        assert notice.status == "pending"
         assert "bot" not in str(notice.payload)
+        sent_ids: list[int] = []
+
+        async def _capture(token: str, chat_id: str, text: str) -> None:
+            await _post(token, chat_id, text)
+            if f"/{coupon_id}" in text:
+                sent_ids.append(coupon_id)
+
         async with factory() as session, session.begin():
-            sent = await deliver_pending(
+            await deliver_pending(
                 session,
                 token="secret-token",
                 chat_id="1",
-                post=_post,
+                post=_capture,
             )
-        assert sent == 1
+        assert sent_ids == [coupon_id]
+        async with factory() as session:
+            notice = await session.get(AdvisorTelegramOutbox, notice.id)
+        assert notice is not None and notice.status == "sent"
     finally:
         async with factory() as session, session.begin():
             await _wipe(session)

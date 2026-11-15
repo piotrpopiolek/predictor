@@ -93,5 +93,6 @@ def test_telegram_text_has_the_link_and_no_secret() -> None:
         lines=("mecz 1",),
         below=False,
     )
-    assert 'type="password"' in html
-    assert 'value="secret"' not in html
+    assert "Akceptuj" in html
+    assert 'type="password"' not in html
+    assert "secret" not in html
