@@ -7,6 +7,7 @@ ones marked untracked.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -42,6 +43,26 @@ def parse_hours(raw: str) -> tuple[int, int] | None:
     if start < 0 or start > 23 or end < 0 or end > 24 or start == end:
         raise ValueError("hours must be start-end, with start != end")
     return start, end
+
+
+def load_recommendation_setup() -> RecommendationSetup:
+    """Limits from the process environment. Empty stake or hours leave the gate shut."""
+    return setup_for(
+        stake=_optional_decimal("ADVISOR_RECOMMENDATION_STAKE"),
+        loss_limit=_optional_decimal("ADVISOR_RECOMMENDATION_LOSS_LIMIT"),
+        hours=os.environ.get("ADVISOR_OPERATOR_HOURS", ""),
+        leagues=os.environ.get("ADVISOR_RECOMMENDATION_LEAGUES", ""),
+        coupon_limit=int(os.environ.get("ADVISOR_RECOMMENDATION_COUPON_LIMIT", "10")),
+        ttl_seconds=int(os.environ.get("ADVISOR_RECOMMENDATION_TTL_SECONDS", "180")),
+        withdraw_yield=Decimal(os.environ.get("ADVISOR_WITHDRAW_YIELD", "0") or "0"),
+    )
+
+
+def _optional_decimal(name: str) -> Decimal | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    return Decimal(raw)
 
 
 def setup_for(

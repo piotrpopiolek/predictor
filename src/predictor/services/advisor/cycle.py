@@ -25,6 +25,7 @@ from predictor.models.advisor import (
     AdvisorGraphCheckpoint,
     AdvisorLangfuseOutbox,
 )
+from predictor.models.fixtures import Fixture
 from predictor.schemas.advisor import AdvisorSettings, CandidateDecision, LlmDecision
 from predictor.services.advisor.budget import (
     budget_allows,
@@ -33,6 +34,7 @@ from predictor.services.advisor.budget import (
     estimate_tokens,
     utc_day_bounds,
 )
+from predictor.services.advisor.domain import Period, period_for
 from predictor.services.advisor.graph import (
     CycleGraphState,
     decision_label,
@@ -50,7 +52,11 @@ from predictor.services.advisor.langfuse import (
 from predictor.services.advisor.llm.protocol import LlmProvider, ProviderError
 from predictor.services.advisor.llm.schema import response_json_schema
 from predictor.services.advisor.llm.validate import PricedCandidate, review_model_output
-from predictor.services.advisor.recommend_ops import place_proposed
+from predictor.services.advisor.recommend import RecommendationSetup, inactive_reason
+from predictor.services.advisor.recommend_ops import (
+    place_proposed,
+    recommendation_usage,
+)
 from predictor.services.advisor.sandbox import (
     LegSnapshot,
     SandboxSlip,
@@ -375,17 +381,6 @@ async def _commit_cycle(
                 decision=decision,
                 has_slip=bool(reco),
             )
-            run_graph(
-                CycleGraphState(
-                    mode=request.mode,
-                    recommend=request.recommend,
-                    validation_status=cycle.validation_status,
-                    decision=decision,
-                    interrupt=waiting,
-                    node="",
-                    trail=(),
-                )
-            )
             if (
                 request.recommend
                 and request.recommendation_stake is not None
@@ -405,16 +400,28 @@ async def _commit_cycle(
             decision = "invalid"
             reco = ()
         cycle_id = cycle.id
-    if request is not None and waiting:
-        async with session.begin():
-            _save_checkpoint(
-                session,
-                cycle_id=cycle_id,
-                node="interrupt",
-                status="waiting_human",
-                state=_checkpoint_state(request, decision, reco),
+    if request is not None:
+        final = run_graph(
+            CycleGraphState(
+                mode=request.mode,
+                recommend=request.recommend,
+                validation_status=cycle.validation_status,
+                decision=decision,
+                interrupt=waiting,
+                node="",
+                trail=(),
             )
-            enqueue(session, KIND_DECISION_WAIT, waiting_decision_text(cycle_id))
+        )
+        if final["node"] == "interrupt":
+            async with session.begin():
+                _save_checkpoint(
+                    session,
+                    cycle_id=cycle_id,
+                    node=str(final["node"]),
+                    status="waiting_human",
+                    state=_checkpoint_state(request, decision, reco),
+                )
+                enqueue(session, KIND_DECISION_WAIT, waiting_decision_text(cycle_id))
     return cycle_id, tuple(skipped), coupon_ids
 
 
@@ -493,53 +500,123 @@ async def resume_recommendation(
     verdict: str,
     *,
     now: datetime,
-    score_changed: bool,
+    setup: RecommendationSetup,
 ) -> str:
-    """Continue a waiting recommendation. Does not change the cycle row."""
+    """Continue a waiting recommendation. The caller has no open transaction."""
     _require_idle(session)
     async with session.begin():
-        row = await session.get(AdvisorGraphCheckpoint, cycle_id)
-        if row is None or row.status != "waiting_human":
-            return "missing"
-        closed = verdict == "reject" or interrupt_closed(
-            row.updated_at, now, score_changed=score_changed
-        )
-        if closed:
-            row.status = "done"
-            row.node_name = "commit"
-            row.updated_at = now
-            return "rejected" if verdict == "reject" else "closed"
-        state = dict(row.state)
-        stake = Decimal(str(state["stake"]))
-        slips = tuple(
-            SandboxSlip(
-                tuple(
-                    LegSnapshot(
-                        fixture_id=int(leg["fixture_id"]),
-                        period=str(leg["period"]),
-                        goals_home=int(leg["goals_home"]),
-                        goals_away=int(leg["goals_away"]),
-                        odd=Decimal(str(leg["odd"])),
-                        n=int(leg["n"]),
-                    )
-                    for leg in coupon
+        return await resume_waiting(session, cycle_id, verdict, now=now, setup=setup)
+
+
+async def resume_waiting(
+    session: AsyncSession,
+    cycle_id: int,
+    verdict: str,
+    *,
+    now: datetime,
+    setup: RecommendationSetup,
+) -> str:
+    """Continue a waiting recommendation inside the caller's transaction.
+
+    Reads the live score and period. Does not change the cycle row.
+    """
+    row = await session.get(AdvisorGraphCheckpoint, cycle_id, with_for_update=True)
+    if row is None or row.status != "waiting_human":
+        return "missing"
+    state = dict(row.state)
+    coupons = state.get("coupons", ())
+    if verdict == "reject":
+        _close_wait(row, now)
+        return "rejected"
+    changed = await _score_or_period_changed(session, coupons)
+    if interrupt_closed(row.updated_at, now, score_changed=changed):
+        _close_wait(row, now)
+        return "closed"
+    coupons_today, loss_today = await recommendation_usage(session, now)
+    if inactive_reason(setup, now, coupons_today=coupons_today, loss_today=loss_today):
+        return "limited"
+    if state.get("stake") is None:
+        return "limited"
+    stake = Decimal(str(state["stake"]))
+    slips = _slips_from_state(coupons)
+    placed = await place_proposed(
+        session,
+        strategy_id=int(state["strategy_id"]),
+        strategy_version_id=int(state["strategy_version_id"]),
+        slips=slips,
+        cycle_id=cycle_id,
+        stake=stake,
+        created_at=now,
+    )
+    _close_wait(row, now)
+    if not placed:
+        return "conflict"
+    return "accepted"
+
+
+def _close_wait(row: AdvisorGraphCheckpoint, now: datetime) -> None:
+    row.status = "done"
+    row.node_name = "commit"
+    row.updated_at = now
+
+
+def _stored_legs(coupons: object) -> list[dict[str, Any]]:
+    if not isinstance(coupons, list):
+        return []
+    legs: list[dict[str, Any]] = []
+    for coupon in coupons:
+        if not isinstance(coupon, list):
+            continue
+        legs.extend(leg for leg in coupon if isinstance(leg, dict))
+    return legs
+
+
+def _slips_from_state(coupons: object) -> tuple[SandboxSlip, ...]:
+    grouped: list[list[dict[str, Any]]] = []
+    if isinstance(coupons, list):
+        for coupon in coupons:
+            if isinstance(coupon, list):
+                grouped.append([leg for leg in coupon if isinstance(leg, dict)])
+    return tuple(
+        SandboxSlip(
+            tuple(
+                LegSnapshot(
+                    fixture_id=int(leg["fixture_id"]),
+                    period=str(leg["period"]),
+                    goals_home=int(leg["goals_home"]),
+                    goals_away=int(leg["goals_away"]),
+                    odd=Decimal(str(leg["odd"])),
+                    n=int(leg["n"]),
                 )
+                for leg in coupon
             )
-            for coupon in state["coupons"]
         )
-        await place_proposed(
-            session,
-            strategy_id=int(state["strategy_id"]),
-            strategy_version_id=int(state["strategy_version_id"]),
-            slips=slips,
-            cycle_id=cycle_id,
-            stake=stake,
-            created_at=now,
-        )
-        row.status = "done"
-        row.node_name = "commit"
-        row.updated_at = now
-        return "accepted"
+        for coupon in grouped
+        if coupon
+    )
+
+
+async def _score_or_period_changed(session: AsyncSession, coupons: object) -> bool:
+    legs = _stored_legs(coupons)
+    if not legs:
+        return True
+    fixture_ids = [int(leg["fixture_id"]) for leg in legs]
+    rows = (
+        await session.scalars(select(Fixture).where(Fixture.id.in_(fixture_ids)))
+    ).all()
+    found = {int(row.id): row for row in rows}
+    for leg in legs:
+        fixture = found.get(int(leg["fixture_id"]))
+        if fixture is None or fixture.goals_home is None or fixture.goals_away is None:
+            return True
+        period = period_for(fixture.status_short or "")
+        if period is None or period is not Period(str(leg["period"])):
+            return True
+        if fixture.goals_home != int(leg["goals_home"]):
+            return True
+        if fixture.goals_away != int(leg["goals_away"]):
+            return True
+    return False
 
 
 async def _place_if_sandbox(

@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from predictor.api.errors import postgres_unavailable
 from predictor.models.advisor import (
     AdvisorCoupon,
+    AdvisorCycle,
+    AdvisorGraphCheckpoint,
     AdvisorLeg,
     AdvisorStrategy,
     AdvisorStrategyVersion,
@@ -26,12 +28,14 @@ from predictor.services.advisor.browse import (
     list_rows,
     table_counts,
 )
+from predictor.services.advisor.cycle import resume_waiting
 from predictor.services.advisor.played import (
     load_played_coupons,
     parse_played_kind,
     parse_played_limit,
     played_coupons_as_dict,
 )
+from predictor.services.advisor.recommend import load_recommendation_setup
 from predictor.services.advisor.recommend_ops import (
     ActionError,
     accept_coupon,
@@ -55,6 +59,7 @@ from predictor.ui.recommendations import (
     render_recommendation_card,
     render_recommendations,
     render_strategies,
+    render_waiting_card,
 )
 
 _BROWSE_CODES = {
@@ -184,6 +189,13 @@ async def browse_row(request: Request, table: str, row_id: int) -> HTMLResponse:
 
 
 async def recommendations(request: Request) -> HTMLResponse:
+    cycle_text = request.query_params.get("cycle")
+    if cycle_text is not None:
+        try:
+            cycle_id = int(cycle_text)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="bad_cycle") from None
+        return await _waiting_page(request, cycle_id)
     factory = make_session_factory(_engine(request))
     try:
         async with factory() as session:
@@ -208,10 +220,30 @@ async def recommendations(request: Request) -> HTMLResponse:
                     .limit(50)
                 )
             ).all()
+            waiting_rows = (
+                await session.execute(
+                    select(AdvisorGraphCheckpoint.cycle_id, AdvisorStrategy.name)
+                    .join(
+                        AdvisorCycle,
+                        AdvisorCycle.id == AdvisorGraphCheckpoint.cycle_id,
+                    )
+                    .join(
+                        AdvisorStrategyVersion,
+                        AdvisorStrategyVersion.id == AdvisorCycle.strategy_version_id,
+                    )
+                    .join(
+                        AdvisorStrategy,
+                        AdvisorStrategy.id == AdvisorStrategyVersion.strategy_id,
+                    )
+                    .where(AdvisorGraphCheckpoint.status == "waiting_human")
+                    .order_by(AdvisorGraphCheckpoint.cycle_id.desc())
+                )
+            ).all()
     except Exception as exc:
         raise postgres_unavailable(exc) from exc
     view = tuple((int(row[0]), str(row[1]), str(row[2]), _odd(row[3])) for row in rows)
-    return HTMLResponse(render_recommendations(view))
+    waiting = tuple((int(row[0]), str(row[1])) for row in waiting_rows)
+    return HTMLResponse(render_recommendations(view, waiting))
 
 
 async def recommendation_card(request: Request, coupon_id: int) -> HTMLResponse:
@@ -248,6 +280,59 @@ async def reject(
         request.app, lambda session: reject_coupon(session, coupon_id, _now(), "")
     )
     return RedirectResponse(f"/advisor/recommendations/{coupon_id}", status_code=303)
+
+
+async def accept_cycle(
+    request: Request,
+    cycle_id: int,
+    token_field: str | None = Form(default=None, alias="token"),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse:
+    _auth(request, authorization, token_field)
+    result = await _act(
+        request.app,
+        lambda session: resume_waiting(
+            session,
+            cycle_id,
+            "accept",
+            now=_now(),
+            setup=load_recommendation_setup(),
+        ),
+    )
+    if result == "accepted":
+        coupon_id = await _cycle_coupon(request, cycle_id)
+        if coupon_id is not None:
+            return RedirectResponse(
+                f"/advisor/recommendations/{coupon_id}", status_code=303
+            )
+    notice = result if isinstance(result, str) else "missing"
+    return RedirectResponse(
+        f"/advisor/recommendations?cycle={cycle_id}&notice={notice}",
+        status_code=303,
+    )
+
+
+async def reject_cycle(
+    request: Request,
+    cycle_id: int,
+    token_field: str | None = Form(default=None, alias="token"),
+    authorization: str | None = Header(default=None),
+) -> RedirectResponse:
+    _auth(request, authorization, token_field)
+    await _act(
+        request.app,
+        lambda session: resume_waiting(
+            session,
+            cycle_id,
+            "reject",
+            now=_now(),
+            setup=load_recommendation_setup(),
+        ),
+    )
+    return RedirectResponse(
+        f"/advisor/recommendations?cycle={cycle_id}&notice=rejected",
+        status_code=303,
+    )
 
 
 async def place(
@@ -395,6 +480,8 @@ def mount_advisor_http(app: FastAPI, token: str) -> None:
     app.get("/advisor/browse/{table}")(browse_table)
     app.get("/advisor/browse/{table}/{row_id}")(browse_row)
     app.get("/advisor/recommendations")(recommendations)
+    app.post("/advisor/recommendations/cycles/{cycle_id}/accept")(accept_cycle)
+    app.post("/advisor/recommendations/cycles/{cycle_id}/reject")(reject_cycle)
     app.get("/advisor/recommendations/{coupon_id}")(recommendation_card)
     app.post("/advisor/recommendations/{coupon_id}/accept")(accept)
     app.post("/advisor/recommendations/{coupon_id}/reject")(reject)
@@ -502,14 +589,17 @@ async def _played(app: FastAPI, *, kind: str, limit: int) -> tuple[Any, ...]:
         raise postgres_unavailable(exc) from exc
 
 
-async def _act(app: FastAPI, call: Callable[[AsyncSession], Awaitable[object]]) -> None:
+async def _act(
+    app: FastAPI, call: Callable[[AsyncSession], Awaitable[object]]
+) -> object:
     engine = cast(AsyncEngine, app.state.engine)
     factory = make_session_factory(engine)
     error: ActionError | None = None
+    result: object = None
     try:
         async with factory() as session, session.begin():
             try:
-                await call(session)
+                result = await call(session)
             except ActionError as exc:
                 if exc.commit:
                     error = exc
@@ -521,6 +611,77 @@ async def _act(app: FastAPI, call: Callable[[AsyncSession], Awaitable[object]]) 
         raise postgres_unavailable(exc) from exc
     if error is not None:
         raise HTTPException(status_code=_CODES.get(error.code, 409), detail=error.code)
+    return result
+
+
+_NOTICES = {
+    "limited": "Limity rekomendacji nie przepuściły zapisu. Czekanie trwa.",
+    "closed": "Czekanie się skończyło. Kupon nie powstał.",
+    "rejected": "Odrzucone. Kupon nie powstał.",
+    "conflict": "Mecz jest już na otwartej rekomendacji. Kupon nie powstał.",
+    "missing": "Brak czekania na ten cykl.",
+    "accepted": "Kupon rekomendacji nie powstał.",
+}
+
+
+async def _waiting_page(request: Request, cycle_id: int) -> HTMLResponse:
+    factory = make_session_factory(_engine(request))
+    try:
+        async with factory() as session:
+            row = await session.get(AdvisorGraphCheckpoint, cycle_id)
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="missing")
+    lines = _waiting_lines(row.state)
+    notice = _NOTICES.get(request.query_params.get("notice", ""), "")
+    return HTMLResponse(
+        render_waiting_card(
+            cycle_id=cycle_id,
+            status=row.status,
+            lines=lines,
+            notice=notice,
+        )
+    )
+
+
+def _waiting_lines(state: object) -> tuple[str, ...]:
+    if not isinstance(state, dict):
+        return ()
+    coupons = state.get("coupons")
+    if not isinstance(coupons, list):
+        return ()
+    lines: list[str] = []
+    for coupon in coupons:
+        if not isinstance(coupon, list):
+            continue
+        for leg in coupon:
+            if not isinstance(leg, dict):
+                continue
+            lines.append(
+                f"mecz {leg.get('fixture_id')} {leg.get('period')} "
+                f"{leg.get('goals_home')}:{leg.get('goals_away')} "
+                f"Over {leg.get('n')}+0.5 kurs {leg.get('odd')}"
+            )
+    return tuple(lines)
+
+
+async def _cycle_coupon(request: Request, cycle_id: int) -> int | None:
+    factory = make_session_factory(_engine(request))
+    try:
+        async with factory() as session:
+            coupon_id = await session.scalar(
+                select(AdvisorCoupon.id)
+                .where(AdvisorCoupon.cycle_id == cycle_id)
+                .where(AdvisorCoupon.mode == "recommendation")
+                .order_by(AdvisorCoupon.id.desc())
+                .limit(1)
+            )
+    except Exception as exc:
+        raise postgres_unavailable(exc) from exc
+    if coupon_id is None:
+        return None
+    return int(coupon_id)
 
 
 async def _card(session: AsyncSession, coupon_id: int) -> str | None:

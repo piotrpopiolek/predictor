@@ -5,7 +5,27 @@ from __future__ import annotations
 from html import escape
 
 
-def render_recommendations(rows: tuple[tuple[int, str, str, str], ...]) -> str:
+def render_recommendations(
+    rows: tuple[tuple[int, str, str, str], ...],
+    waiting: tuple[tuple[int, str], ...] = (),
+) -> str:
+    pending = "".join(
+        "<tr>"
+        f'<td><a href="/advisor/recommendations?cycle={cycle_id}">{cycle_id}</a></td>'
+        f"<td>{escape(name)}</td>"
+        "<td>czekam</td>"
+        "</tr>"
+        for cycle_id, name in waiting
+    )
+    wait_table = ""
+    if pending:
+        wait_table = f"""
+        <h2>Czekam na decyzję</h2>
+        <table>
+          <thead><tr><th>Cykl</th><th>Strategia</th><th>Stan</th></tr></thead>
+          <tbody>{pending}</tbody>
+        </table>
+        """
     body = "".join(
         "<tr>"
         f'<td><a href="/advisor/recommendations/{coupon_id}">{coupon_id}</a></td>'
@@ -20,10 +40,49 @@ def render_recommendations(rows: tuple[tuple[int, str, str, str], ...]) -> str:
     return _page(
         "Rekomendacje",
         f"""
+        {wait_table}
         <table>
           <thead><tr><th>Kupon</th><th>Strategia</th><th>Status</th><th>Kurs</th></tr></thead>
           <tbody>{body}</tbody>
         </table>
+        """,
+    )
+
+
+def render_waiting_card(
+    *,
+    cycle_id: int,
+    status: str,
+    lines: tuple[str, ...],
+    notice: str,
+) -> str:
+    """Decision card before a recommendation coupon exists."""
+    items = "".join(f"<li>{escape(line)}</li>" for line in lines)
+    note = f"<p>{escape(notice)}</p>" if notice else ""
+    forms = ""
+    if status == "waiting_human":
+        forms = f"""
+        <form method="post" action="/advisor/recommendations/cycles/{cycle_id}/accept">
+          <label>Token <input type="password" name="token" autocomplete="off"></label>
+          <button type="submit">Akceptuj</button>
+        </form>
+        <form method="post" action="/advisor/recommendations/cycles/{cycle_id}/reject">
+          <label>Token <input type="password" name="token" autocomplete="off"></label>
+          <button type="submit">Odrzuć</button>
+        </form>
+        """
+    if status == "waiting_human":
+        state = "Czekam na decyzję."
+    else:
+        state = "Czekanie zakończone."
+    return _page(
+        f"Cykl {cycle_id}",
+        f"""
+        <p>{escape(state)} Kuponu rekomendacji jeszcze nie ma.</p>
+        {note}
+        <ul>{items}</ul>
+        {forms}
+        <p><a href="/advisor/recommendations">Lista</a></p>
         """,
     )
 

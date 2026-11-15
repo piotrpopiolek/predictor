@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import delete, func, select
+from fastapi.testclient import TestClient
+from sqlalchemy import String, cast, delete, func, select
 
+from predictor.api.main import create_app
 from predictor.models.advisor import (
     AdvisorCoupon,
     AdvisorCouponEvent,
@@ -39,7 +41,7 @@ from predictor.services.advisor.cycle import (
     run_cycle,
 )
 from predictor.services.advisor.llm.protocol import LlmCompletion, ProviderError
-from predictor.services.advisor.telegram import KIND_DECISION_WAIT
+from predictor.services.advisor.recommend import setup_for
 
 NOW = datetime(2026, 10, 18, 15, 0, tzinfo=UTC)
 LEAGUE = 880_001
@@ -445,8 +447,22 @@ async def test_second_cycle_waits_until_the_first_cost_is_committed() -> None:
         await engine.dispose()
 
 
+def _gate(*, coupon_limit: int = 10):
+    return setup_for(
+        stake=Decimal("20"),
+        loss_limit=Decimal("100"),
+        hours="0-24",
+        leagues="",
+        coupon_limit=coupon_limit,
+        ttl_seconds=180,
+        withdraw_yield=Decimal("0"),
+    )
+
+
 @pytest.mark.asyncio
-async def test_recommendation_bet_waits_until_accept() -> None:
+async def test_recommendation_bet_waits_until_accept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = make_async_engine(Settings())
     factory = make_session_factory(engine)
     version_id = 0
@@ -498,34 +514,53 @@ async def test_recommendation_bet_waits_until_accept() -> None:
         assert checkpoint.status == "waiting_human"
         assert cycle is not None
         assert cycle.validation_status == "ok"
-        async with factory() as session:
-            resumed = await resume_recommendation(
-                session,
-                outcome.cycle_id,
-                "accept",
-                now=NOW,
-                score_changed=False,
+        async with factory() as session, session.begin():
+            match = await session.get(Fixture, fixture)
+            assert match is not None
+            match.goals_home = 0
+            match.goals_away = 1
+            match.status_short = "2H"
+        monkeypatch.setenv("ADVISOR_RECOMMENDATION_STAKE", "20")
+        monkeypatch.setenv("ADVISOR_RECOMMENDATION_LOSS_LIMIT", "1000000")
+        monkeypatch.setenv("ADVISOR_OPERATOR_HOURS", "0-24")
+        monkeypatch.setenv("ADVISOR_RECOMMENDATION_COUPON_LIMIT", "100000")
+        monkeypatch.setenv("ADVISOR_WITHDRAW_YIELD", "0")
+        token = Settings().operator_bet_token.get_secret_value()
+        with TestClient(create_app()) as client:
+            page = client.get(f"/advisor/recommendations?cycle={cycle_id}")
+            assert page.status_code == 200
+            assert "Akceptuj" in page.text
+            assert "Kuponu rekomendacji jeszcze nie ma" in page.text
+            denied = client.post(
+                f"/advisor/recommendations/cycles/{cycle_id}/accept",
+                follow_redirects=False,
             )
-        assert resumed == "accepted"
-        async with factory() as session:
-            again = await resume_recommendation(
-                session,
-                outcome.cycle_id,
-                "accept",
-                now=NOW,
-                score_changed=False,
+            assert denied.status_code == 401
+            accepted = client.post(
+                f"/advisor/recommendations/cycles/{cycle_id}/accept",
+                data={"token": token},
+                follow_redirects=False,
             )
+            assert accepted.status_code == 303
+            assert accepted.headers["location"].startswith("/advisor/recommendations/")
+            again = client.post(
+                f"/advisor/recommendations/cycles/{cycle_id}/accept",
+                data={"token": token},
+                follow_redirects=False,
+            )
+        assert again.status_code == 303
+        assert "notice=missing" in again.headers["location"]
+        async with factory() as session:
             modes = (
                 await session.scalars(
-                    select(AdvisorCoupon.mode).where(
-                        AdvisorCoupon.cycle_id == outcome.cycle_id
-                    )
+                    select(AdvisorCoupon.mode).where(AdvisorCoupon.cycle_id == cycle_id)
                 )
             ).all()
-            checkpoint = await session.get(AdvisorGraphCheckpoint, outcome.cycle_id)
-        assert again == "missing"
+            checkpoint = await session.get(AdvisorGraphCheckpoint, cycle_id)
+            cycle = await session.get(AdvisorCycle, cycle_id)
         assert sorted(modes) == ["recommendation", "sandbox"]
         assert checkpoint is not None and checkpoint.status == "done"
+        assert cycle is not None and cycle.validation_status == "ok"
     finally:
         async with factory() as session, session.begin():
             if version_id:
@@ -539,7 +574,7 @@ async def test_recommendation_bet_waits_until_accept() -> None:
                 )
                 await session.execute(
                     delete(AdvisorTelegramOutbox).where(
-                        AdvisorTelegramOutbox.kind == KIND_DECISION_WAIT
+                        cast(AdvisorTelegramOutbox.payload, String).like(f"%{fixture}%")
                     )
                 )
             if cycle_id is not None:
@@ -558,6 +593,162 @@ async def test_recommendation_bet_waits_until_accept() -> None:
                 fixture=fixture,
             )
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_resume_reject_score_clock_and_limit() -> None:
+    engine = make_async_engine(Settings())
+    factory = make_session_factory(engine)
+    specs = (
+        (881_011, 881_012, 881_013, 881_014, "advisor-cycle-reject-wait"),
+        (881_021, 881_022, 881_023, 881_024, "advisor-cycle-score-wait"),
+        (881_031, 881_032, 881_033, 881_034, "advisor-cycle-clock-wait"),
+        (881_041, 881_042, 881_043, 881_044, "advisor-cycle-limit-wait"),
+    )
+    started: list[tuple[int, int, int, int | None]] = []
+    try:
+        cycles: list[int] = []
+        for league, home, away, fixture, name in specs:
+            async with factory() as session, session.begin():
+                version_id, strategy_id = await _seed(
+                    session,
+                    league=league,
+                    home=home,
+                    away=away,
+                    fixture=fixture,
+                    name=name,
+                )
+            started.append((strategy_id, version_id, fixture, None))
+            request = replace(
+                _request(),
+                strategy_id=strategy_id,
+                strategy_version_id=version_id,
+                mode="recommendation",
+                recommend=True,
+                recommendation_stake=Decimal("20.00"),
+                recommendation_fixtures=frozenset({fixture}),
+                candidates=(replace(_request().candidates[0], fixture_id=fixture),),
+            )
+            async with factory() as session:
+                outcome = await run_cycle(
+                    session,
+                    _Provider(_reply("bet", fixture)),
+                    _settings(),
+                    request,
+                    clock=lambda: NOW,
+                )
+            assert outcome.cycle_id is not None
+            cycles.append(outcome.cycle_id)
+            started[-1] = (strategy_id, version_id, fixture, outcome.cycle_id)
+            async with factory() as session, session.begin():
+                match = await session.get(Fixture, fixture)
+                assert match is not None
+                match.goals_home = 0
+                match.goals_away = 1
+                match.status_short = "2H"
+        reject_id, score_id, clock_id, limit_id = cycles
+        async with factory() as session:
+            rejected = await resume_recommendation(
+                session, reject_id, "reject", now=NOW, setup=_gate()
+            )
+        assert rejected == "rejected"
+        async with factory() as session, session.begin():
+            score_match = await session.get(Fixture, 881_024)
+            assert score_match is not None
+            score_match.goals_home = 2
+        async with factory() as session:
+            closed = await resume_recommendation(
+                session, score_id, "accept", now=NOW, setup=_gate()
+            )
+        assert closed == "closed"
+        async with factory() as session:
+            asked = await session.get(AdvisorGraphCheckpoint, clock_id)
+            assert asked is not None
+            asked_at = asked.updated_at
+        async with factory() as session:
+            expired = await resume_recommendation(
+                session,
+                clock_id,
+                "accept",
+                now=asked_at + timedelta(seconds=181),
+                setup=_gate(),
+            )
+        assert expired == "closed"
+        async with factory() as session:
+            limited = await resume_recommendation(
+                session, limit_id, "accept", now=NOW, setup=_gate(coupon_limit=0)
+            )
+            still = await session.get(AdvisorGraphCheckpoint, limit_id)
+        assert limited == "limited"
+        assert still is not None and still.status == "waiting_human"
+        async with factory() as session:
+            for cycle_id in (reject_id, score_id, clock_id):
+                modes = (
+                    await session.scalars(
+                        select(AdvisorCoupon.mode).where(
+                            AdvisorCoupon.cycle_id == cycle_id
+                        )
+                    )
+                ).all()
+                cycle = await session.get(AdvisorCycle, cycle_id)
+                assert modes == ["sandbox"]
+                assert cycle is not None and cycle.validation_status == "ok"
+    finally:
+        async with factory() as session, session.begin():
+            for strategy_id, version_id, fixture, cycle_id in started:
+                await _drop_wait(
+                    session,
+                    strategy_id=strategy_id,
+                    version_id=version_id,
+                    fixture=fixture,
+                    cycle_id=cycle_id,
+                    league=fixture - 3,
+                    home=fixture - 2,
+                    away=fixture - 1,
+                )
+        await engine.dispose()
+
+
+async def _drop_wait(
+    session,
+    *,
+    strategy_id: int,
+    version_id: int,
+    fixture: int,
+    cycle_id: int | None,
+    league: int,
+    home: int,
+    away: int,
+) -> None:
+    if version_id:
+        coupon_ids = select(AdvisorCoupon.id).where(
+            AdvisorCoupon.strategy_version_id == version_id
+        )
+        await session.execute(
+            delete(AdvisorCouponEvent).where(
+                AdvisorCouponEvent.coupon_id.in_(coupon_ids)
+            )
+        )
+    await session.execute(
+        delete(AdvisorTelegramOutbox).where(
+            cast(AdvisorTelegramOutbox.payload, String).like(f"%{fixture}%")
+        )
+    )
+    if cycle_id is not None:
+        await session.execute(
+            delete(AdvisorGraphCheckpoint).where(
+                AdvisorGraphCheckpoint.cycle_id == cycle_id
+            )
+        )
+    await _cleanup(
+        session,
+        strategy_id,
+        version_id,
+        league=league,
+        home=home,
+        away=away,
+        fixture=fixture,
+    )
 
 
 async def _cleanup(
