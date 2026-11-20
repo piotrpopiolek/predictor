@@ -99,7 +99,7 @@ def test_advisor_settings_load(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = load_advisor_settings()
     assert isinstance(settings, AdvisorSettings)
     assert settings.llm_provider == "google"
-    assert settings.llm_model == "gemini-2.5-flash"
+    assert settings.llm_model == "gemini-3.5-flash-lite"
     assert settings.llm_timeout_seconds == 20
     assert settings.llm_api_key.get_secret_value() == "secret"
     assert settings.recommendation_stake == Decimal("20")

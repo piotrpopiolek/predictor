@@ -126,7 +126,7 @@ class AdvisorSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", frozen=True, env_file=None)
 
     llm_provider: str = "google"
-    llm_model: str = "gemini-2.5-flash"
+    llm_model: str = "gemini-3.5-flash-lite"
     llm_api_key: SecretStr
     llm_timeout_seconds: float = 20
     llm_price_input_pln_per_mtok: Decimal
