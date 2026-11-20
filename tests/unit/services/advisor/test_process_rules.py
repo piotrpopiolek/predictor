@@ -620,7 +620,7 @@ def test_lone_candidate_allowed_needs_strong_regulation_single() -> None:
     )
 
 
-def test_cycle_prompt_p6_prices_candidates_and_forbids_padding() -> None:
+def test_cycle_prompt_p7_prices_candidates_and_forbids_padding() -> None:
     candidates = (
         CycleCandidate(
             fixture_id=7,
@@ -676,12 +676,14 @@ def test_cycle_prompt_p6_prices_candidates_and_forbids_padding() -> None:
     assert second["n"] == 0
     assert second["detail"] is None
     assert "first_odd" not in second["price"]
-    assert PROMPT_VERSION == "p6"
+    assert PROMPT_VERSION == "p7"
     assert "below 1.50" in prompt
     assert "1.80 or higher" in prompt
     assert "never a favourite code" in prompt
     assert "rather than a very short favourite" not in prompt
-    assert "already 0–1 with minute at most 60" in prompt
+    assert "already 0–1 with minute at most 60" not in prompt
+    assert "For period = regulation only" not in prompt
+    assert "regulation priors do not" not in prompt
     assert "Prefer coupons" not in prompt
     assert "risk filter over the baseline rule" in prompt
     assert f"x {PAYOUT_KEEP:.2f}" in prompt
@@ -694,7 +696,7 @@ def test_cycle_prompt_p6_prices_candidates_and_forbids_padding() -> None:
     assert "no odd under 1.20 after minute 60" in prompt
     assert "odd of at least 1.80" in prompt
     assert "300 seconds old" in prompt
-    assert "For period = regulation only: Inside the regulation gate" in prompt
+    assert "Start from implied_pct and move away from it only with evidence" in prompt
     assert "There is no track record for extra time" in prompt
     assert "stats_available is false" in prompt
     assert "rise from price.first_odd to price.odd is not a signal" in prompt

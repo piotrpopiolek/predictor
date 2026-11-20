@@ -48,7 +48,7 @@ Each cycle is a single `generate_content` call, not a chat session:
 
 The vendor SDK retries HTTP 408, 429 and 5xx inside that one request, up to 5 attempts. The application does not retry the cycle. There is no second model and no fallback provider.
 
-The cycle prompt is versioned in code (`PROMPT_VERSION` in `services/advisor/prompts/cycle.py`, currently `p6`). A leg enters LLM analysis at `MIN_ANALYSIS_ODD` (1.200). Match context is appended from Postgres (score, cards, stats, odds). That is not retrieval: there is no vector index and no embeddings.
+The cycle prompt is versioned in code (`PROMPT_VERSION` in `services/advisor/prompts/cycle.py`, currently `p7`). A leg enters LLM analysis at `MIN_ANALYSIS_ODD` (1.200). Match context is appended from Postgres (score, cards, stats, odds). That is not retrieval: there is no vector index and no embeddings.
 
 Cost is a daily budget in PLN (default 10). The sandbox may spend 70% of it. Prices per million tokens are required configuration, not hardcoded. A Postgres advisory lock covers the spend check and the call, so two cycles cannot both pass the budget.
 

@@ -1,4 +1,4 @@
-"""Prompt for one sandbox cycle. Version p6: favourite codes name the band.
+"""Prompt for one sandbox cycle. Version p7: no regulation state prior.
 
 Odds are context, not an output.
 """
@@ -24,16 +24,7 @@ from predictor.services.advisor.domain import (
     QUOTE_MAX_AGE,
 )
 
-PROMPT_VERSION = "p6"
-
-# Regulation-only directions inside the A0 gate (B1). Extra time has no
-# track record yet — the prompt states that separately. Exact rates stay out
-# of the prompt; refresh via `.ai/b1_state_priors.sql` on predictor_dev when
-# the finished sample is large enough to revisit.
-_STATE_PRIORS = (
-    "Inside the regulation gate, historical edge leans toward total goals "
-    "already 0–1 with minute at most 60."
-)
+PROMPT_VERSION = "p7"
 
 _PCT = Decimal("1")
 _HUNDRED = Decimal("100")
@@ -96,14 +87,13 @@ def _instructions(*, min_combined_odd: Decimal, max_legs: int) -> str:
             "estimated_probability, as a percent, is at least the break-even "
             "of the coupon you put it in.",
             "Start from implied_pct and move away from it only with evidence "
-            "present in the input. For period = regulation only: "
-            f"{_STATE_PRIORS}",
+            "present in the input.",
             "period = extra_time settles on extra-time goals only: n counts "
             "goals scored in extra time, goals from the 90 minutes do not "
             "count, and penalties never count. There is no track record for "
-            "extra time in this sandbox, so the regulation priors do not "
-            "apply; bet only with clear evidence and prefer reject or wait "
-            "otherwise. minutes_left counts to minute 120.",
+            "extra time in this sandbox, so bet only with clear evidence and "
+            "prefer reject or wait otherwise. minutes_left counts to minute "
+            "120.",
             f"The default coupon is a pair: the {keep} cut is taken once per "
             "coupon, so a leg in a pair only needs breakeven_pair_leg_pct "
             "while a single needs breakeven_single_pct. Any two candidates "
