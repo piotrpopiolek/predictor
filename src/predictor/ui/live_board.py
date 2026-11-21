@@ -889,6 +889,21 @@ def format_day_heading(day: date) -> str:
     return f"{weekday} {day.strftime('%d.%m.%Y')}"
 
 
+def _day_step_link(
+    target: date,
+    *,
+    earliest: date | None,
+    latest: date | None,
+    label: str,
+) -> str:
+    """One-day step. Hidden once the step leaves the stored kickoff span."""
+    if earliest is not None and target < earliest:
+        return ""
+    if latest is not None and target > latest:
+        return ""
+    return f'<a href="/live/day/{target.isoformat()}">{label}</a>'
+
+
 def render_day_html(
     matches: list[LiveMatch],
     *,
@@ -896,6 +911,8 @@ def render_day_html(
     today: date,
     generated_at: datetime,
     invalid_date: bool = False,
+    earliest: date | None = None,
+    latest: date | None = None,
 ) -> str:
     ordered = order_day_matches(matches)
     sections: list[str] = []
@@ -916,6 +933,23 @@ def render_day_html(
         body = '<p class="empty">Brak meczów w tym dniu.</p>'
     previous = day - timedelta(days=1)
     following = day + timedelta(days=1)
+    previous_link = _day_step_link(
+        previous,
+        earliest=earliest,
+        latest=latest,
+        label=f"← {previous.strftime('%d.%m')}",
+    )
+    following_link = _day_step_link(
+        following,
+        earliest=earliest,
+        latest=latest,
+        label=f"{following.strftime('%d.%m')} →",
+    )
+    limits = ""
+    if earliest is not None:
+        limits += f' min="{earliest.isoformat()}"'
+    if latest is not None:
+        limits += f' max="{latest.isoformat()}"'
     today_link = ""
     if day != today:
         today_link = '<a href="/live/day">Dziś</a>'
@@ -952,11 +986,11 @@ def render_day_html(
 <main>
   {error}
   <form class="day-bar" method="get" action="/live/day">
-    <a href="/live/day/{previous.isoformat()}">← {previous.strftime("%d.%m")}</a>
-    <input type="date" name="day" value="{day.isoformat()}" required>
+    {previous_link}
+    <input type="date" name="day" value="{day.isoformat()}"{limits} required>
     <button type="submit">Pokaż</button>
     {today_link}
-    <a href="/live/day/{following.isoformat()}">{following.strftime("%d.%m")} →</a>
+    {following_link}
   </form>
   {body}
 </main>

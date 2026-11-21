@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from html import escape
 from typing import Any
@@ -50,6 +50,7 @@ from predictor.services.live_board import (
     sort_matches_by_clock,
     summarize_team_goal_form,
 )
+from predictor.services.live_board.sql import _utc_day
 from predictor.ui import render_day_html, render_live_html
 
 _SAMPLE = LiveMatch(
@@ -295,6 +296,13 @@ def test_order_day_matches_by_first_kickoff_then_time() -> None:
     assert [item.fixture_id for item in ordered] == [1, 3, 2]
 
 
+def test_utc_day_follows_the_kickoff_instant() -> None:
+    ahead = timezone(timedelta(hours=2))
+    assert _utc_day(datetime(2026, 9, 23, 1, 30, tzinfo=ahead)) == date(2026, 9, 22)
+    assert _utc_day(datetime(2026, 9, 23, 0, 30)) == date(2026, 9, 23)
+    assert _utc_day(None) is None
+
+
 def test_render_day_html_steps_and_date_field() -> None:
     day = date(2026, 9, 23)
     html = render_day_html(
@@ -315,6 +323,8 @@ def test_render_day_html_steps_and_date_field() -> None:
     assert 'href="/live/day/2026-09-22"' in html
     assert 'href="/live/day/2026-09-24"' in html
     assert 'name="day" value="2026-09-23"' in html
+    assert "min=" not in html
+    assert "max=" not in html
     assert "Tzeirey Tamra" in html
     assert "12:30" in html
     assert "Dziś" not in html
@@ -336,6 +346,28 @@ def test_render_day_html_steps_and_date_field() -> None:
         invalid_date=True,
     )
     assert "Nie rozpoznaję tej daty" in bad
+    bounded = render_day_html(
+        [],
+        day=date(2026, 9, 23),
+        today=date(2026, 9, 23),
+        generated_at=datetime(2026, 9, 23, 15, 0, tzinfo=UTC),
+        earliest=date(2026, 9, 22),
+        latest=date(2026, 9, 23),
+    )
+    assert 'min="2026-09-22"' in bounded
+    assert 'max="2026-09-23"' in bounded
+    assert 'href="/live/day/2026-09-22"' in bounded
+    assert 'href="/live/day/2026-09-24"' not in bounded
+    first = render_day_html(
+        [],
+        day=date(2026, 9, 22),
+        today=date(2026, 9, 23),
+        generated_at=datetime(2026, 9, 23, 15, 0, tzinfo=UTC),
+        earliest=date(2026, 9, 22),
+        latest=date(2026, 9, 23),
+    )
+    assert 'href="/live/day/2026-09-21"' not in first
+    assert 'href="/live/day/2026-09-23"' in first
 
 
 def test_render_escapes_team_names() -> None:

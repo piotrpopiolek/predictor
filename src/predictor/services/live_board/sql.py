@@ -208,6 +208,27 @@ def _assemble_matches(
     return matches
 
 
+def _utc_day(value: datetime | None) -> date | None:
+    """Calendar day of a kickoff in UTC. Naive stamps are treated as UTC."""
+    if value is None:
+        return None
+    stamp = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return stamp.astimezone(UTC).date()
+
+
+async def fixture_day_bounds(engine: AsyncEngine) -> tuple[date | None, date | None]:
+    """UTC days of the oldest and newest stored kickoff."""
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        earliest, latest = (
+            await session.execute(
+                select(func.min(Fixture.date), func.max(Fixture.date)).where(
+                    Fixture.date.is_not(None)
+                )
+            )
+        ).one()
+    return _utc_day(earliest), _utc_day(latest)
+
+
 async def list_day_matches(engine: AsyncEngine, day: date) -> list[LiveMatch]:
     start = datetime(day.year, day.month, day.day, tzinfo=UTC)
     end = start + timedelta(days=1)

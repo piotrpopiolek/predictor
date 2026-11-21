@@ -51,6 +51,7 @@ from predictor.services.live_board.domain import (
     summarize_team_goal_form,
 )
 from predictor.services.live_board.sql import (
+    fixture_day_bounds,
     list_day_matches,
     list_live_matches,
     list_next_goal_matches,
@@ -107,6 +108,7 @@ __all__ = [
     "parse_query_day",
     "order_day_matches",
     "load_live_all_fixture_ids",
+    "fixture_day_bounds",
     "list_day_matches",
     "list_live_matches",
     "load_fixture_match",

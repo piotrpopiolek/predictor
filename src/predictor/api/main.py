@@ -37,6 +37,7 @@ from predictor.services.health import (
 )
 from predictor.services.live_board import (
     LiveMatch,
+    fixture_day_bounds,
     list_day_matches,
     list_live_matches,
     list_next_goal_matches,
@@ -270,8 +271,10 @@ async def _day_page(request: Request, raw: str | None) -> HTMLResponse:
             selected = today
         else:
             selected = parsed
+    engine = _engine(request)
     try:
-        matches = await list_day_matches(_engine(request), selected)
+        matches = await list_day_matches(engine, selected)
+        earliest, latest = await fixture_day_bounds(engine)
     except Exception as exc:
         raise postgres_unavailable(exc) from exc
     html = render_day_html(
@@ -280,6 +283,8 @@ async def _day_page(request: Request, raw: str | None) -> HTMLResponse:
         today=today,
         generated_at=datetime.now(UTC),
         invalid_date=invalid,
+        earliest=earliest,
+        latest=latest,
     )
     return HTMLResponse(html)
 

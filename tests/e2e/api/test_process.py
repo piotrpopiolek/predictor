@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
@@ -230,7 +231,12 @@ def test_live_day_pages(valid_env: None, monkeypatch: pytest.MonkeyPatch) -> Non
         del engine, day
         return []
 
+    async def fake_bounds(engine: object) -> tuple[date, date]:
+        del engine
+        return date(2026, 9, 1), date(2026, 9, 30)
+
     monkeypatch.setattr("predictor.api.main.list_day_matches", fake_day)
+    monkeypatch.setattr("predictor.api.main.fixture_day_bounds", fake_bounds)
     with TestClient(create_app()) as client:
         today = client.get("/live/day")
         dated = client.get("/live/day/2026-09-22")
@@ -241,6 +247,8 @@ def test_live_day_pages(valid_env: None, monkeypatch: pytest.MonkeyPatch) -> Non
     assert "Mecze" in today.text
     assert dated.status_code == 200
     assert "22.09.2026" in dated.text
+    assert 'min="2026-09-01"' in dated.text
+    assert 'max="2026-09-30"' in dated.text
     assert query.status_code == 200
     assert "20.09.2026" in query.text
     assert bad.status_code == 200
