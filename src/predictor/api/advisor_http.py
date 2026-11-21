@@ -82,7 +82,6 @@ _CODES = {
     "not_confirmable": 409,
     "not_recommendation": 409,
     "retired": 409,
-    "score": 409,
     "gate": 409,
     "conflict": 409,
     "odd": 400,
@@ -437,7 +436,6 @@ async def settle_leg(
 
 
 _PLAY_NOTICES = {
-    "score": "Wynik albo okres meczu zmienił się od decyzji.",
     "gate": "Bramki rekomendacji są zamknięte.",
     "conflict": "Mecz jest już na otwartej rekomendacji.",
     "below": "Kurs łączny jest poniżej progu strategii. Zapis przeszedł.",

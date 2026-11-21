@@ -22,7 +22,6 @@ from predictor.models.fixtures import Fixture, Team
 from predictor.postgres import make_async_engine, make_session_factory
 from predictor.schemas.settings import Settings
 from predictor.services.advisor.play import mark_not_played, mark_played
-from predictor.services.advisor.recommend_ops import ActionError
 from predictor.services.advisor.sandbox import (
     LegSnapshot,
     SandboxSlip,
@@ -71,13 +70,13 @@ async def test_played_coupon_keeps_the_sandbox_price(
                 session,
                 strategy_id=strategy_id,
                 strategy_version_id=version_id,
-                slips=(_leg(883_004), _leg(883_014)),
+                slips=(_leg(883_004), _leg(883_014), _leg(9_883_024)),
                 cycle_id=None,
                 placed_at=NOW,
                 kind="llm",
             )
-        assert len(placed.coupon_ids) == 2
-        first, second = placed.coupon_ids
+        assert len(placed.coupon_ids) == 3
+        first, second, third = placed.coupon_ids
         async with factory() as session:
             claim = await session.scalar(
                 select(AdvisorPlayClaim).where(
@@ -128,20 +127,33 @@ async def test_played_coupon_keeps_the_sandbox_price(
         assert account.stake == Decimal("12.50")
         assert accounts == [account_id]
         async with factory() as session, session.begin():
-            match = await session.get(Fixture, 883_014)
-            assert match is not None
-            match.goals_home = 2
+            for fixture_id, goals_home in ((883_014, 2), (9_883_024, 3)):
+                match = await session.get(Fixture, fixture_id)
+                assert match is not None
+                match.goals_home = goals_home
         async with factory() as session, session.begin():
-            with pytest.raises(ActionError, match="score"):
-                await mark_played(
-                    session,
-                    second,
-                    combined=Decimal("1.800"),
-                    stake=Decimal("12.50"),
-                    now=NOW,
+            later, later_id, later_below = await mark_played(
+                session,
+                second,
+                combined=Decimal("1.800"),
+                stake=Decimal("12.50"),
+                now=NOW,
+            )
+        assert later == "played" and later_below is False and later_id is not None
+        async with factory() as session:
+            later_leg = await session.scalar(
+                select(AdvisorLeg).where(
+                    AdvisorLeg.coupon_id == later_id,
+                    AdvisorLeg.mode == "recommendation",
                 )
+            )
+        assert later_leg is not None
+        assert later_leg.goals_home == 0
+        assert later_leg.goals_away == 1
+        assert later_leg.period == "regulation"
+        assert later_leg.n == 1
         async with factory() as session, session.begin():
-            missed = await mark_not_played(session, second, NOW)
+            missed = await mark_not_played(session, third, NOW)
         assert missed == "not_played"
     finally:
         async with factory() as session, session.begin():
@@ -175,6 +187,21 @@ async def _seed(session) -> tuple[int, int]:
             season=2026,
             home_team_id=883_012,
             away_team_id=883_013,
+            status_short="2H",
+            goals_home=0,
+            goals_away=1,
+        )
+    )
+    session.add(Team(id=9_883_022, name="Home 3"))
+    session.add(Team(id=9_883_023, name="Away 3"))
+    await session.flush()
+    session.add(
+        Fixture(
+            id=9_883_024,
+            league_id=883_001,
+            season=2026,
+            home_team_id=9_883_022,
+            away_team_id=9_883_023,
             status_short="2H",
             goals_home=0,
             goals_away=1,
@@ -236,8 +263,12 @@ async def _wipe(session, strategy_id: int, version_id: int) -> None:
         await session.execute(
             delete(AdvisorStrategy).where(AdvisorStrategy.id == strategy_id)
         )
-    await session.execute(delete(Fixture).where(Fixture.id.in_((883_004, 883_014))))
     await session.execute(
-        delete(Team).where(Team.id.in_((883_002, 883_003, 883_012, 883_013)))
+        delete(Fixture).where(Fixture.id.in_((883_004, 883_014, 9_883_024)))
+    )
+    await session.execute(
+        delete(Team).where(
+            Team.id.in_((883_002, 883_003, 883_012, 883_013, 9_883_022, 9_883_023))
+        )
     )
     await session.execute(delete(League).where(League.id == 883_001))

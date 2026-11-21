@@ -24,7 +24,7 @@ from predictor.models.advisor import (
     AdvisorStrategyVersion,
 )
 from predictor.models.fixtures import Fixture
-from predictor.services.advisor.domain import Period, combined_odd, period_for
+from predictor.services.advisor.domain import combined_odd
 from predictor.services.advisor.recommend import (
     inactive_reason,
     league_allowed,
@@ -150,7 +150,11 @@ async def mark_played(
     stake: Decimal,
     now: datetime,
 ) -> tuple[str, int | None, bool]:
-    """Create one placed coupon. The bool says the price is under the strategy floor."""
+    """Create one placed coupon from the sandbox slip stored at creation.
+
+    A later score or period does not block this. The bool says the price is
+    under the strategy floor.
+    """
     _check_money(combined, stake)
     claim = await _claim(session, coupon_id, now)
     if claim.status == "played":
@@ -184,8 +188,6 @@ async def mark_played(
         )
         for leg in legs
     )
-    if await _score_moved(session, legs):
-        raise ActionError("score")
     if not await _window_open(session, snapshots, now):
         raise ActionError("gate")
     scaled = scale_leg_odds(tuple(leg.odd for leg in legs), combined)
@@ -294,25 +296,6 @@ async def _window_open(
         return False
     busy = await open_recommendation_fixtures(session)
     return all(leg.fixture_id not in busy for leg in slip)
-
-
-async def _score_moved(session: AsyncSession, legs: Sequence[AdvisorLeg]) -> bool:
-    rows = (
-        await session.scalars(
-            select(Fixture).where(Fixture.id.in_([leg.fixture_id for leg in legs]))
-        )
-    ).all()
-    found = {int(row.id): row for row in rows}
-    for leg in legs:
-        fixture = found.get(leg.fixture_id)
-        if fixture is None or fixture.goals_home is None or fixture.goals_away is None:
-            return True
-        period = period_for(fixture.status_short or "")
-        if period is None or period is not Period(leg.period):
-            return True
-        if fixture.goals_home != leg.goals_home or fixture.goals_away != leg.goals_away:
-            return True
-    return False
 
 
 async def _insert_account_coupon(
